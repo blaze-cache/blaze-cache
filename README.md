@@ -53,11 +53,17 @@ npm install @blaze-cache/react-query   # optional — TanStack Query v5
 
 npm 7+ and pnpm install peers automatically; yarn classic users need them explicitly.
 
-Two things to know up front:
+Three things to know up front:
 
 * **Nothing extra to download.** The `.wasm` binary ships inside `@blaze-cache/core` —
   no CDN configuration, no separate asset package. [Bundler setup](#bundler-setup) shows
   how your bundler resolves it.
+* **Types are bundled — no `@types/*` to install.** Every package ships its own `.d.ts`
+  through `exports.types`, so `tsc` and editors resolve them under any `moduleResolution`.
+  There is no `@types/blaze-cache/*` and none is needed; skip `@types/axios` too (it is a
+  deprecated stub — axios carries its own types, and so does TanStack Query). The only
+  type packages a consumer needs are the ones its stack already requires, such as
+  `@types/react` for React apps.
 * **ESM only, browser only.** Every package publishes `"type": "module"` with an `import`
   entry point, so `require()` fails by design. Node/SSR targets are deliberately out of
   scope.
