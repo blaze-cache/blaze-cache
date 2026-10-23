@@ -1,0 +1,75 @@
+# CI for the Rust side of the workspace.
+#
+# The toolchain, the wasm32 target and the rustfmt/clippy components all come from
+# `rust-toolchain.toml` — rustup installs whatever the file declares on first use, so no
+# job pins a version here. Two jobs:
+#
+#   host  — rustfmt, clippy (-D warnings), `cargo test --workspace` (24 unit + 3 doctest)
+#   wasm  — `wasm-pack test --node`: the `#[wasm_bindgen_test]` suite in bindings tests.rs
+#           against the real wasm-bindgen glue, running in Node (no WebDriver needed).
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes older runs pointless — cancel them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, per rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      # Caches ~/.cargo and target/ keyed on Cargo.lock; each job keeps its own cache.
+      - uses: Swatinem/rust-cache@v2
+
+      # Cheapest check first so formatting failures surface immediately.
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: tests + doctests
+        run: cargo test --workspace --locked
+
+  wasm:
+    name: wasm-pack tests (node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, per rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      # `wasm-pack test --node` executes the suite under Node; pin it so the runner's
+      # preinstalled default can't drift out from under wasm-bindgen-test.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: bindings tests
+        run: wasm-pack test --node crates/blaze-cache-wasm
