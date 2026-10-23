@@ -1,0 +1,31 @@
+[package]
+name = "blaze-cache-wasm"
+description = "WebAssembly bindings for the Blaze Cache engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# `cdylib` is what wasm-pack/Node load; `rlib` keeps `cargo test` and `cargo check` happy.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# wasm-pack's bundled `wasm-opt` does not enable bulk-memory by default, while modern Rust/LLD
+# emits `memory.copy`. Enable the feature explicitly instead of dropping the optimisation pass.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-sign-ext", "--enable-nontrapping-float-to-int"]
+
+[features]
+default = ["console_error_panic_hook"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+
+[dependencies]
+blaze-cache-core = { workspace = true }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }

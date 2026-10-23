@@ -1,0 +1,46 @@
+# Root manifest for the Blaze Cache workspace.
+#
+# Publishable crates live in `crates/`; the JavaScript/TypeScript side lives in `packages/`
+# and is managed by pnpm (see `pnpm-workspace.yaml`).
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/blaze-cache-core",
+    "crates/blaze-cache-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/blaze-cache/blaze-cache"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+blaze-cache-core = { path = "crates/blaze-cache-core", version = "0.1.0" }
+blaze-cache-wasm = { path = "crates/blaze-cache-wasm", version = "0.1.0" }
+
+# Clock that works on both native and `wasm32-unknown-unknown` (`std::time::Instant` panics
+# on the wasm target, `web_time::Instant` does not).
+web-time = "1.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# WebAssembly bindings
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+# Test harness for `#[wasm_bindgen_test]` — only referenced by the wasm crate's tests, and
+# those are gated to `target_arch = "wasm32"` so host `cargo test` never compiles them.
+wasm-bindgen-test = "0.3"
+
+# Optimized for both speed and binary size; wasm-pack runs `wasm-opt` on top of this.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "types": ["vite/client", "node"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // Resolve the workspace packages through their built output, exactly as a consumer would.
+    "paths": {}
+  },
+  "include": ["src", "vite.config.ts"]
+}
