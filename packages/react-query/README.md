@@ -1,0 +1,60 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/blaze-cache-logo.png" alt="Blaze Cache logo" width="150">
+</p>
+
+<h1 align="center">@blaze-cache/react-query</h1>
+
+Persist TanStack Query v5 in WebAssembly — instant first paint after reload while
+stale-while-revalidate still works.
+
+## Install
+
+```sh
+npm install @blaze-cache/react-query   # @tanstack/react-query ≥ 5 is a peer dependency
+```
+
+## Quick start
+
+```ts
+// src/queryClient.ts
+import { createBlazeQueryClient } from '@blaze-cache/react-query';
+import { cache } from './blaze.js'; // a cache created by @blaze-cache/core
+
+export const queryClient = createBlazeQueryClient({ cache });
+```
+
+```tsx
+import { useBlazeQuery } from '@blaze-cache/react-query';
+
+const todos = useBlazeQuery(cache, {
+  queryKey: ['todos'],
+  queryFn: () => api.get('/todos').then((response) => response.data),
+});
+```
+
+A mirrored query is injected as `initialData` **with its original `dataUpdatedAt`** —
+the first paint after a reload comes from the cache instantly, while TanStack still
+treats the data as stale and refetches in the background.
+
+## Behaviour
+
+* Successful fetches and `setQueryData` are written to the shared cache;
+  `removeQueries` deletes from it.
+* Invalidation deliberately keeps the data, so stale-while-revalidate always has
+  something to paint.
+* Error states stay in TanStack — only data crosses into the cache.
+* TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
+
+## Documentation
+
+Setup and the full integration reference live in the
+[repository README](https://github.com/blaze-cache/blaze-cache#readme).
+
+## Part of Blaze Cache
+
+* [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+* [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
+
+## License
+
+[MIT](https://github.com/blaze-cache/blaze-cache/blob/main/LICENSE) © Blaze Cache

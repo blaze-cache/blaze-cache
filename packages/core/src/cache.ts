@@ -17,6 +17,14 @@ export const DEFAULT_CAPACITY = 500;
 export const DEFAULT_FLUSH_DELAY_MS = 400;
 /** Upper bound on records written by a single flush. */
 export const DEFAULT_MAX_RECORDS = 2000;
+/**
+ * Shared stand-in for "no tags" on the write path.
+ *
+ * The binding copies the array into wasm memory synchronously during the call and never
+ * retains it, so one module-level array can serve every untagged write instead of allocating
+ * a fresh `[]` per `set`. Never mutated.
+ */
+const NO_TAGS: string[] = [];
 
 /** Options for a custom {@link CachePersistence} adapter. */
 export interface CachePersistenceOptions {
@@ -163,14 +171,17 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   /** Stores (or replaces) `key`. Replacing refreshes the TTL and replaces the tags. */
   set(key: string, value: V, options?: SetOptions): void {
-    this.#wasm.set(key, value, options?.ttlMs ?? null, options?.tags ? [...options.tags] : []);
-    this.#notify({ type: 'set', key });
+    // No defensive copy of `tags`: the binding reads the array synchronously while building
+    // the wasm call and never retains it, so the `readonly`→`string[]` cast below is safe.
+    // Untagged writes share `NO_TAGS` (see its doc).
+    this.#wasm.set(key, value, options?.ttlMs ?? null, (options?.tags ?? NO_TAGS) as string[]);
+    if (this.#hasChangeConsumers) this.#notify({ type: 'set', key });
   }
 
   /** Removes `key`, returning whether it was there. */
   delete(key: string): boolean {
     const removed = this.#wasm.delete(key);
-    if (removed) this.#notify({ type: 'delete', key });
+    if (removed && this.#hasChangeConsumers) this.#notify({ type: 'delete', key });
     return removed;
   }
 
@@ -178,21 +189,25 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   invalidateTags(...tags: string[]): string[] {
     if (tags.length === 0) return [];
     const removed = this.#wasm.invalidateTags(tags);
-    if (removed.length > 0) this.#notify({ type: 'invalidate', keys: removed });
+    if (removed.length > 0 && this.#hasChangeConsumers) {
+      this.#notify({ type: 'invalidate', keys: removed });
+    }
     return removed;
   }
 
   /** Removes every expired entry, returning the removed keys. */
   prune(): string[] {
     const removed = this.#wasm.prune();
-    if (removed.length > 0) this.#notify({ type: 'prune', keys: removed });
+    if (removed.length > 0 && this.#hasChangeConsumers) {
+      this.#notify({ type: 'prune', keys: removed });
+    }
     return removed;
   }
 
   /** Empties the cache. */
   clear(): void {
     this.#wasm.clear();
-    this.#notify({ type: 'clear' });
+    if (this.#hasChangeConsumers) this.#notify({ type: 'clear' });
   }
 
   /** Zeroes the cumulative counters without touching stored entries. */
@@ -360,6 +375,19 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     }
 
     if (deleted.length > 0) await persist.remove(deleted);
+  }
+
+  /**
+   * `true` when a change event would actually reach someone — persistence bookkeeping or at
+   * least one listener.
+   *
+   * Lets the mutation paths skip building a {@link CacheChange} object altogether when
+   * nothing consumes it (memory-only cache, no subscribers). Equivalent to the conditions
+   * inside {@link BlazeCache.#notify}: after `dispose` the persistence adapter is `null`, so
+   * the `!#disposed` check inside `#notify` cannot change the outcome here.
+   */
+  get #hasChangeConsumers(): boolean {
+    return this.#listeners.size > 0 || this.#persist !== null;
   }
 
   #notify(change: CacheChange): void {

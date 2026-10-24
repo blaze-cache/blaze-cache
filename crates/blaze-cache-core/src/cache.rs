@@ -63,11 +63,23 @@ pub struct EntryView<'a, K, V> {
 pub struct Cache<K, V> {
     nodes: Vec<Option<Node<K, V>>>,
     free: Vec<usize>,
-    index: HashMap<K, usize>,
+    /// Key → slab slot.
+    ///
+    /// Uses [`foldhash`] rather than std's default SipHash-1-3: this map is probed on every
+    /// read and write, cache keys are short strings, and foldhash keeps per-process random
+    /// seeding (hash-flooding resistance) at a fraction of SipHash's cost.
+    index: HashMap<K, usize, foldhash::fast::RandomState>,
     queue: Sieve,
     tags: TagIndex,
     capacity: usize,
     stats: CacheStats,
+    /// How many stored entries carry an `expires_at` deadline.
+    ///
+    /// This is the fast-path predicate: when it is `0`, no entry can ever be expired, so the
+    /// read paths skip `Instant::now()` — on wasm that clock call is a `performance.now()`
+    /// import, i.e. a boundary crossing per operation. Maintained exclusively through
+    /// [`shift_ttl`](Self::shift_ttl) so every deadline change flows through one place.
+    ttl_count: usize,
 }
 
 impl<K, V> Cache<K, V>
@@ -82,11 +94,15 @@ where
         Self {
             nodes: Vec::new(),
             free: Vec::new(),
-            index: HashMap::with_capacity(capacity),
+            index: HashMap::with_capacity_and_hasher(
+                capacity,
+                foldhash::fast::RandomState::default(),
+            ),
             queue: Sieve::new(),
             tags: TagIndex::default(),
             capacity,
             stats: CacheStats::default(),
+            ttl_count: 0,
         }
     }
 
@@ -139,16 +155,21 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let now = Instant::now();
         let Some(&idx) = self.index.get(key) else {
             self.stats.misses += 1;
             return None;
         };
-        if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
-            self.stats.expirations += 1;
-            self.stats.misses += 1;
-            self.free(idx);
-            return None;
+        // Fast path: with no deadline on any entry nothing can be expired, so the clock is
+        // skipped entirely. On wasm `Instant::now()` is a `performance.now()` import — a
+        // boundary crossing per read — which is exactly what this avoids.
+        if self.ttl_count > 0 {
+            let now = Instant::now();
+            if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
+                self.stats.expirations += 1;
+                self.stats.misses += 1;
+                self.free(idx);
+                return None;
+            }
         }
         self.nodes[idx].as_mut().expect("live slot").visited = true;
         self.stats.hits += 1;
@@ -172,10 +193,15 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let now = Instant::now();
-        self.index
-            .get(key)
-            .is_some_and(|&idx| !self.nodes[idx].as_ref().expect("live slot").is_expired(now))
+        self.index.get(key).is_some_and(|&idx| {
+            // `ttl_count == 0` means no deadline exists anywhere, so the check below could
+            // only ever confirm "not expired" — skip the clock call (see `get`).
+            self.ttl_count == 0
+                || !self.nodes[idx]
+                    .as_ref()
+                    .expect("live slot")
+                    .is_expired(Instant::now())
+        })
     }
 
     /// TTL left and tags for one key, without touching LRU/SIEVE state.
@@ -184,13 +210,18 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let now = Instant::now();
         let idx = *self.index.get(key)?;
         let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count == 0 {
+            // No deadline exists, so `ttl_remaining` is `None` for every node and the
+            // expired check cannot trigger — no clock needed (see `get`).
+            return Some(self.meta_for(node, None));
+        }
+        let now = Instant::now();
         if node.is_expired(now) {
             return None;
         }
-        Some(self.meta_for(node, now))
+        Some(self.meta_for(node, Some(now)))
     }
 
     /// Full view of one key — value, remaining TTL and tags — without touching statistics or
@@ -200,12 +231,17 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let now = Instant::now();
         let idx = *self.index.get(key)?;
         let node = self.nodes[idx].as_ref().expect("live slot");
-        if node.is_expired(now) {
-            return None;
-        }
+        let now = if self.ttl_count == 0 {
+            None // no deadline anywhere: cannot be expired, `ttl_remaining` is `None`
+        } else {
+            let now = Instant::now();
+            if node.is_expired(now) {
+                return None;
+            }
+            Some(now)
+        };
         Some(EntryView {
             key: &node.key,
             value: &node.value,
@@ -229,16 +265,22 @@ where
             out.push(EntryView {
                 key: &node.key,
                 value: &node.value,
-                meta: self.meta_for(node, now),
+                meta: self.meta_for(node, Some(now)),
             });
         }
         out
     }
 
     /// Builds the public metadata view of a live node.
-    fn meta_for(&self, node: &Node<K, V>, now: Instant) -> EntryMeta {
+    ///
+    /// `now` is `None` exactly when the cache holds no deadlines (`ttl_count == 0`); since
+    /// `expires_at` is then `None` for every node, `ttl_remaining` is `None` regardless.
+    fn meta_for(&self, node: &Node<K, V>, now: Option<Instant>) -> EntryMeta {
         EntryMeta {
-            ttl_remaining: node.expires_at.map(|at| at.saturating_duration_since(now)),
+            ttl_remaining: node
+                .expires_at
+                .zip(now)
+                .map(|(at, now)| at.saturating_duration_since(now)),
             tags: self.tags.names(&node.tags),
         }
     }
@@ -316,22 +358,28 @@ where
     /// Re-inserting an existing key refreshes its value, its deadline **and** its tags, and
     /// re-queues it as the newest entry (unvisited).
     pub fn insert_with(&mut self, key: K, value: V, options: EntryOptions) -> Option<V> {
-        let now = Instant::now();
+        // The clock is only needed when a TTL is actually requested — a plain write must not
+        // pay a wasm→JS `performance.now()` call just to discard the result.
         let expires_at = options
             .ttl_opt()
             .filter(|ttl| !ttl.is_zero())
-            .map(|ttl| now + ttl);
+            .map(|ttl| Instant::now() + ttl);
         let new_tag_ids = self
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
 
         let previous = match self.index.get(&key).copied() {
             Some(idx) => {
-                let old_tag_ids = {
+                let (old_expires_at, old_tag_ids) = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
+                    let old_expires_at = node.expires_at;
                     node.expires_at = expires_at;
-                    std::mem::replace(&mut node.tags, new_tag_ids.clone())
+                    (
+                        old_expires_at,
+                        std::mem::replace(&mut node.tags, new_tag_ids.clone()),
+                    )
                 };
+                self.shift_ttl(old_expires_at, expires_at);
                 for &id in &old_tag_ids {
                     if !new_tag_ids.contains(&id) {
                         self.tags.detach(id, idx);
@@ -370,6 +418,7 @@ where
                     self.tags.attach(id, idx);
                 }
                 self.queue.push_back(&mut self.nodes, idx);
+                self.shift_ttl(None, expires_at);
                 None
             }
         };
@@ -440,10 +489,27 @@ where
         self.index.clear();
         self.queue = Sieve::new();
         self.tags.clear();
+        // `release()` never runs for these nodes, so reset the fast-path counter here.
+        self.ttl_count = 0;
         self.stats.invalidations += dropped;
     }
 
     // ------------------------------------------------------------- internals
+
+    /// Applies a deadline change to the fast-path counter: `old` → `new`.
+    ///
+    /// Every path that sets, replaces or drops an entry's `expires_at` funnels through here,
+    /// so the invariant "*`ttl_count` equals the number of nodes holding a deadline*" holds
+    /// by construction rather than by scattered `+= 1`s. Callers pass `None` for a deadline
+    /// that is being removed (or for a brand-new entry that has one).
+    fn shift_ttl(&mut self, old: Option<Instant>, new: Option<Instant>) {
+        self.ttl_count += new.is_some() as usize;
+        self.ttl_count -= old.is_some() as usize;
+        debug_assert!(
+            self.ttl_count <= self.index.len(),
+            "ttl_count exceeds stored entries"
+        );
+    }
 
     /// Oldest-first entry point for iteration (the SIEVE queue head).
     fn queue_head(&self) -> Option<usize> {
@@ -461,6 +527,8 @@ where
     /// Removes `idx` from the index and slab. The caller must have unlinked it already.
     fn release(&mut self, idx: usize) -> (K, V) {
         let node = self.nodes[idx].take().expect("release of a free slot");
+        // Single point where an entry dies: keep the fast-path counter in step.
+        self.shift_ttl(node.expires_at, None);
         self.index.remove(&node.key);
         for &id in &node.tags {
             self.tags.detach(id, idx);
@@ -471,9 +539,12 @@ where
 
     /// Applies SIEVE once and counts *why* the entry died.
     fn evict_one(&mut self) -> Option<(K, V)> {
-        let now = Instant::now();
+        // No deadline anywhere → nothing can be expired, so the sweep takes no clock (the
+        // hand's visited-bit logic is time-independent). See `get` for the rationale.
+        let now = (self.ttl_count > 0).then(Instant::now);
         let idx = self.queue.evict_candidate(&mut self.nodes, now)?;
-        let was_expired = self.nodes[idx].as_ref().expect("live slot").is_expired(now);
+        let was_expired =
+            now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now));
         let pair = self.release(idx); // `evict_candidate` already unlinked it
         if was_expired {
             self.stats.expirations += 1;
@@ -798,5 +869,163 @@ mod tests {
         assert_eq!(cache.get("hot"), Some(&99));
         assert_eq!(tagged_keys(&cache, "t"), vec!["hot"]);
         assert_eq!(cache.stats().evictions, 0);
+    }
+
+    // ------------------------------------------------------- ttl_count bookkeeping
+    //
+    // `ttl_count` is what lets the read paths skip `Instant::now()` (a wasm→JS boundary
+    // crossing) when no entry can be expired. Every test here guards the invariant the fast
+    // path will rely on: **the counter equals the number of nodes holding a deadline.**
+    // They run before the fast path exists, so a failure here can only be bookkeeping.
+
+    #[test]
+    fn ttl_count_tracks_new_entries_with_and_without_deadlines() {
+        let mut cache = Cache::new(8);
+        assert_eq!(cache.ttl_count, 0);
+
+        cache.insert("permanent", 1); // no TTL
+        assert_eq!(cache.ttl_count, 0);
+
+        cache.insert_with(
+            "expiring",
+            2,
+            EntryOptions::new().ttl(Duration::from_secs(60)),
+        );
+        assert_eq!(cache.ttl_count, 1);
+
+        // Zero/absent TTL means "no deadline" — must not be counted.
+        cache.insert_with("zero", 3, EntryOptions::new().ttl(Duration::ZERO));
+        assert_eq!(
+            cache.ttl_count, 1,
+            "only the 60s entry holds a deadline; a zero TTL is permanent"
+        );
+    }
+
+    #[test]
+    fn ttl_count_follows_deadline_changes_on_rewrite() {
+        let mut cache = Cache::new(8);
+        cache.insert_with("k", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
+        assert_eq!(cache.ttl_count, 1);
+
+        // Same key, now permanent: the deadline is dropped, so the count falls.
+        cache.insert_with("k", 2, EntryOptions::new());
+        assert_eq!(cache.ttl_count, 0, "rewrite removed the deadline");
+
+        // Permanent → expiring again: back up.
+        cache.insert_with("k", 3, EntryOptions::new().ttl(Duration::from_secs(5)));
+        assert_eq!(cache.ttl_count, 1);
+
+        // Expiring → expiring: still exactly one deadline, never two.
+        cache.insert_with("k", 4, EntryOptions::new().ttl(Duration::from_secs(5)));
+        assert_eq!(cache.ttl_count, 1);
+        assert_eq!(cache.get("k"), Some(&4));
+    }
+
+    #[test]
+    fn ttl_count_drops_when_entries_are_removed() {
+        let mut cache = Cache::new(8);
+        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
+        cache.insert_with("b", 2, EntryOptions::new()); // permanent
+        assert_eq!(cache.ttl_count, 1);
+
+        // `remove` frees `a`, whose deadline dies with it.
+        cache.remove("a");
+        assert_eq!(cache.ttl_count, 0, "release() decrements the counter");
+
+        // A permanent entry being removed must leave the counter untouched (it is 0).
+        cache.remove("b");
+        assert_eq!(cache.ttl_count, 0);
+    }
+
+    #[test]
+    fn ttl_count_survives_eviction_and_expiration() {
+        let mut cache = Cache::new(2);
+        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
+        cache.insert_with("b", 2, EntryOptions::new().ttl(Duration::from_secs(60)));
+        assert_eq!(cache.ttl_count, 2);
+
+        // Capacity pressure: `a` (oldest, unvisited) is evicted through `evict_one`.
+        cache.insert_with("c", 3, EntryOptions::new().ttl(Duration::from_secs(60)));
+        assert_eq!(cache.ttl_count, 2, "evicted a, added c");
+        assert_eq!(cache.get("a"), None);
+
+        // Lazy expiry on read: `b`'s TTL elapses and `get` reclaims it eagerly.
+        let mut expiring = Cache::new(4);
+        expiring.insert_with("s", 1, EntryOptions::new().ttl(Duration::from_millis(5)));
+        assert_eq!(expiring.ttl_count, 1);
+        sleep(30);
+        assert_eq!(expiring.get("s"), None, "expired and freed");
+        assert_eq!(
+            expiring.ttl_count, 0,
+            "the expired node decremented on release"
+        );
+    }
+
+    #[test]
+    fn ttl_count_resets_on_clear_and_survives_prune() {
+        let mut cache = Cache::new(8);
+        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
+        cache.insert_with("b", 2, EntryOptions::new());
+        assert_eq!(cache.ttl_count, 1);
+
+        // `clear()` bypasses `release()` entirely, so it must reset the counter itself.
+        cache.clear();
+        assert_eq!(cache.ttl_count, 0, "clear() resets the counter");
+
+        // Prune reclaims expired nodes through `free()` → `release()`.
+        cache.insert_with("x", 1, EntryOptions::new().ttl(Duration::from_millis(5)));
+        assert_eq!(cache.ttl_count, 1);
+        sleep(30);
+        cache.prune();
+        assert_eq!(
+            cache.ttl_count, 0,
+            "prune() ran the nodes through release()"
+        );
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn ttl_count_never_drifts_under_mixed_churn() {
+        // Hammer rewrite, capacity eviction and explicit removal at once with a capacity
+        // smaller than the key pool, so insertions evict too. Hand-tracked arithmetic can't
+        // model evictions, so compare directly against ground truth after every step: the
+        // number of live nodes that actually hold a deadline.
+        let live_deadlines = |cache: &Cache<String, usize>| {
+            cache
+                .entries()
+                .iter()
+                .filter(|e| e.meta.ttl_remaining.is_some())
+                .count()
+        };
+
+        let mut cache = Cache::new(4);
+        for i in 0..60 {
+            let with_ttl = i % 2 == 0;
+            let key = format!("k{}", i % 6);
+            let options = if with_ttl {
+                EntryOptions::new().ttl(Duration::from_secs(60))
+            } else {
+                EntryOptions::new()
+            };
+            cache.insert_with(key.clone(), i, options);
+            assert_eq!(
+                cache.ttl_count,
+                live_deadlines(&cache),
+                "drift after insert at iteration {i} (with_ttl={with_ttl})"
+            );
+
+            if i % 5 == 0 {
+                cache.remove(&key);
+                assert_eq!(
+                    cache.ttl_count,
+                    live_deadlines(&cache),
+                    "drift after remove at iteration {i} (with_ttl={with_ttl})"
+                );
+            }
+        }
+        assert!(
+            !cache.is_empty(),
+            "sanity: the churn must leave entries behind"
+        );
     }
 }

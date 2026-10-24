@@ -10,13 +10,16 @@
 //! ## Design
 //!
 //! * **Storage** — entries live in a slab (`Vec<Option<Node<K, V>>>`) with a free list, so
-//!   nodes never move and eviction is `O(1)`. A `HashMap<K, usize>` maps keys to slots.
+//!   nodes never move and eviction is `O(1)`. A `HashMap<K, usize>` (seeded by [foldhash])
+//!   maps keys to slots.
 //! * **Eviction** — the [SIEVE] queue is a doubly linked list ordered *oldest → newest* with a
 //!   persistent `hand` cursor. Reads only flip a `visited` bit; they never reorder the list,
 //!   which makes reads cheaper than LRU while behaving better than FIFO.
 //! * **Expiry** — `web_time::Instant` (monotonic, works on `wasm32-unknown-unknown`). Expired
 //!   entries are dropped lazily on access, opportunistically during eviction, or in bulk via
-//!   [`Cache::prune`].
+//!   [`Cache::prune`]. A counter of entries that actually hold a deadline lets every read skip
+//!   the clock entirely when no TTL is in play — on wasm that call is a `performance.now()`
+//!   import, i.e. a JS boundary crossing per operation.
 //! * **Tags** — entries may declare string tags. [`Cache::invalidate_tags`] removes every entry
 //!   carrying any of the given tags in `O(members)` time.
 //!

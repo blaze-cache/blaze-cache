@@ -26,6 +26,13 @@ blaze-cache-wasm = { path = "crates/blaze-cache-wasm", version = "0.1.0" }
 # on the wasm target, `web_time::Instant` does not).
 web-time = "1.1"
 
+# Hasher for the cache's key → slot index. foldhash is the leading candidate for Rust's std
+# default hasher: randomly seeded per process (so it keeps the hash-flooding resistance std's
+# SipHash-1-3 exists for) at a small fraction of SipHash's cost on the short string keys a
+# cache stores. Deterministic alternatives like `rustc-hash` are faster still but would trade
+# that resistance away.
+foldhash = "0.2"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 
