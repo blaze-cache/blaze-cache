@@ -8,5 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+foldhash = { workspace = true }
 serde = { workspace = true }
 web-time = { workspace = true }

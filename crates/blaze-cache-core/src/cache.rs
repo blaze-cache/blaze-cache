@@ -63,7 +63,12 @@ pub struct EntryView<'a, K, V> {
 pub struct Cache<K, V> {
     nodes: Vec<Option<Node<K, V>>>,
     free: Vec<usize>,
-    index: HashMap<K, usize>,
+    /// Key → slab slot.
+    ///
+    /// Uses [`foldhash`] rather than std's default SipHash-1-3: this map is probed on every
+    /// read and write, cache keys are short strings, and foldhash keeps per-process random
+    /// seeding (hash-flooding resistance) at a fraction of SipHash's cost.
+    index: HashMap<K, usize, foldhash::fast::RandomState>,
     queue: Sieve,
     tags: TagIndex,
     capacity: usize,
@@ -89,7 +94,10 @@ where
         Self {
             nodes: Vec::new(),
             free: Vec::new(),
-            index: HashMap::with_capacity(capacity),
+            index: HashMap::with_capacity_and_hasher(
+                capacity,
+                foldhash::fast::RandomState::default(),
+            ),
             queue: Sieve::new(),
             tags: TagIndex::default(),
             capacity,

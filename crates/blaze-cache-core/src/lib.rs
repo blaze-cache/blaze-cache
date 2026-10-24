@@ -10,7 +10,8 @@
 //! ## Design
 //!
 //! * **Storage** — entries live in a slab (`Vec<Option<Node<K, V>>>`) with a free list, so
-//!   nodes never move and eviction is `O(1)`. A `HashMap<K, usize>` maps keys to slots.
+//!   nodes never move and eviction is `O(1)`. A `HashMap<K, usize>` (seeded by [foldhash])
+//!   maps keys to slots.
 //! * **Eviction** — the [SIEVE] queue is a doubly linked list ordered *oldest → newest* with a
 //!   persistent `hand` cursor. Reads only flip a `visited` bit; they never reorder the list,
 //!   which makes reads cheaper than LRU while behaving better than FIFO.
