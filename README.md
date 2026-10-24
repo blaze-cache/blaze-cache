@@ -10,8 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/blaze-cache/blaze-cache?label=license" alt="MIT license"></a>
 </p>
 
-A client-side caching framework for the browser, written in Rust and compiled to
-WebAssembly, with first-class TypeScript bindings.
+Blazingly fast client-side caching library powered by Rust → WebAssembly. Features synchronous reads, SIEVE eviction, tag invalidation, and optional IndexedDB persistence.
 
 The hot path — storage, TTL bookkeeping, tag indexing and eviction — runs in Wasm.
 The TypeScript layer adds the browser glue: one-time module initialisation, optional
