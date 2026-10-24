@@ -4,6 +4,12 @@
 
 <h1 align="center">Blaze Cache</h1>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@blaze-cache/core"><img src="https://img.shields.io/npm/v/@blaze-cache/core?label=npm" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@blaze-cache/core"><img src="https://img.shields.io/npm/dm/@blaze-cache/core?label=downloads" alt="npm monthly downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/blaze-cache/blaze-cache?label=license" alt="MIT license"></a>
+</p>
+
 A client-side caching framework for the browser, written in Rust and compiled to
 WebAssembly, with first-class TypeScript bindings.
 
@@ -352,6 +358,14 @@ pnpm clean            # remove build outputs
 The smoke suite in `scripts/smoke.mjs` runs against the **built** artifacts — the real
 wasm binary plus `packages/*/dist` — so it fails if either side drifts.
 
-## License
+## Contributors
 
-Licensed under the [MIT License](LICENSE).
+Thanks to everyone who has contributed so far. The grid below is generated live and
+updates on its own — the [contributors graph](https://github.com/blaze-cache/blaze-cache/graphs/contributors)
+has the per-commit detail:
+
+<p align="center">
+  <a href="https://github.com/blaze-cache/blaze-cache/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=blaze-cache/blaze-cache" alt="Blaze Cache contributors">
+  </a>
+</p>
