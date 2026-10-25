@@ -21,6 +21,7 @@
     "url": "git+https://github.com/blaze-cache/blaze-cache.git",
     "directory": "packages/core"
   },
+  "homepage": "https://blaze-cache.github.io/docs/",
   "publishConfig": {
     "access": "public"
   },
