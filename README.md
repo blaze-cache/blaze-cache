@@ -14,7 +14,8 @@ Blazingly fast client-side caching library powered by Rust → WebAssembly. Feat
 
 The hot path — storage, TTL bookkeeping, tag indexing and eviction — runs in Wasm.
 The TypeScript layer adds the browser glue: one-time module initialisation, optional
-IndexedDB persistence, an axios adapter and a TanStack Query integration.
+IndexedDB persistence, an axios adapter, a drop-in `fetch()` replacement and a TanStack
+Query integration.
 
 ```ts
 import { createCache } from '@blaze-cache/core';
@@ -36,6 +37,7 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 | --- | --- |
 | [`@blaze-cache/core`](packages/core) | The cache itself: SIEVE eviction, TTLs, tags, stats, IndexedDB persistence |
 | [`@blaze-cache/axios`](packages/axios) | An axios adapter that caches HTTP responses (honouring `Cache-Control`) |
+| [`@blaze-cache/fetch`](packages/fetch) | A drop-in `fetch()` replacement with automatic HTTP caching |
 | [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache |
 
 ## Installation
@@ -45,6 +47,7 @@ Install the cache itself, then add only the integrations you use:
 ```sh
 npm install @blaze-cache/core
 npm install @blaze-cache/axios         # optional — axios adapter
+npm install @blaze-cache/fetch         # optional — drop-in fetch() replacement
 npm install @blaze-cache/react-query   # optional — TanStack Query v5
 ```
 
@@ -54,6 +57,7 @@ npm install @blaze-cache/react-query   # optional — TanStack Query v5
 | --- | --- |
 | `@blaze-cache/core` | — |
 | `@blaze-cache/axios` | `axios` ≥ 1.7 |
+| `@blaze-cache/fetch` | — (any `fetch`-shaped function) |
 | `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5 |
 
 npm 7+ and pnpm install peers automatically; yarn classic users need them explicitly.
@@ -313,6 +317,52 @@ Behaviour worth knowing:
   stores `GET` requests answering `2xx`.
 * `installBlazeCache` captures the instance's existing adapter *before* replacing it,
   which is what guarantees the wrapper can never call itself.
+
+## fetch
+
+```ts
+import { createBlazeFetch } from '@blaze-cache/fetch';
+
+const cachedFetch = createBlazeFetch(cache, { ttlMs: 30_000 });
+
+const response = await cachedFetch('/api/users/42');
+response.headers.get('x-blaze-cache');   // 'HIT' | 'MISS' | 'STALE'
+await response.json();
+```
+
+`createBlazeFetch` returns a `typeof fetch`, so it drops in wherever the global was
+expected — a `fetch` field, an SDK that takes a custom fetcher, or `globalThis.fetch`
+itself:
+
+```ts
+const api = {
+  get: (path: string) => createBlazeFetch(cache)('/api' + path).then((r) => r.json()),
+};
+```
+
+Behaviour worth knowing:
+
+* Only `GET` is cached by default (`methods` adds `'HEAD'`), and only `2xx` responses are
+  stored unless `shouldCache` says otherwise.
+* `Cache-Control` is honoured on both sides: `max-age`, minus the response's `Age`,
+  overrides `ttlMs`; `no-store` bypasses the read *and* the write; `cache: 'no-cache'` and
+  `forceRefresh` skip the read and rewrite the entry.
+* `staleWhileRevalidate` serves the stale body immediately and refetches in the background.
+  Those responses are marked **`STALE`** rather than `HIT` — the one marker value beyond
+  `HIT | MISS`, so a stale paint stays visible in the network tab.
+* `Authorization` participates in the default key (hashed, never stored verbatim), so a
+  personalized response is never served to a different user. Configure with `varyHeaders`,
+  or replace the whole key with `key`.
+* The body is buffered before the `Response` is handed back, so a hit replays exactly the
+  bytes the network sent — status, headers and `url` included.
+* Binary, `Blob` and chunked bodies are handled: the payload is buffered as raw bytes, so a
+  hit replays byte-for-byte with `content-type` intact and `blob()` still reports the right
+  type and size. Because `fetch` has already decoded the body, `content-encoding` and
+  `transfer-encoding` are dropped and `content-length` is corrected to the stored size —
+  otherwise a hit would claim the *compressed* length for decoded bytes.
+* `markerHeader` renames `x-blaze-cache` or switches it off (`markerHeader: false`).
+
+Full option reference: [`packages/fetch`](packages/fetch).
 
 ## TanStack Query
 
