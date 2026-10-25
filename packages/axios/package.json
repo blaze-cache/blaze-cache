@@ -36,6 +36,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test",
+    "test:live": "pnpm run build && BLAZE_CACHE_LIVE=1 node --test test/live.test.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "prepublishOnly": "pnpm run build"
   },

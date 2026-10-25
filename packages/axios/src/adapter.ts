@@ -75,7 +75,7 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
         const record: AxiosCacheRecord = {
           status: response.status,
           statusText: response.statusText,
-          headers: toPlainHeaders(response.headers),
+          headers: storedHeaders(response.headers, response.data),
           // Raw on purpose: axios runs `transformResponse` on replay, exactly as it would
           // for a fresh network response.
           data: response.data,
@@ -122,6 +122,40 @@ export type InstallBlazeCacheOptions = Omit<BlazeAxiosCacheOptions, 'adapter'> &
 function resolveAdapter(adapter: AxiosRequestConfig['adapter']): AxiosAdapter {
   if (typeof adapter === 'function') return adapter;
   return getAdapter(adapter ?? ['xhr', 'http', 'fetch']);
+}
+
+/**
+ * Response headers for the record, corrected to describe `data` instead of the wire.
+ *
+ * axios's adapters decode the body for you (and already drop `content-encoding`), but
+ * `content-length` keeps the size of what crossed the network — on a real API, `1425`
+ * claimed for `6504` stored bytes — and `transfer-encoding` stops being true the moment
+ * the body is buffered. Replaying either hands back a response that contradicts itself,
+ * which breaks anything that measures `data.byteLength` against the declared length.
+ *
+ * Bodyless responses (HEAD) keep both: there the headers describe the body a GET *would*
+ * return. A parsed object has no byte length of its own, so its `content-length` is left
+ * alone rather than invented.
+ */
+function storedHeaders(headers: unknown, data: unknown): Record<string, unknown> {
+  const record = toPlainHeaders(headers);
+  if (data === null || data === undefined) return record;
+
+  delete record['content-encoding'];
+  delete record['transfer-encoding'];
+  const size = byteLengthOf(data);
+  if (size !== undefined && 'content-length' in record) {
+    record['content-length'] = String(size);
+  }
+  return record;
+}
+
+/** Payload size in bytes when it is knowable — `undefined` for parsed objects. */
+function byteLengthOf(data: unknown): number | undefined {
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  if (ArrayBuffer.isView(data)) return data.byteLength;
+  if (typeof data === 'string') return new TextEncoder().encode(data).length;
+  return undefined;
 }
 
 function defaultShouldCache(
