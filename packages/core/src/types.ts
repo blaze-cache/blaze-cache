@@ -15,6 +15,20 @@ export interface SetOptions {
 }
 
 /**
+ * Options applied to a single {@link BlazeCache.touch}.
+ */
+export interface TouchOptions {
+  /**
+   * Milliseconds until the entry expires, counted **from this moment**.
+   *
+   * Omit it (or pass `undefined`) to leave the existing deadline exactly as it is. `0`,
+   * negatives and `NaN` drop the deadline altogether — the entry then lives until evicted,
+   * which is how {@link SetOptions.ttlMs} reads those same values.
+   */
+  ttlMs?: number;
+}
+
+/**
  * A snapshot of the cache's counters.
  *
  * `hits`/`misses`/`evictions`/`expirations`/`invalidations` are cumulative since the last
@@ -49,6 +63,7 @@ export interface CacheEntry<V = unknown> {
  */
 export type CacheChange =
   | { type: 'set'; key: string }
+  | { type: 'touch'; key: string }
   | { type: 'delete'; key: string }
   | { type: 'clear' }
   | { type: 'invalidate'; keys: string[] }
@@ -72,5 +87,6 @@ export interface BlazeCacheLike<V = any> {
   set(key: string, value: V, options?: SetOptions): void;
   has(key: string): boolean;
   delete(key: string): boolean;
-  readonly size: number;
+  /** Number of entries that are present **and** not expired. */
+  size(): number;
 }

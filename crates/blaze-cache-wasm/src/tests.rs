@@ -3,7 +3,7 @@
 //! Declared behind `#[cfg(all(test, target_arch = "wasm32"))]` in `lib.rs`, so host
 //! `cargo test` never compiles it while `pnpm test:wasm` runs it in Node.
 //!
-//! What this covers that the 23 host-side tests cannot: everything that actually crosses
+//! What this covers that the 36 host-side tests cannot: everything that actually crosses
 //! the wasm boundary — `Option` ↔ `undefined`/`null`, `Vec<String>` ↔ `Array`, the
 //! `{ key, value, ttlMs, tags }` object shape built with `Reflect`, and the serialised
 //! stats object — through the real wasm-bindgen glue.
@@ -192,4 +192,101 @@ fn clear_and_reset_stats_behave_independently() {
     cache.clear();
     assert_eq!(cache.size(), 0);
     assert!(!cache.has("a"));
+}
+
+/// Burns CPU until `ms` of wall time passed — wasm has no blocking sleep to lean on, and
+/// `js_sys::Date::now()` is the clock every browser and this Node runner agree on.
+fn wait_ms(ms: f64) {
+    let start = js_sys::Date::now();
+    while js_sys::Date::now() - start < ms {
+        std::hint::spin_loop();
+    }
+}
+
+#[wasm_bindgen_test]
+fn peek_and_ttl_observe_without_counting_anything() {
+    let mut cache = BlazeCache::new(4);
+    cache.set("a", JsValue::from_str("one"), Some(30_000.0), vec![]);
+    cache.set("b", JsValue::from_str("two"), None, vec![]);
+
+    assert_eq!(
+        cache.peek("a").and_then(|v| v.as_string()).as_deref(),
+        Some("one")
+    );
+    assert!(
+        cache.peek("absent").is_none(),
+        "a missing key serialises as undefined"
+    );
+
+    let ttl = cache
+        .ttl("a")
+        .expect("a deadline-bearing key reports its ms");
+    assert!(
+        (0.0..=30_000.0).contains(&ttl),
+        "remaining sits in (0, 30000], got {ttl}"
+    );
+    assert_eq!(cache.ttl("b"), None, "no deadline → undefined");
+    assert_eq!(cache.ttl("absent"), None, "missing → undefined");
+
+    // Both are observational reads: not one of them may reach the counters.
+    let stats = cache.stats().expect("stats must serialise");
+    assert_eq!(number(&stats, "hits"), 0.0, "peek records no hit");
+    assert_eq!(
+        number(&stats, "misses"),
+        0.0,
+        "…and neither call records a miss"
+    );
+}
+
+#[wasm_bindgen_test]
+fn touch_rewrites_the_ttl_and_never_the_value() {
+    let mut cache = BlazeCache::new(4);
+    cache.set("a", JsValue::from_str("one"), Some(1_000.0), vec![]);
+
+    let before = cache.ttl("a").expect("deadline before the touch");
+    assert!(cache.touch("a", Some(60_000.0)), "the key is live, so true");
+    let after = cache.ttl("a").expect("deadline after the touch");
+    assert!(after > before, "renewed from now ({before} → {after})");
+
+    assert_eq!(
+        cache.get("a").and_then(|v| v.as_string()).as_deref(),
+        Some("one"),
+        "the stored value never changed"
+    );
+    let stats = cache.stats().expect("stats must serialise");
+    assert_eq!(
+        number(&stats, "hits"),
+        1.0,
+        "the touch itself recorded no hit"
+    );
+
+    // Omitting `ttlMs` leaves the deadline where it was…
+    assert!(cache.touch("a", None));
+    assert!(
+        cache.ttl("a").is_some_and(|ms| ms <= 60_000.0),
+        "an optionless touch must not clear the TTL"
+    );
+    // …while `0` drops it, exactly as `set` reads that value.
+    assert!(cache.touch("a", Some(0.0)));
+    assert_eq!(cache.ttl("a"), None, "0 → never expires");
+
+    assert!(
+        !cache.touch("absent", Some(5_000.0)),
+        "a missing key reports false"
+    );
+}
+
+#[wasm_bindgen_test]
+fn size_counts_only_the_entries_that_are_still_alive() {
+    let mut cache = BlazeCache::new(8);
+    cache.set("alive", JsValue::NULL, None, vec![]);
+    cache.set("dying", JsValue::NULL, Some(30.0), vec![]);
+    assert_eq!(cache.size(), 2, "both are live to begin with");
+
+    wait_ms(60.0);
+
+    assert_eq!(cache.size(), 1, "the expired one is not counted");
+    assert_eq!(cache.ttl("dying"), None, "…and reads as absent");
+    assert!(cache.has("alive"));
+    assert_eq!(cache.capacity(), 8, "capacity is unaffected by expiry");
 }

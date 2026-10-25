@@ -465,3 +465,158 @@ fn ttl_count_never_drifts_under_mixed_churn() {
         "sanity: the churn must leave entries behind"
     );
 }
+
+#[test]
+fn live_len_counts_only_unexpired_entries() {
+    let mut cache = Cache::new(4);
+    assert_eq!(cache.capacity(), 4, "capacity is what was asked for");
+    cache.insert("plain", 1);
+    cache.insert_with(
+        "short",
+        2,
+        EntryOptions::new().ttl(Duration::from_millis(20)),
+    );
+    assert_eq!(cache.live_len(), 2);
+
+    sleep(40);
+    assert_eq!(cache.len(), 2, "len() still counts the expired slot");
+    assert_eq!(cache.live_len(), 1, "live_len() does not");
+
+    // With no deadline anywhere the fast path answers from the index, no walk and no clock.
+    let mut plain = Cache::new(2);
+    plain.insert("a", 1);
+    plain.insert("b", 2);
+    assert_eq!(plain.live_len(), 2);
+    assert_eq!(plain.ttl_count, 0, "a plain write still costs no clock");
+}
+
+#[test]
+fn peek_reads_without_leaving_a_footprint() {
+    let mut cache = Cache::new(4);
+    cache.insert("a", 1);
+    cache.insert("b", 2);
+
+    assert_eq!(cache.peek("a"), Some(&1));
+    assert_eq!(cache.peek("a"), Some(&1), "reading twice changes nothing");
+    assert_eq!(cache.peek("missing"), None);
+    let stats = cache.stats();
+    assert_eq!(stats.hits, 0, "peek records no hit");
+    assert_eq!(stats.misses, 0, "…and no miss");
+
+    // Expired entries are invisible to peek as well, and — unlike get — nothing is reclaimed.
+    cache.insert_with("e", 9, EntryOptions::new().ttl(Duration::from_millis(10)));
+    sleep(30);
+    assert_eq!(cache.peek("e"), None);
+    assert_eq!(cache.len(), 3, "peek never mutates, so no slot was freed");
+    assert_eq!(
+        cache.live_len(),
+        2,
+        "…while live_len sees through the expired one"
+    );
+
+    // The eviction half of "no footprint": a peek does not mark the entry visited.
+    let mut sieve = Cache::new(2);
+    sieve.insert("a", 1);
+    sieve.insert("b", 2);
+    assert_eq!(sieve.peek("a"), Some(&1));
+    sieve.insert("c", 3);
+    assert_eq!(sieve.get("a"), None, "the peeked entry was still evictable");
+    assert_eq!(sieve.get("b"), Some(&2));
+}
+
+#[test]
+fn ttl_reports_remaining_time_or_nothing_at_all() {
+    let mut cache = Cache::new(4);
+    cache.insert("forever", 1);
+    cache.insert_with(
+        "short",
+        2,
+        EntryOptions::new().ttl(Duration::from_millis(300)),
+    );
+
+    assert_eq!(cache.ttl("forever"), Some(None), "no deadline set");
+    let left = cache.ttl("short").flatten().expect("a deadline is set");
+    assert!(
+        left <= Duration::from_millis(300) && left > Duration::from_millis(100),
+        "remaining is measured from now ({left:?})"
+    );
+    assert_eq!(cache.ttl("missing"), None, "unknown key");
+    let stats = cache.stats();
+    assert_eq!(stats.hits, 0, "ttl() observes nothing");
+
+    // An expired key reads as absent, the same way `get` and `peek` see it.
+    cache.insert_with(
+        "gone",
+        3,
+        EntryOptions::new().ttl(Duration::from_millis(10)),
+    );
+    sleep(30);
+    assert_eq!(
+        cache.ttl("gone"),
+        None,
+        "expired is indistinguishable from missing"
+    );
+}
+
+#[test]
+fn touch_refreshes_the_deadline_without_touching_the_value() {
+    let mut cache = Cache::new(4);
+    cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_millis(400)));
+
+    // No TTL requested → the existing deadline must survive untouched.
+    assert!(cache.touch("a", None));
+    let untouched = cache.ttl("a").flatten().expect("still deadline-bearing");
+    assert!(
+        untouched <= Duration::from_millis(400) && untouched > Duration::from_millis(300),
+        "a TTL-less touch must not rewrite the deadline ({untouched:?})"
+    );
+
+    // With a TTL → the deadline is rebuilt from this moment.
+    assert!(cache.touch("a", Some(Duration::from_secs(5))));
+    let refreshed = cache.ttl("a").flatten().expect("still deadline-bearing");
+    assert!(
+        refreshed > Duration::from_secs(4),
+        "renewed from now, not accumulated ({refreshed:?})"
+    );
+    assert_eq!(
+        cache.ttl_count, 1,
+        "the fast-path counter followed the rewrite"
+    );
+
+    assert_eq!(cache.get("a"), Some(&1), "the value never changed");
+    assert_eq!(
+        cache.stats().hits,
+        1,
+        "the only recorded read is the get above"
+    );
+
+    // A zero TTL means "never expires", exactly as in insert_with.
+    assert!(cache.touch("a", Some(Duration::ZERO)));
+    assert_eq!(cache.ttl("a"), Some(None), "the deadline was dropped");
+    assert_eq!(cache.ttl_count, 0, "…and so was its counter");
+
+    // Nothing to touch → false, and an expired entry is never resurrected.
+    assert!(!cache.touch("missing", Some(Duration::from_secs(5))));
+    cache.insert_with(
+        "dead",
+        2,
+        EntryOptions::new().ttl(Duration::from_millis(10)),
+    );
+    sleep(30);
+    assert!(!cache.touch("dead", Some(Duration::from_secs(5))));
+    assert_eq!(cache.get("dead"), None, "still expired");
+}
+
+#[test]
+fn touch_protects_the_entry_from_the_next_eviction() {
+    let mut cache = Cache::new(2);
+    cache.insert("a", 1); // oldest — the entry SIEVE would take
+    cache.insert("b", 2);
+
+    assert!(cache.touch("a", None), "marks the oldest entry visited");
+    cache.insert("c", 3); // capacity pressure: the sweep has to drop something
+
+    assert_eq!(cache.get("a"), Some(&1), "the touched entry survived");
+    assert_eq!(cache.get("b"), None, "the untouched one went instead");
+    assert_eq!(cache.stats().evictions, 1);
+}

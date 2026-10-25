@@ -28,6 +28,9 @@ const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app
 cache.set('user:42', { name: 'Ada' }, { ttlMs: 30_000, tags: ['user:42'] });
 
 cache.get('user:42');              // { name: 'Ada' } — counted as a hit
+cache.peek('user:42');             // the same value, with no hit recorded
+cache.ttl('user:42');              // ~30000 — ms until it expires
+cache.touch('user:42', { ttlMs: 60_000 }); // renew the deadline, keep the value
 cache.invalidateTags('user:42');   // removes it, synchronously, and syncs IndexedDB
 cache.stats();                     // { hits, misses, evictions, expirations, … }
 ```

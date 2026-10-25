@@ -5,6 +5,7 @@ import type {
   CacheListener,
   CacheStats,
   SetOptions,
+  TouchOptions,
 } from './types.js';
 import { initBlazeWasm, WasmCache } from './wasm.js';
 import type { WasmInitInput } from './wasm.js';
@@ -70,6 +71,9 @@ export interface BlazeCacheOptions {
  * const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app' } });
  * cache.set('user:42', { name: 'Ada' }, { ttlMs: 30_000, tags: ['user:42'] });
  * cache.get('user:42');            // { name: 'Ada' } — counted as a hit
+ * cache.peek('user:42');           // the same value, no hit recorded
+ * cache.ttl('user:42');            // ~30000 — ms until it expires
+ * cache.touch('user:42', { ttlMs: 60_000 }); // renew the deadline, keep the value
  * cache.invalidateTags('user:42'); // removes it and syncs IndexedDB
  * await cache.dispose();
  * ```
@@ -115,6 +119,28 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     return this.#wasm.get(key) as V | undefined;
   }
 
+  /**
+   * The same lookup as {@link BlazeCache.get}, minus every side effect: no hit or miss is
+   * recorded, the entry is not marked used for eviction, and nothing is reclaimed.
+   *
+   * The read for "is this here?" questions — a UI check must not be able to move the hit
+   * rate or decide who gets evicted next.
+   */
+  peek(key: string): V | undefined {
+    return this.#wasm.peek(key) as V | undefined;
+  }
+
+  /**
+   * Milliseconds until `key` expires, or `undefined` when it has no TTL or is missing.
+   *
+   * The two `undefined`s mean different things: an entry with no deadline lives until it is
+   * evicted, a key that is not there at all will never be found again. Purely observational —
+   * statistics, eviction state and storage are all left alone.
+   */
+  ttl(key: string): number | undefined {
+    return this.#wasm.ttl(key);
+  }
+
   /** `true` when `key` is present and not expired. Never changes eviction state. */
   has(key: string): boolean {
     return this.#wasm.has(key);
@@ -150,14 +176,19 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     return this.#wasm.hasTag(key, tag);
   }
 
-  /** Number of stored entries (may include not-yet-pruned expired ones). */
-  get size(): number {
-    return this.#wasm.size;
+  /**
+   * Number of stored entries that are present **and** not expired.
+   *
+   * Expired-but-unpruned slots are skipped, so this always agrees with `keys()` and
+   * `entries()`. (`stats().size` is the raw count and may include them until `prune()`.)
+   */
+  size(): number {
+    return this.#wasm.size();
   }
 
-  /** Maximum number of entries. */
-  get capacity(): number {
-    return this.#wasm.capacity;
+  /** Maximum number of entries — the `capacity` passed to {@link createCache}. */
+  capacity(): number {
+    return this.#wasm.capacity();
   }
 
   /** Cumulative counters plus a computed `hitRate`. */
@@ -176,6 +207,22 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // Untagged writes share `NO_TAGS` (see its doc).
     this.#wasm.set(key, value, options?.ttlMs ?? null, (options?.tags ?? NO_TAGS) as string[]);
     if (this.#hasChangeConsumers) this.#notify({ type: 'set', key });
+  }
+
+  /**
+   * Marks `key` as recently used for eviction and optionally renews its TTL — the stored
+   * value is never changed.
+   *
+   * "Recently used" is SIEVE's visited bit, exactly what {@link BlazeCache.get} grants, so a
+   * touched entry survives the next eviction sweep. Returns `false` when the key is missing
+   * or expired: there is nothing to refresh, and an expired entry is never resurrected.
+   */
+  touch(key: string, options?: TouchOptions): boolean {
+    const touched = this.#wasm.touch(key, options?.ttlMs ?? null);
+    // A renewed deadline is what storage would have to write back, so a touch is reported
+    // like any other write: listeners hear about it and the entry is marked dirty.
+    if (touched && this.#hasChangeConsumers) this.#notify({ type: 'touch', key });
+    return touched;
   }
 
   /** Removes `key`, returning whether it was there. */
@@ -394,6 +441,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (this.#persist && !this.#disposed) {
       switch (change.type) {
         case 'set':
+        case 'touch':
           this.#deleted.delete(change.key);
           this.#dirty.add(change.key);
           break;

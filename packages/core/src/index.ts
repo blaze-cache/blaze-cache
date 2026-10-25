@@ -33,4 +33,5 @@ export type {
   CacheListener,
   CacheStats,
   SetOptions,
+  TouchOptions,
 } from './types.js';

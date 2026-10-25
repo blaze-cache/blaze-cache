@@ -211,6 +211,41 @@ are protected, which makes the cache scan-resistant.
 
 A write never evicts itself: capacity is freed **before** the new entry is published.
 
+`get()` and `touch()` are what mark an entry as used; `peek()` deliberately does not, so
+polling a key can never turn it into an eviction-proof resident.
+
+### Introspection
+
+Five reads answer "what is in there, and for how long?" — none of them counts a hit or
+a miss:
+
+```ts
+const cache = await createCache({ capacity: 1000 });
+
+cache.set('user', data, { ttlMs: 30_000 });
+
+cache.size();        // 1 — non-expired entries only
+cache.capacity();    // 1000
+
+cache.peek('user');  // data (no hit recorded)
+cache.get('user');   // data (hit recorded)
+
+cache.ttl('user');   // e.g. 28400
+cache.touch('user', { ttlMs: 60_000 }); // refresh TTL to 60s
+```
+
+* **`size()`** counts entries that are present *and* unexpired, so it always agrees with
+  `keys()` and `entries()`. `stats().size` is the raw slab count and may still hold slots
+  that expired but have not been pruned — `prune()` is what closes that gap.
+* **`peek()`** is `get()` without the paperwork: no hit or miss, no eviction protection,
+  nothing reclaimed. Use it for "is this here?" checks that must not move the hit rate.
+* **`ttl()`** returns `undefined` for both *never expires* and *not here* — the first lives
+  until it is evicted, the second will never be found again.
+* **`touch()`** marks the entry used for SIEVE (exactly what a read grants, so it survives
+  the next eviction pass) and rewrites the deadline when `ttlMs` is passed. Omit `ttlMs` to
+  leave it alone, pass `0` to drop it, and note that it returns `false` for a missing or
+  already expired key. The stored value is never changed.
+
 ### Stats
 
 ```ts
@@ -218,8 +253,8 @@ cache.stats();
 // { hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }
 ```
 
-`has()` and `entry()` deliberately do *not* touch statistics or eviction state — they
-are the non-observing reads, useful for persistence and for UI checks.
+`has()`, `entry()`, `peek()` and `ttl()` deliberately do *not* touch statistics or eviction
+state — they are the non-observing reads, useful for persistence and for UI checks.
 
 ## Persistence
 

@@ -41,6 +41,26 @@ impl BlazeCache {
         self.inner.get(key).cloned()
     }
 
+    /// Same lookup as [`get`](Self::get) — **without** recording a hit or a miss, and without
+    /// marking the entry visited for SIEVE.
+    ///
+    /// The read for "is this here?" questions: it leaves the hit rate and the eviction order
+    /// exactly as it found them, and it never reclaims an expired entry.
+    #[wasm_bindgen(js_name = peek)]
+    pub fn peek(&self, key: &str) -> Option<JsValue> {
+        self.inner.peek(key).cloned()
+    }
+
+    /// Milliseconds until `key` expires, or `undefined` when it carries no TTL or the key is
+    /// missing/expired. Purely observational: statistics and eviction state are untouched.
+    #[wasm_bindgen(js_name = ttl)]
+    pub fn ttl(&self, key: &str) -> Option<f64> {
+        self.inner
+            .ttl(key)
+            .flatten()
+            .map(|ttl| ttl.as_millis() as f64)
+    }
+
     /// Stores `value` under `key`.
     ///
     /// * `ttlMs` — milliseconds until expiry. `undefined`, `null`, `0` and negatives all mean
@@ -59,6 +79,24 @@ impl BlazeCache {
             }
         }
         self.inner.insert_with(key.to_owned(), value, options);
+    }
+
+    /// Marks `key` as recently used for eviction and optionally renews its TTL — the stored
+    /// value is never changed. Returns `false` when the key is missing or expired.
+    ///
+    /// * `ttlMs` — `undefined`/`null` leaves the current deadline alone; a positive finite
+    ///   number replaces it with "now + ttlMs"; `0`, negatives and `NaN` drop the deadline
+    ///   (never expires), the same reading [`set`](Self::set) gives them.
+    #[wasm_bindgen(js_name = touch)]
+    pub fn touch(&mut self, key: &str, ttl_ms: Option<f64>) -> bool {
+        let ttl = ttl_ms.map(|ms| {
+            if ms.is_finite() && ms > 0.0 {
+                Duration::from_millis(ms as u64)
+            } else {
+                Duration::ZERO
+            }
+        });
+        self.inner.touch(key, ttl)
     }
 
     /// `true` when `key` is present and not expired. Does not affect eviction state.
@@ -164,14 +202,17 @@ impl BlazeCache {
         self.inner.reset_stats();
     }
 
-    /// Current number of stored entries (may include not-yet-pruned expired ones).
-    #[wasm_bindgen(getter)]
+    /// Number of stored entries that are present **and** not expired — expired-but-unpruned
+    /// slots are not counted, so this always matches what `keys()`/`entries()` return.
+    ///
+    /// `O(1)` when no entry carries a TTL, otherwise a single oldest-first walk.
+    #[wasm_bindgen(js_name = size)]
     pub fn size(&self) -> usize {
-        self.inner.len()
+        self.inner.live_len()
     }
 
-    /// Maximum number of entries.
-    #[wasm_bindgen(getter)]
+    /// Maximum number of entries — the `capacity` passed to `createCache`.
+    #[wasm_bindgen(js_name = capacity)]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
     }
