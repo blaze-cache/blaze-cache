@@ -1,6 +1,6 @@
 {
   "name": "@blaze-cache/axios",
-  "version": "0.1.1",
+  "version": "0.2.0-beta",
   "description": "Cache HTTP responses in axios via a WebAssembly cache — TTLs, tags, Cache-Control support and IndexedDB persistence",
   "keywords": [
     "axios",
