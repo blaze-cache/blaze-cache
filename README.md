@@ -418,11 +418,13 @@ crates/
 packages/
   core/                  @blaze-cache/core  (wasm loader, persistence, createCache)
   axios/                 @blaze-cache/axios (HTTP adapter)
+  fetch/                 @blaze-cache/fetch (drop-in fetch() replacement)
   react-query/           @blaze-cache/react-query (v5 mirror + hook)
+  <name>/test/           that package's Node test suite
 examples/
   browser/               Vite + React demo with a mock API and a latency counter
-scripts/
-  smoke.mjs              End-to-end tests against the built artifacts
+.github/
+  workflows/             rust.yml (fmt, clippy, tests) + js.yml (offline on PR, live nightly)
 ```
 
 ## Development
@@ -433,14 +435,34 @@ pnpm build            # wasm + all packages (topological)
 pnpm build:wasm       # wasm-pack only
 pnpm typecheck        # every package, against workspace sources
 pnpm test             # cargo test --workspace
-pnpm test:js          # build, then run the Node smoke suite against dist/
+pnpm test:js          # build the wasm, then run every package's tests against dist/
+pnpm test:live        # the opt-in live suites (fetch + axios) against real public APIs
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
 pnpm dev              # build, then serve the browser example
 pnpm clean            # remove build outputs
 ```
 
-The smoke suite in `scripts/smoke.mjs` runs against the **built** artifacts — the real
-wasm binary plus `packages/*/dist` — so it fails if either side drifts.
+Every package carries its own suite in `packages/<name>/test/`, run with `node --test`
+(`pnpm --filter @blaze-cache/fetch test` for one of them). The suites exercise the
+**built** artifacts — the real wasm binary plus `packages/*/dist` — so they fail if
+either side drifts, and each marker-header assertion is paired with a look *inside*
+the store, so a green run means the payload really landed there.
+
+The `fetch` and `axios` packages additionally ship an opt-in **live** suite that talks to
+real public APIs (`api.github.com` and `raw.githubusercontent.com`, keyless, well under
+GitHub's unauthenticated 60 requests/hour) so that *actual* `Cache-Control` headers are
+exercised rather than a stub's idea of them:
+
+```sh
+pnpm test:live                             # every package's live suite
+pnpm --filter @blaze-cache/fetch test:live # just one of them
+```
+
+Every test in those suites is skipped unless `BLAZE_CACHE_LIVE=1` (each package's
+`test:live` script sets it for you), so `pnpm test:js` always keeps working offline.
+[`.github/workflows/js.yml`](.github/workflows/js.yml) mirrors that split — the offline
+suites gate every push and PR, the live ones run on a nightly cron and on manual
+dispatch, so a third-party outage can never fail an unrelated PR.
 
 ## Contributors
 

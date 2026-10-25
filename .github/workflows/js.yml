@@ -1,0 +1,121 @@
+# CI for the JavaScript side: the four packages under `packages/`.
+#
+# Two jobs, kept apart on purpose:
+#
+#   test  — the offline suites on every push/PR. They run against stub adapters and canned
+#           payloads, so they are fully deterministic: no network, no rate limits.
+#   live  — the opt-in suites against real public APIs, on a nightly cron and manual
+#           dispatch only. GitHub's unauthenticated limit is 60 requests/hour and third
+#           parties can be down, slow, or quietly rewriting their headers — none of which
+#           should ever fail an unrelated PR.
+#
+# Rust formatting/clippy stay in rust.yml; this workflow owns wasm + TS + the JS tests.
+name: JavaScript
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly, 03:17 UTC — deliberately off the hour, when scheduled runs are least loaded.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes older runs pointless — cancel them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: offline suites
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm's version comes from `packageManager` in package.json — nothing to pin twice.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Builds the wasm crate: every package test runs against `packages/core/pkg`.
+      - name: Install Rust (stable, per rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Download the release binary ourselves instead of using jetli/wasm-pack-action@v0.4.0:
+      # that action `rename`s the binary out of /tmp, and on this runner /tmp sits on a
+      # different filesystem than ~/.cargo/bin, so it dies with EXDEV (cross-device link).
+      # Same approach as rust.yml, same pinned version.
+      - name: Install wasm-pack
+        env:
+          WASM_PACK_VERSION: v0.15.0
+        run: |
+          curl -sSfL "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /tmp
+          install -m 755 "/tmp/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" \
+            "$HOME/.cargo/bin/wasm-pack"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/wasm-pack" --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: build wasm
+        run: pnpm build:wasm
+
+      # core 27, axios 14, react-query 9, fetch 26 — plus the live files, skipped here.
+      - name: package tests
+        run: pnpm -r test
+
+      - name: typecheck
+        run: pnpm typecheck
+
+  live:
+    name: live network suites
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust (stable, per rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        env:
+          WASM_PACK_VERSION: v0.15.0
+        run: |
+          curl -sSfL "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /tmp
+          install -m 755 "/tmp/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" \
+            "$HOME/.cargo/bin/wasm-pack"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/wasm-pack" --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm test:live` = build:wasm + every package's live suite (fetch 8, axios 4).
+      # BLAZE_CACHE_LIVE is set by each package's script, so a bare runner has to opt in
+      # exactly like a developer does.
+      - name: live suites (real public APIs)
+        run: pnpm test:live
