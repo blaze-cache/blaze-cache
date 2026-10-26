@@ -17,6 +17,10 @@ use std::time::Duration;
 use blaze_cache_core::{Cache, EntryOptions};
 use wasm_bindgen::prelude::*;
 
+/// Hard ceiling for a JS-supplied capacity: enough for any realistic workload, and small
+/// enough that the eager hash-map reservation in `Cache::new` can never approach wasm memory.
+pub const MAX_CAPACITY: usize = 1_000_000;
+
 /// A JavaScript-visible Blaze Cache.
 #[wasm_bindgen]
 pub struct BlazeCache {
@@ -25,9 +29,31 @@ pub struct BlazeCache {
 
 #[wasm_bindgen]
 impl BlazeCache {
-    /// Creates a cache that holds at most `capacity` entries (clamped to `>= 1`).
+    /// Creates a cache that holds at most `capacity` entries.
+    ///
+    /// `capacity` arrives as a JS `Number`, so it is validated before anything else sees it:
+    ///
+    /// * non-finite (`NaN`, `Infinity`) — meaningless as a size, falls back to the default;
+    /// * below `1` — clamped up to `1`, exactly as the core clamps `0`; note this also
+    ///   covers negatives, which JS→integer conversion would otherwise deliver as ~4.29e9;
+    /// * above [`MAX_CAPACITY`] — clamped down, because `capacity()` reports it back and
+    ///   nobody builds a browser cache meant to hold a billion entries.
+    ///
+    /// The core also caps its own index reservation, so even an unvalidated number could no
+    /// longer abort the instance with a huge up-front allocation.
     #[wasm_bindgen(constructor)]
-    pub fn new(capacity: usize) -> BlazeCache {
+    pub fn new(capacity: f64) -> BlazeCache {
+        let capacity = if !capacity.is_finite() {
+            blaze_cache_core::DEFAULT_CAPACITY
+        } else if capacity < 1.0 {
+            1
+        } else if capacity > MAX_CAPACITY as f64 {
+            MAX_CAPACITY
+        } else {
+            // Both bounds checked against the f64: `as usize` on wasm32 truncates modulo
+            // 2³² rather than saturating, so narrowing first would wrap instead of clamp.
+            capacity as usize
+        };
         BlazeCache {
             inner: Cache::new(capacity),
         }

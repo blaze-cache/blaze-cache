@@ -31,7 +31,7 @@ fn number(stats: &JsValue, key: &str) -> f64 {
 
 #[wasm_bindgen_test]
 fn round_trips_values_and_presence() {
-    let mut cache = BlazeCache::new(8);
+    let mut cache = BlazeCache::new(8.0);
 
     cache.set("str", JsValue::from_str("hello"), None, vec![]);
     cache.set("num", JsValue::from_f64(42.0), None, vec![]);
@@ -63,7 +63,7 @@ fn round_trips_values_and_presence() {
 
 #[wasm_bindgen_test]
 fn stats_cross_the_boundary_as_a_plain_object() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
 
     cache.set("a", JsValue::NULL, None, vec![]);
     let _hit = cache.get("a");
@@ -79,7 +79,7 @@ fn stats_cross_the_boundary_as_a_plain_object() {
 
 #[wasm_bindgen_test]
 fn entry_objects_carry_key_value_ttl_and_tags() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
     cache.set(
         "user:1",
         JsValue::from_str("Ada"),
@@ -115,7 +115,7 @@ fn entry_objects_carry_key_value_ttl_and_tags() {
 
 #[wasm_bindgen_test]
 fn zero_and_negative_ttl_mean_no_expiry() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
     cache.set("zero", JsValue::UNDEFINED, Some(0.0), vec![]);
     cache.set("negative", JsValue::UNDEFINED, Some(-5.0), vec![]);
     cache.set(
@@ -139,7 +139,7 @@ fn zero_and_negative_ttl_mean_no_expiry() {
 
 #[wasm_bindgen_test]
 fn tag_invalidation_returns_removed_keys() {
-    let mut cache = BlazeCache::new(8);
+    let mut cache = BlazeCache::new(8.0);
     cache.set("u1", JsValue::NULL, None, vec!["user:1".to_string()]);
     cache.set(
         "u2",
@@ -162,7 +162,7 @@ fn tag_invalidation_returns_removed_keys() {
 
 #[wasm_bindgen_test]
 fn eviction_protects_entries_read_since_the_last_pass() {
-    let mut cache = BlazeCache::new(2);
+    let mut cache = BlazeCache::new(2.0);
     cache.set("a", JsValue::NULL, None, vec![]);
     cache.set("b", JsValue::NULL, None, vec![]);
     let _protected = cache.get("a"); // mark "a" visited for SIEVE
@@ -179,7 +179,7 @@ fn eviction_protects_entries_read_since_the_last_pass() {
 
 #[wasm_bindgen_test]
 fn clear_and_reset_stats_behave_independently() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
     cache.set("a", JsValue::NULL, None, vec![]);
     let _hit = cache.get("a");
     let _miss = cache.get("missing");
@@ -205,7 +205,7 @@ fn wait_ms(ms: f64) {
 
 #[wasm_bindgen_test]
 fn peek_and_ttl_observe_without_counting_anything() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
     cache.set("a", JsValue::from_str("one"), Some(30_000.0), vec![]);
     cache.set("b", JsValue::from_str("two"), None, vec![]);
 
@@ -240,7 +240,7 @@ fn peek_and_ttl_observe_without_counting_anything() {
 
 #[wasm_bindgen_test]
 fn touch_rewrites_the_ttl_and_never_the_value() {
-    let mut cache = BlazeCache::new(4);
+    let mut cache = BlazeCache::new(4.0);
     cache.set("a", JsValue::from_str("one"), Some(1_000.0), vec![]);
 
     let before = cache.ttl("a").expect("deadline before the touch");
@@ -278,7 +278,7 @@ fn touch_rewrites_the_ttl_and_never_the_value() {
 
 #[wasm_bindgen_test]
 fn size_counts_only_the_entries_that_are_still_alive() {
-    let mut cache = BlazeCache::new(8);
+    let mut cache = BlazeCache::new(8.0);
     cache.set("alive", JsValue::NULL, None, vec![]);
     cache.set("dying", JsValue::NULL, Some(30.0), vec![]);
     assert_eq!(cache.size(), 2, "both are live to begin with");
@@ -289,4 +289,41 @@ fn size_counts_only_the_entries_that_are_still_alive() {
     assert_eq!(cache.ttl("dying"), None, "…and reads as absent");
     assert!(cache.has("alive"));
     assert_eq!(cache.capacity(), 8, "capacity is unaffected by expiry");
+}
+
+/// JS→integer conversion wraps, so `new BlazeCache(-1)` used to arrive as ~4.29e9 and the
+/// core would reserve a hash map for it — an allocation that aborts the whole wasm instance.
+/// The constructor now reads a plain `f64` and normalises before the core sees it.
+#[wasm_bindgen_test]
+fn a_hostile_capacity_is_normalised_before_it_reaches_the_core() {
+    assert_eq!(
+        BlazeCache::new(-1.0).capacity(),
+        1,
+        "negatives clamp to the floor"
+    );
+    assert_eq!(BlazeCache::new(-1e9).capacity(), 1);
+    assert_eq!(BlazeCache::new(0.0).capacity(), 1, "zero still means one");
+    assert_eq!(
+        BlazeCache::new(f64::NAN).capacity(),
+        blaze_cache_core::DEFAULT_CAPACITY
+    );
+    assert_eq!(
+        BlazeCache::new(f64::INFINITY).capacity(),
+        blaze_cache_core::DEFAULT_CAPACITY
+    );
+    assert_eq!(
+        BlazeCache::new(1e12).capacity(),
+        crate::MAX_CAPACITY,
+        "absurd sizes clamp to something a browser can hold"
+    );
+    assert_eq!(
+        BlazeCache::new(8.0).capacity(),
+        8,
+        "an honest number passes through"
+    );
+
+    // The instance survived construction, which is the point: it still works.
+    let mut cache = BlazeCache::new(-1.0);
+    cache.set("k", JsValue::from_f64(1.0), None, vec![]);
+    assert_eq!(cache.get("k").and_then(|v| v.as_f64()), Some(1.0));
 }
