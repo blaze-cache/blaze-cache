@@ -21,7 +21,17 @@ export function stableStringify(value: unknown): string {
     const source = raw as Record<string, unknown>;
     const sorted: Record<string, unknown> = {};
     for (const key of Object.keys(source).sort()) {
-      sorted[key] = source[key];
+      // Plain `sorted[key] = …` would *not* create an own property for a literal `__proto__`
+      // key: the inherited setter would swap `sorted`'s prototype instead, dropping the key
+      // from the output and mutating the fresh object we just allocated. `defineProperty`
+      // always defines an own data property, so hostile keys serialise normally — and only
+      // ever inside this throwaway `sorted`, never on `Object.prototype`.
+      Object.defineProperty(sorted, key, {
+        value: source[key],
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return sorted;
   });

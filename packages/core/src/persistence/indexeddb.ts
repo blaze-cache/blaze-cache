@@ -54,6 +54,15 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
 
       request.onsuccess = () => {
         const db = request.result;
+        // Another tab can bump the database version at any moment; without a handler our
+        // connection would block their `versionchange` event forever. Closing here keeps
+        // the world coherent: `opening` only ever promises a *usable* connection, so the
+        // next `open()` re-establishes one instead of handing out this closed zombie.
+        const settled = opening;
+        db.onversionchange = () => {
+          db.close();
+          if (opening === settled) opening = null;
+        };
         if (db.objectStoreNames.contains(store)) {
           resolve(db);
           return;
@@ -151,6 +160,16 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       await runTransaction(db, 'readwrite', (objectStore) => {
         for (const key of keys) objectStore.delete(key);
       });
+    },
+
+    async keys(): Promise<string[]> {
+      const db = await open();
+      const ids = await indexKeys(db);
+      const prefix = `${namespace}\u0000`;
+      // The index hands back composite ids; strip the prefix to recover the cache keys, and
+      // ignore anything that somehow lacks it rather than feeding nonsense to reconciliation.
+      return ids.filter((id): id is string => typeof id === 'string' && id.startsWith(prefix))
+        .map((id) => id.slice(prefix.length));
     },
 
     async close(): Promise<void> {

@@ -29,6 +29,18 @@ export interface CachePersistence {
   remove(keys: string[]): Promise<void>;
   /** Deletes every record belonging to this cache (other namespaces are left alone). */
   clear(): Promise<void>;
+  /**
+   * Every record key currently stored for this cache's namespace.
+   *
+   * Optional, and only needed for reconciliation: the wasm core drops entries on its own —
+   * a capacity eviction or a lapsed TTL never produces a change event — so those rows would
+   * otherwise sit in storage until quota runs out. A flush compares this list against the
+   * live keys and calls {@link CachePersistence.remove} for the difference.
+   *
+   * Adapters that do not implement it keep working exactly as before; they simply skip the
+   * diff, and any explicit `delete`/`invalidateTags`/`prune` still reaches `remove`.
+   */
+  keys?(): Promise<string[]>;
   /** Releases any underlying handle. */
   close?(): void | Promise<void>;
 }

@@ -78,6 +78,32 @@ export interface BlazeCacheOptions {
  * await cache.dispose();
  * ```
  *
+ * ### Value ownership
+ *
+ * Values are held — and handed back — **by reference**. The object you pass to
+ * {@link BlazeCache.set} is the very object {@link BlazeCache.get}, {@link BlazeCache.peek},
+ * {@link BlazeCache.entry} and {@link BlazeCache.entries} return later: mutating either one
+ * silently rewrites the cache — and, after the next flush, the persisted row — with no error
+ * and no warning. Treat values living in the cache as read-only: clone on the way *out*
+ * (`structuredClone(cache.get(key))`) before editing, or clone on the way *in* if you want
+ * to keep mutating your own copy. The sharing is deliberate, not an oversight — the Rust
+ * core promises allocation-free `get`/`set` precisely *because* values are never cloned or
+ * serialised on the hot path, and cloning on read would only close one half of the alias
+ * anyway (your original reference from `set` survives either way). The contract is
+ * ownership transfer, not deep-copy semantics.
+ *
+ * ### Multiple tabs
+ *
+ * Tabs share one IndexedDB namespace but nothing else: each one holds its own WebAssembly
+ * instance, hydrated once at startup, and each flushes the keys it wrote. There is no
+ * coordination between them — writes are last-writer-wins per key. For ordinary use that is
+ * what you want (the tab in the foreground refetches on focus and rewrites its own fresh
+ * copy), but a tab that keeps working while hidden — a timer, a background sync — can flush
+ * a value older than the one the focused tab just wrote, and after a reload that older
+ * value is what hydration paints until revalidation corrects it. If that matters, use a
+ * short `ttlMs` on records written from background tabs, or filter on a timestamp you store
+ * inside the value itself.
+ *
  * All reads and writes are synchronous — the wasm module is instantiated during `create`, so
  * the hot path never touches a `Promise`.
  */
@@ -114,7 +140,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   // ------------------------------------------------------------------ reads
 
-  /** Value stored under `key`, or `undefined` when missing or expired. Counts a hit/miss. */
+  /**
+   * Value stored under `key`, or `undefined` when missing or expired. Counts a hit/miss.
+   *
+   * The value comes back as the cache's **live reference** — see *Value ownership* on the
+   * class before mutating it.
+   */
   get(key: string): V | undefined {
     return this.#wasm.get(key) as V | undefined;
   }
@@ -124,7 +155,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * recorded, the entry is not marked used for eviction, and nothing is reclaimed.
    *
    * The read for "is this here?" questions — a UI check must not be able to move the hit
-   * rate or decide who gets evicted next.
+   * rate or decide who gets evicted next. The value is still the cache's **live reference**,
+   * exactly like {@link BlazeCache.get}.
    */
   peek(key: string): V | undefined {
     return this.#wasm.peek(key) as V | undefined;
@@ -146,12 +178,18 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     return this.#wasm.has(key);
   }
 
-  /** Live entry — value, remaining TTL and tags — without touching statistics. */
+  /**
+   * Live entry — value, remaining TTL and tags — without touching statistics. The `value`
+   * field is the cache's live reference — see *Value ownership* on the class.
+   */
   entry(key: string): CacheEntry<V> | undefined {
     return this.#wasm.entry(key) as CacheEntry<V> | undefined;
   }
 
-  /** Snapshot of every live entry, oldest first. */
+  /**
+   * Snapshot of every live entry, oldest first. The `value` fields are the cache's live
+   * references — see *Value ownership* on the class.
+   */
   entries(): CacheEntry<V>[] {
     return this.#wasm.entries() as CacheEntry<V>[];
   }
@@ -200,7 +238,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   // ----------------------------------------------------------------- writes
 
-  /** Stores (or replaces) `key`. Replacing refreshes the TTL and replaces the tags. */
+  /**
+   * Stores (or replaces) `key`. Replacing refreshes the TTL and replaces the tags.
+   *
+   * The value is stored **by reference** — the cache takes ownership for the lifetime of the
+   * entry, so mutating it afterwards rewrites the cache (see *Value ownership* on the class).
+   */
   set(key: string, value: V, options?: SetOptions): void {
     // No defensive copy of `tags`: the binding reads the array synchronously while building
     // the wasm call and never retains it, so the `readonly`→`string[]` cast below is safe.
@@ -268,7 +311,9 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * Subscribes to mutations. Returns the unsubscribe function.
    *
    * Persistence uses this internally, so listeners fire for every change regardless of
-   * whether storage is enabled.
+   * whether storage is enabled. A listener that throws is isolated: the failure is logged
+   * with `console.error`, the mutation it was told about stands, and the remaining listeners
+   * are still notified.
    */
   on(listener: CacheListener): () => void {
     this.#listeners.add(listener);
@@ -282,6 +327,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    *
    * Resolves once the underlying transaction commits. Concurrent calls are serialised, so
    * this is safe to call from a `beforeunload` handler while a debounced flush is pending.
+   *
+   * When the write itself fails — quota, a blocked or transient IndexedDB error — the pass
+   * rejects **and hands every record it had claimed back onto the queue**, so the next flush
+   * (a later mutation's timer, an explicit call, `pagehide`, `dispose`) retries them instead
+   * of losing them.
    */
   flush(): Promise<void> {
     if (this.#disposed) return Promise.resolve();
@@ -301,21 +351,32 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * Flushes, unbinds page-lifecycle listeners and frees the wasm memory.
    *
    * The cache is unusable afterwards. A failed flush still rejects — the caller may retry or
-   * report it.
+   * report it — but teardown happens in a `finally`, so a storage outage can never leak the
+   * wasm instance, the timers or the `pagehide`/`visibilitychange` listeners behind a
+   * rejected promise.
    */
   async dispose(): Promise<void> {
     if (this.#disposed) return;
-    await this.flush();
-    this.#disposed = true;
-    if (this.#timer !== null) {
-      clearTimeout(this.#timer);
-      this.#timer = null;
+    try {
+      await this.flush();
+    } finally {
+      this.#disposed = true;
+      if (this.#timer !== null) {
+        clearTimeout(this.#timer);
+        this.#timer = null;
+      }
+      for (const unbind of this.#unbind.splice(0)) unbind();
+      this.#listeners.clear();
+      try {
+        await this.#persist?.close?.();
+      } catch (error) {
+        // Closing is best-effort (the IndexedDB adapter says as much): a failing adapter
+        // must neither break disposal nor mask the flush error this `finally` rethrows.
+        console.error('[blaze-cache] closing the persistence adapter failed.', error);
+      }
+      this.#persist = null;
+      this.#wasm.free();
     }
-    for (const unbind of this.#unbind.splice(0)) unbind();
-    this.#listeners.clear();
-    await this.#persist?.close?.();
-    this.#persist = null;
-    this.#wasm.free();
   }
 
   // ----------------------------------------------------------- persistence
@@ -350,15 +411,58 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     this.#bindPageLifecycle();
   }
 
-  /** Fills the cache from storage, dropping records whose TTL elapsed while we were away. */
+  /**
+   * Fills the cache from storage, dropping records whose TTL elapsed while we were away —
+   * and records no well-formed write could ever have produced.
+   *
+   * `load()` hands back whatever sits on disk: an older package version, another tab or a
+   * flaky adapter may have left a row that no longer matches {@link PersistedRecord} — a
+   * missing key, `tags` that are not an array, a deadline that is not a number. One such row
+   * must cost exactly that row: every record is shape-checked (and its wasm `set` guarded)
+   * individually, so the remaining records still hydrate. The complaint is a single
+   * `console.warn` per run, not one per bad row.
+   */
   async #hydrate(adapter: CachePersistence): Promise<void> {
     const records = await adapter.load();
     const now = Date.now();
+    let reported = false;
+    const skip = (reason: string, record: unknown, error?: unknown): void => {
+      if (reported) return;
+      reported = true;
+      console.warn(
+        `[blaze-cache] skipping malformed persisted record — ${reason}.`,
+        record,
+        ...(error === undefined ? [] : [error]),
+      );
+    };
+
     for (const record of records) {
-      const remaining = record.ttlMs === null ? null : record.ttlMs - (now - record.storedAt);
-      if (remaining !== null && remaining <= 0) continue;
-      // Direct wasm call: hydration is not a user write, so it emits no change event.
-      this.#wasm.set(record.key, record.value, remaining, record.tags);
+      let reason: string | null = null;
+      if (typeof record?.key !== 'string') {
+        reason = 'key is missing or not a string';
+      } else if (!Array.isArray(record.tags) || record.tags.some((tag) => typeof tag !== 'string')) {
+        reason = 'tags are not an array of strings';
+      } else if (
+        record.ttlMs !== null &&
+        (!Number.isFinite(record.ttlMs) || !Number.isFinite(record.storedAt))
+      ) {
+        // With a TTL present, both halves of the deadline must be real numbers — anything
+        // else yields a `NaN` that would masquerade as "never expires".
+        reason = 'ttl or storedAt is not a finite number';
+      }
+      if (reason !== null) {
+        skip(reason, record);
+        continue;
+      }
+
+      try {
+        const remaining = record.ttlMs === null ? null : record.ttlMs - (now - record.storedAt);
+        if (remaining !== null && remaining <= 0) continue;
+        // Direct wasm call: hydration is not a user write, so it emits no change event.
+        this.#wasm.set(record.key, record.value, remaining, record.tags);
+      } catch (error) {
+        skip('the wasm core refused the write', record, error);
+      }
     }
   }
 
@@ -395,7 +499,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (!persist || this.#disposed) return;
 
     // Take ownership of the pending work up front, so a `set` racing with the awaits below
-    // lands in the *next* pass instead of being written twice.
+    // lands in the *next* pass instead of being written twice. The claimed records stay in
+    // these locals for the whole pass: if the adapter rejects — quota, a transient
+    // IndexedDB failure — the catch below hands every one of them back to the queues, so a
+    // failed flush delays work rather than destroying it. Single-flight still holds: this
+    // run is chained on `#chain`, and the next `flush()` chains onto *our* settled promise,
+    // requeued work included.
     const clearAll = this.#clearAll;
     const deleted = [...this.#deleted];
     const dirty = [...this.#dirty].filter((key) => !this.#deleted.has(key));
@@ -403,25 +512,64 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     this.#dirty.clear();
     this.#deleted.clear();
 
-    if (clearAll) await persist.clear();
+    let toRemove = deleted;
+    try {
+      if (clearAll) await persist.clear();
 
-    if (dirty.length > 0) {
-      const records: PersistedRecord[] = [];
-      for (const key of dirty.slice(-this.#maxRecords)) {
-        const entry = this.#wasm.entry(key);
-        if (!entry) continue;
-        records.push({
-          key,
-          value: entry.value,
-          tags: entry.tags,
-          ttlMs: entry.ttlMs,
-          storedAt: Date.now(),
-        });
+      if (dirty.length > 0) {
+        const records: PersistedRecord[] = [];
+        for (const key of dirty.slice(-this.#maxRecords)) {
+          const entry = this.#wasm.entry(key);
+          if (!entry) continue;
+          records.push({
+            key,
+            value: entry.value,
+            tags: entry.tags,
+            ttlMs: entry.ttlMs,
+            storedAt: Date.now(),
+          });
+        }
+        if (records.length > 0) await persist.save(records);
       }
-      if (records.length > 0) await persist.save(records);
-    }
 
-    if (deleted.length > 0) await persist.remove(deleted);
+      // Reconcile the rows the wasm core dropped on its own. A capacity eviction inside
+      // `set` and a lapsed TTL never emit a change event — nothing queued a delete for them
+      // — so without this diff their rows would outlive every flush, be re-hydrated at the
+      // next startup, and eat quota until a `QuotaExceededError` kills persistence outright.
+      // Any key storage still holds that the wasm core no longer lists is stale. Skipped
+      // after `clear()` (storage was just emptied) and for adapters without `keys()`.
+      if (!clearAll && typeof persist.keys === 'function') {
+        const persisted = await persist.keys();
+        // Read the live set *after* the await, so a `set` landing mid-pass counts as live
+        // and keeps its row — and nothing awaits before `remove`, so the diff cannot go
+        // stale under our feet.
+        const live = new Set(this.#wasm.keys());
+        const stale = persisted.filter((key) => !live.has(key));
+        if (stale.length > 0) toRemove = [...new Set([...deleted, ...stale])];
+      }
+
+      // One last synchronous guard: a key re-`set` while the pass was awaiting belongs to
+      // the *next* pass's `save`, so removing its row here would only open a window where
+      // memory and storage disagree.
+      const targets = toRemove.filter((key) => !this.#dirty.has(key));
+      if (targets.length > 0) await persist.remove(targets);
+    } catch (error) {
+      // Hand back exactly what this pass claimed. Concurrent work that landed during the
+      // awaits is kept as-is, and the two queues stay disjoint — a key the runner may have
+      // touched in the meantime belongs to whoever claimed it last.
+      if (clearAll) this.#clearAll = true;
+      for (const key of dirty) {
+        // Deleted while we were awaiting? Its delete bookkeeping is already queued — don't
+        // resurrect it on the dirty side.
+        if (!this.#deleted.has(key)) this.#dirty.add(key);
+      }
+      for (const key of toRemove) {
+        // Re-`set` while we were awaiting? Then the next pass must save it, not delete the
+        // row that save would write.
+        if (!this.#dirty.has(key)) this.#deleted.add(key);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -464,7 +612,15 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       }
       this.#scheduleFlush();
     }
-    for (const listener of this.#listeners) listener(change);
+    for (const listener of this.#listeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        // The mutation already happened and the bookkeeping above already ran — a bad
+        // subscriber must not abort its siblings or surface out of a successful `set`.
+        console.error('[blaze-cache] change listener failed — the remaining listeners still run.', error);
+      }
+    }
   }
 }
 

@@ -30,6 +30,26 @@ const wasmBytes = await readFile(new URL('../pkg/blaze_cache_wasm_bg.wasm', impo
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
 const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
 
+/**
+ * An in-memory `CachePersistence` exposing `rows` (and the optional `keys()` method) so
+ * tests can see exactly what reaches storage — and stub individual methods to fail.
+ */
+const memoryAdapter = () => {
+  const rows = new Map();
+  return {
+    rows,
+    load: async () => [...rows.values()],
+    save: async (records) => {
+      for (const record of records) rows.set(record.key, record);
+    },
+    remove: async (keys) => {
+      for (const key of keys) rows.delete(key);
+    },
+    clear: async () => rows.clear(),
+    keys: async () => [...rows.keys()],
+  };
+};
+
 describe('module surface', () => {
   it('exports the documented factory, constants and wasm loader', () => {
     assert.equal(typeof createCache, 'function');
@@ -209,6 +229,27 @@ describe('eviction', () => {
     assert.equal(cache.size(), 1);
     assert.equal(cache.has('only'), false);
   });
+
+  // A JS Number reaches wasm through integer truncation, so `-1` used to arrive as
+  // ~4.29e9 and the core would reserve a hash map sized for it — aborting the instance.
+  it('normalises a hostile capacity instead of aborting the instance', async () => {
+    for (const capacity of [-1, -1e9, 0.5]) {
+      const cache = await makeCache({ capacity });
+      assert.equal(cache.capacity(), 1, `${capacity} clamps to the floor`);
+    }
+    for (const capacity of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const cache = await makeCache({ capacity });
+      assert.equal(cache.capacity(), 1024, `${capacity} falls back to the default`);
+    }
+
+    const huge = await makeCache({ capacity: 1e12 });
+    assert.equal(huge.capacity(), 1_000_000, 'absurd sizes clamp to a holdable ceiling');
+    huge.set('k', 1);
+    assert.equal(huge.get('k'), 1, 'and the cache still works');
+
+    const honest = await makeCache({ capacity: 8 });
+    assert.equal(honest.capacity(), 8, 'an honest number passes straight through');
+  });
 });
 
 describe('introspection', () => {
@@ -387,6 +428,32 @@ describe('change listeners', () => {
       ['set:k', 'touch:k'],
     );
   });
+
+  it('isolates a throwing listener so the mutation and its siblings still land', async () => {
+    const cache = await makeCache();
+    const seen = [];
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args);
+    try {
+      cache.on(() => {
+        throw new Error('boom');
+      });
+      cache.on((change) => seen.push(`${change.type}:${change.key}`));
+
+      cache.set('k', 1); // must not throw, despite the first listener doing so
+      cache.delete('k');
+    } finally {
+      console.error = originalError;
+    }
+
+    assert.equal(cache.has('k'), false, 'the mutation itself completed');
+    assert.deepEqual(seen, ['set:k', 'delete:k'], 'the later listener heard every change');
+    assert.equal(errors.length, 2, 'each failure was logged instead of escaping');
+    assert.match(errors[0][0], /^\[blaze-cache\]/, 'with the library prefix');
+
+    await cache.dispose();
+  });
 });
 
 describe('lifecycle', () => {
@@ -397,6 +464,28 @@ describe('lifecycle', () => {
     assert.equal(cache.get('k'), 1);
     await cache.dispose();
     await cache.dispose(); // idempotent
+  });
+
+  it('still tears down when the final flush fails, then rejects with that failure', async () => {
+    let closed = false;
+    const adapter = {
+      load: async () => [],
+      save: async () => {
+        throw new Error('storage is down');
+      },
+      remove: async () => {},
+      clear: async () => {},
+      close: async () => {
+        closed = true;
+      },
+    };
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    cache.set('k', 1);
+
+    await assert.rejects(() => cache.dispose(), /storage is down/, 'the caller still hears it');
+    assert.equal(closed, true, 'the teardown ran in the `finally`, despite the rejected flush');
+    await cache.dispose(); // …so the second call is a no-op
+    await cache.flush(); // …and a disposed cache is inert
   });
 });
 
@@ -443,6 +532,133 @@ describe('persistence adapter', () => {
 
     await cache.dispose();
   });
+
+  it('re-queues the dirty keys when save() fails, and a later flush retries them', async () => {
+    const adapter = memoryAdapter();
+    const save = adapter.save;
+    let failNextSave = true;
+    adapter.save = async (records) => {
+      if (failNextSave) {
+        failNextSave = false;
+        throw new Error('simulated QuotaExceededError');
+      }
+      return save(records);
+    };
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+    cache.set('k', 1);
+    await assert.rejects(() => cache.flush(), /QuotaExceededError/);
+    assert.equal(adapter.rows.size, 0, 'the failed pass wrote nothing');
+
+    await cache.flush();
+    assert.equal(adapter.rows.get('k')?.value, 1, 'the re-queued key landed on the retry');
+
+    await cache.dispose();
+  });
+
+  it('re-queues deletes when remove() fails, and a later flush finishes the job', async () => {
+    const adapter = memoryAdapter();
+    let failNextRemove = true;
+    adapter.remove = async (keys) => {
+      if (failNextRemove) {
+        failNextRemove = false;
+        throw new Error('simulated IDB failure');
+      }
+      for (const key of keys) adapter.rows.delete(key);
+    };
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+    cache.set('doomed', 1);
+    await cache.flush();
+    assert.equal(adapter.rows.has('doomed'), true, 'it starts out persisted');
+
+    cache.delete('doomed');
+    await assert.rejects(() => cache.flush(), /IDB failure/);
+    assert.equal(adapter.rows.has('doomed'), true, 'the failed remove keeps the row — nothing is lost');
+
+    await cache.flush();
+    assert.equal(adapter.rows.has('doomed'), false, 'the re-queued delete landed on the retry');
+
+    await cache.dispose();
+  });
+
+  it('reconciles persisted rows away when the wasm core evicts under capacity pressure', async () => {
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter }, capacity: 2 });
+
+    cache.set('a', 1);
+    await cache.flush();
+    assert.equal(adapter.rows.has('a'), true, 'the entry starts out persisted');
+
+    cache.set('b', 2);
+    cache.set('c', 3); // capacity pressure — the eviction emits no change event at all
+    assert.equal(cache.has('a'), false, 'the wasm core dropped it on its own');
+    assert.equal(adapter.rows.has('a'), true, 'and storage still holds the row');
+
+    await cache.flush();
+    assert.deepEqual([...adapter.rows.keys()].sort(), ['b', 'c'], 'the stale row is reconciled away');
+
+    await cache.dispose();
+  });
+
+  it('reconciles persisted rows away when their TTL elapses', async () => {
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+    cache.set('gone', 1, { ttlMs: 100 });
+    cache.set('stays', 2);
+    await cache.flush();
+    assert.equal(adapter.rows.has('gone'), true, 'the expiring entry starts out persisted');
+
+    await delay(200);
+    assert.equal(cache.has('gone'), false, 'the deadline elapsed without any event');
+    assert.equal(adapter.rows.has('gone'), true, 'so storage still holds the row');
+
+    await cache.flush();
+    assert.equal(adapter.rows.has('gone'), false, 'the expired row is reconciled away');
+    assert.equal(adapter.rows.has('stays'), true, 'live rows are untouched');
+
+    await cache.dispose();
+  });
+
+  it('skips malformed persisted rows individually and warns exactly once', async () => {
+    const now = Date.now();
+    const adapter = {
+      load: async () => [
+        { value: 'no key at all', tags: [], ttlMs: null, storedAt: now },
+        { key: 42, value: 'key is not a string', tags: [], ttlMs: null, storedAt: now },
+        { key: 'bad-tags', value: 1, tags: 'nope', ttlMs: null, storedAt: now },
+        { key: 'bad-ttl', value: 1, tags: [], ttlMs: 'soon', storedAt: now },
+        { key: 'bad-ttl-2', value: 1, tags: [], ttlMs: Infinity, storedAt: now },
+        { key: 'ok', value: { fine: true }, tags: ['t'], ttlMs: null, storedAt: now },
+        { key: 'ok-ttl', value: 'still coming', tags: [], ttlMs: 60_000, storedAt: now },
+      ],
+      save: async () => {},
+      remove: async () => {},
+      clear: async () => {},
+    };
+
+    const warns = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warns.push(args);
+    let cache;
+    try {
+      cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(cache.get('ok'), { fine: true }, 'the valid rows still hydrated');
+    assert.equal(cache.has('ok-ttl'), true, 'including one that comes after the bad rows');
+    assert.ok(cache.ttl('ok-ttl') > 59_000, 'with its deadline intact');
+    assert.equal(cache.has('bad-tags'), false);
+    assert.equal(cache.has('bad-ttl'), false);
+    assert.equal(cache.size(), 2, 'every malformed row was skipped, none aborted the pass');
+    assert.equal(warns.length, 1, 'one complaint for the whole run, not one per row');
+    assert.match(String(warns[0][0]), /^\[blaze-cache\] skipping malformed persisted record/);
+
+    await cache.dispose();
+  });
 });
 
 describe('string helpers', () => {
@@ -460,5 +676,25 @@ describe('string helpers', () => {
     cyclic.self = cyclic;
     assert.equal(safeStableStringify(cyclic), undefined, 'cycles give up instead of throwing');
     assert.equal(safeStableStringify({ a: 1 }), stableStringify({ a: 1 }), 'plain input is identical');
+  });
+
+  it('keeps an own __proto__ key instead of dropping it through the inherited setter', () => {
+    // `JSON.parse` defines `__proto__` as a plain own data property — the only reliable way
+    // to build the hostile shape a cache key or query object could carry in from outside.
+    const hostile = JSON.parse('{"__proto__":{"polluted":true}}');
+    assert.ok(Object.hasOwn(hostile, '__proto__'), 'the fixture really owns the key');
+
+    assert.equal(
+      safeStableStringify(hostile),
+      '{"__proto__":{"polluted":true}}',
+      'the key survives serialisation verbatim',
+    );
+    assert.equal(
+      stableStringify(hostile),
+      '{"__proto__":{"polluted":true}}',
+      '…through the non-safe variant too, which it delegates to',
+    );
+    assert.equal({}.polluted, undefined, 'no prototype anywhere was polluted');
+    assert.equal(Object.getPrototypeOf(hostile), Object.prototype, 'the input is untouched');
   });
 });
