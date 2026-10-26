@@ -706,3 +706,36 @@ fn an_overflowing_ttl_never_panics_and_means_no_deadline() {
             .is_some_and(|d| d > Duration::ZERO)
     );
 }
+
+/// `has_tag` and `tags_of` answered for expired entries while `get`, `meta`, `ttl`,
+/// `entry` and `keys_with_tag` all reported them as absent — so a gate written as
+/// `if cache.has_tag(k, "vip") { cache.get(k) }` could take a branch no read could back up.
+#[test]
+fn tag_queries_agree_with_get_about_expired_entries() {
+    let mut cache = Cache::new(4);
+    cache.insert_with(
+        "u1",
+        1,
+        EntryOptions::new()
+            .ttl(Duration::from_millis(10))
+            .tag("vip"),
+    );
+    cache.insert_with("u2", 2, EntryOptions::new().tag("vip"));
+    sleep(30);
+
+    // Reads that consult the clock all agree the entry is gone…
+    assert_eq!(cache.get("u1"), None);
+    assert_eq!(cache.meta("u1"), None);
+    assert!(!cache.contains_key("u1"));
+    assert_eq!(tagged_keys(&cache, "vip"), vec!["u2"]);
+    // …so the two tag queries must not disagree.
+    assert_eq!(cache.tags_of("u1"), None, "tags_of leaked an expired entry");
+    assert!(
+        !cache.has_tag("u1", "vip"),
+        "has_tag leaked an expired entry"
+    );
+
+    // The live entry is unaffected.
+    assert_eq!(cache.tags_of("u2"), Some(vec!["vip".to_owned()]));
+    assert!(cache.has_tag("u2", "vip"));
+}

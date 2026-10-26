@@ -387,19 +387,28 @@ where
     }
 
     /// Tags currently attached to `key`.
+    ///
+    /// Like [`meta`](Self::meta), an expired entry answers `None`: every read in this API
+    /// agrees on what "present" means, so code branching on tags can never disagree with
+    /// [`get`](Self::get) about the same key.
     pub fn tags_of<Q>(&self, key: &Q) -> Option<Vec<String>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
-        Some(
-            self.tags
-                .names(&self.nodes[idx].as_ref().expect("live slot").tags),
-        )
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count > 0 && node.is_expired(Instant::now()) {
+            return None;
+        }
+        Some(self.tags.names(&node.tags))
     }
 
-    /// `true` when `key` is present and carries `tag`.
+    /// `true` when `key` is present, not expired and carries `tag`.
+    ///
+    /// Expiry is honoured exactly as in [`get`](Self::get): a key whose TTL elapsed is not
+    /// "carrying" anything, so a `has_tag` gate can never take a branch that `get` would
+    /// then refuse to back up.
     #[must_use]
     pub fn has_tag<Q>(&self, key: &Q, tag: &str) -> bool
     where
@@ -409,11 +418,17 @@ where
         let Some(id) = self.tags.resolve(tag) else {
             return false;
         };
-        self.index.get(key).is_some_and(|&idx| {
-            self.nodes[idx]
-                .as_ref()
-                .is_some_and(|n| n.tags.contains(&id))
-        })
+        let Some(&idx) = self.index.get(key) else {
+            return false;
+        };
+        let Some(node) = self.nodes[idx].as_ref() else {
+            return false;
+        };
+        // `ttl_count == 0` means no deadline exists anywhere: skip the clock (see `get`).
+        if self.ttl_count > 0 && node.is_expired(Instant::now()) {
+            return false;
+        }
+        node.tags.contains(&id)
     }
 
     // --------------------------------------------------------------- writes
