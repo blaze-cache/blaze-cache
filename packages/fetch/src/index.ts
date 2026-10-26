@@ -22,7 +22,7 @@
 
 export { createBlazeFetch } from './client.js';
 
-export { parseCacheControl, parseAgeMs } from './cache-control.js';
+export { parseCacheControl, parseAgeMs, varyIsStorable } from './cache-control.js';
 export type { CacheControl } from './cache-control.js';
 
 export { defaultCacheKey, fnv1a } from './key.js';

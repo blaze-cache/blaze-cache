@@ -56,8 +56,41 @@ const realNetwork = (cache, options = {}) => {
     requests += 1;
     return globalThis.fetch(input, init);
   };
+  // Deliberately waits one macrotask before resolving: `store` is fire-and-forget (the
+  // body it buffers comes from a `clone()`, so it costs the caller nothing), and these
+  // tests inspect `cache.size()`/`onlyRecord` immediately after the first response. Without
+  // the yield they would race a write that is still in flight and read an empty cache.
+  // `fetch.test.mjs` does the same thing in `createTestFetch`.
+  const blaze = createBlazeFetch(cache, {
+    fetch: counted,
+    // GitHub answers `Vary: Accept,Accept-Encoding, X-Requested-With` and jsonplaceholder
+    // answers `Vary: Origin, Accept-Encoding`. A `Vary` naming a header we do not key on
+    // means the response is storable only once we say we key on it — left at the
+    // conservative default nothing would ever be cached, and every HIT assertion below
+    // would fail (correctly, but for the wrong reason). All of these are constant for the
+    // requests this file makes, so keying on them changes nothing except storability.
+    varyHeaders: [
+      'authorization',
+      'accept',
+      'accept-encoding',
+      'x-requested-with',
+      'origin',
+    ],
+    ...options,
+  });
   return {
-    fetch: createBlazeFetch(cache, { fetch: counted, ...options }),
+    fetch: async (input, init) => {
+      const response = await blaze(input, init);
+      // `store` is fire-and-forget: it buffers a *clone* of this body over the real network,
+      // so the response can resolve long before the write lands. Draining our own tee of
+      // the same stream waits for every byte to cross the wire; one `delay(0)` then lets
+      // all the microtasks that follow — including the store's own `cache.set` — run before
+      // the test looks at the cache. Without this the assertions race a body still in
+      // flight, which a stubbed network never exposed.
+      await response.clone().arrayBuffer().catch(() => undefined);
+      await delay(0);
+      return response;
+    },
     requests: () => requests,
   };
 };

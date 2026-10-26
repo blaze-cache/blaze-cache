@@ -113,7 +113,8 @@ export interface BlazeFetchOptions {
    * HTTP methods eligible for caching. Default: `['GET']`.
    *
    * Pass `['GET', 'HEAD']` to cache `HEAD` too. Any other method always goes to the network
-   * and is never stored.
+   * and is never stored. Non-cacheable methods are also never coalesced with an identical
+   * in-flight request — replaying a side effect would be worse than repeating one.
    */
   methods?: readonly string[];
 
@@ -121,12 +122,15 @@ export interface BlazeFetchOptions {
    * Honour `Cache-Control` on both sides of the exchange. Default: `true`.
    *
    * * request `no-store` → neither read nor write the cache;
-   * * request `no-cache` → skip the read, still store the response;
-   * * response `no-store`/`no-cache` → never stored;
+   * * request `no-cache` / `max-age=0` → skip the read, still store the response;
+   * * response `no-store` → never stored;
+   * * response `no-cache` (even per-field, `no-cache="field1"`) → never stored;
    * * response `max-age` → overrides {@link ttlMs}, minus the response's `Age`;
-   * * response `stale-while-revalidate` → the stale window, when {@link staleWhileRevalidate} is on.
+   * * response `stale-while-revalidate` → the stale window, when {@link staleWhileRevalidate} is on;
+   * * response `must-revalidate` / `proxy-revalidate` → no stale window, however short the fresh one.
    *
-   * Set to `false` to treat `ttlMs` as the only authority.
+   * Set to `false` to treat `ttlMs` as the only authority. The response's `Vary` header is
+   * *always* honoured (see {@link varyHeaders}) — variant correctness is not a preference.
    */
   cacheControl?: boolean;
 
@@ -139,7 +143,9 @@ export interface BlazeFetchOptions {
    *   omits the directive, so opting in works against servers that never send it.
    *
    * Such responses are marked `x-blaze-cache: STALE` and revalidated once per key: the
-   * refresh is a forced refresh, so it can never re-serve the stale entry to itself.
+   * refresh is a forced refresh, so it can never re-serve the stale entry to itself. A
+   * response carrying `must-revalidate`/`proxy-revalidate` never opens the stale window,
+   * and the refresh never inherits the caller's `signal` — it is the wrapper's own work.
    */
   staleWhileRevalidate?: boolean | number;
 
@@ -159,7 +165,9 @@ export interface BlazeFetchOptions {
    * (the {@link methods} gate has already applied by then).
    *
    * A response this rejects is still returned — it is simply not cached, and still carries
-   * `x-blaze-cache: MISS`.
+   * `x-blaze-cache: MISS`. A callback that *throws* is treated exactly the same way (after
+   * one console warning): a cache-layer failure never fails a response the network answered
+   * well.
    */
   shouldCache?: (response: Response, url: string, init: BlazeFetchEffectiveInit) => boolean;
 
@@ -176,6 +184,10 @@ export interface BlazeFetchOptions {
    *
    * A personalized response must never be served to a different user just because the URL
    * matched. Values are hashed, never stored verbatim.
+   *
+   * A response's own `Vary` header is checked against this list before it is stored: a
+   * response varying on anything *not* listed cannot be keyed correctly, so it is left
+   * uncached — and `Vary: *` is never stored at all (RFC 9111 §3).
    */
   varyHeaders?: readonly string[];
 

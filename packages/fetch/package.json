@@ -1,6 +1,6 @@
 {
   "name": "@blaze-cache/fetch",
-  "version": "0.2.0-beta",
+  "version": "0.2.1-beta",
   "description": "Drop-in fetch() replacement backed by a WebAssembly cache — TTLs, Cache-Control, stale-while-revalidate and an x-blaze-cache HIT/MISS marker",
   "keywords": [
     "fetch",

@@ -51,14 +51,19 @@ window.fetch = fetch;                   // now every request in the app is cache
   it to widen or narrow that.
 * **`Authorization` participates in the default key** (hashed, never stored verbatim), so a
   personalized response is never replayed to a different user. Tune with `varyHeaders`.
+* **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
+  a response varying on a header you have not put in `varyHeaders` is left uncached rather
+  than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
+  That is the safe default working as intended — list them to opt in.
 * **A hit is a real `Response`** — status, status text, headers, body, `url` after a
   redirect and `redirected` are replayed exactly, so your code cannot tell the difference
   apart from the marker header.
 * **Binary, `Blob` and chunked bodies are first-class** — the payload is buffered as raw
   bytes whether it arrived as a file, a `ReadableStream` or plain text, so an image
   replays byte-for-byte with its `content-type` intact and `blob().type`/`blob().size`
-  still correct. A streamed (chunked) response is assembled *before* your `Response` is
-  handed back, so a hit can never half-load.
+  still correct. Buffering runs on a teed clone *after* your `Response` is handed back, so
+  a streaming body is never held up waiting for the cache — and because the record is
+  complete before it is written, a hit can never half-load.
 * **Transport headers are corrected to the bytes stored** — `fetch` decodes
   `content-encoding` for you, so the record drops `content-encoding` and
   `transfer-encoding` and rewrites `content-length` to the payload's real size. Without

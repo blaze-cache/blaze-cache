@@ -20,6 +20,7 @@ import {
   fnv1a,
   parseAgeMs,
   parseCacheControl,
+  varyIsStorable,
 } from '@blaze-cache/fetch';
 
 const wasmBytes = await readFile(
@@ -79,11 +80,29 @@ const storedJson = (record) => JSON.parse(new TextDecoder().decode(record.body))
 /** How long the stored entry is *fresh* for, in milliseconds. */
 const freshFor = (record) => record.freshUntil - record.storedAt;
 
+/**
+ * The wrapper under test, with one courtesy the production wrapper does not owe you.
+ *
+ * Buffering-and-storing a response is deliberately fire-and-forget (that is F1's whole
+ * point), so `await fetch(...)` resolves while that write may still be pending. A
+ * zero-delay timer runs after *every* pending microtask, which is exactly when the
+ * background store has settled — without it, a test asserting on the store (or expecting
+ * the very next call to be a HIT) would race the write it means to observe.
+ */
+const createTestFetch = (cache, options = {}) => {
+  const blaze = createBlazeFetch(cache, options);
+  return (input, init) =>
+    blaze(input, init).then(async (response) => {
+      await delay(0);
+      return response;
+    });
+};
+
 describe('caching', () => {
   it('caches GET responses and marks HIT/MISS', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ body: { users: [1, 2] } }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const miss = await fetch('/api/users');
     const hit = await fetch('/api/users');
@@ -116,7 +135,7 @@ describe('caching', () => {
   it('never caches methods outside `methods`', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const first = await fetch('/api/notes', { method: 'POST', body: '{}' });
     const second = await fetch('/api/notes', { method: 'POST', body: '{}' });
@@ -131,7 +150,7 @@ describe('caching', () => {
   it('caches HEAD when it is opted in', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ headers: { 'content-length': '12' } }));
-    const fetch = createBlazeFetch(cache, { fetch: net, methods: ['GET', 'HEAD'] });
+    const fetch = createTestFetch(cache, { fetch: net, methods: ['GET', 'HEAD'] });
 
     await fetch('/api/users', { method: 'HEAD' });
     const hit = await fetch('/api/users', { method: 'HEAD' });
@@ -154,7 +173,7 @@ describe('caching', () => {
   it('stores responses for ttlMs and refetches once they expire', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
-    const fetch = createBlazeFetch(cache, { fetch: net, ttlMs: 30 });
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 30 });
 
     await fetch('/ttl');
     await fetch('/ttl');
@@ -177,7 +196,7 @@ describe('caching', () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
     const seen = [];
-    const fetch = createBlazeFetch(cache, {
+    const fetch = createTestFetch(cache, {
       fetch: net,
       ttlMs: (response, url, init) => {
         seen.push([response.status, url, init.method]);
@@ -196,6 +215,36 @@ describe('caching', () => {
       `the callback’s 600s became the entry TTL, got ${freshFor(record)}ms`,
     );
   });
+
+  it('returns without waiting for the body to buffer', { timeout: 2000 }, async () => {
+    // A stream that hands out one chunk and then keeps the door open — exactly what an SSE
+    // endpoint looks like. Buffering it to a record can never finish, so a wrapper that
+    // awaited the store before returning would hang here forever; the caller must get its
+    // response (and its first bytes) while the buffering is still pending in the background.
+    const cache = await makeCache();
+    let source;
+    const net = async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: ping\n\n'));
+          source = controller; // …never closed until the test says so
+        },
+      });
+      return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+    };
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const response = await fetch('/sse');
+    assert.equal(response.headers.get('x-blaze-cache'), 'MISS', 'resolved before any buffering finished');
+
+    const reader = response.body.getReader();
+    const { value } = await reader.read();
+    assert.equal(new TextDecoder().decode(value), 'event: ping\n\n', 'first bytes arrive at once');
+
+    source.close();
+    const end = await reader.read();
+    assert.equal(end.done, true, 'the stream ends cleanly once the source closes');
+  });
 });
 
 describe('Cache-Control', () => {
@@ -205,7 +254,7 @@ describe('Cache-Control', () => {
       body: { url },
       headers: url.startsWith('/long') ? { 'cache-control': 'max-age=60' } : undefined,
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net, ttlMs: 1 });
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 1 });
 
     await fetch('/long');
     const stored = onlyRecord(cache).record;
@@ -232,7 +281,7 @@ describe('Cache-Control', () => {
       body: { url },
       headers: { 'cache-control': 'no-store' },
     }));
-    const strict = createBlazeFetch(cache, { fetch: strictNet });
+    const strict = createTestFetch(cache, { fetch: strictNet });
     await strict('/private');
     await strict('/private');
     assert.equal(strictCalls.length, 2, 'no-store responses are never cached');
@@ -247,7 +296,7 @@ describe('Cache-Control', () => {
       // `max-age=1` minus `Age: 0.5` leaves half a second of life, not a full one.
       headers: { 'cache-control': 'max-age=1', age: '0.5' },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     await fetch('/aged');
     assert.equal(calls.length, 1, 'fresh on arrival');
@@ -271,7 +320,7 @@ describe('Cache-Control', () => {
       body: { n: 1 },
       headers: { 'cache-control': 'max-age=600, no-store' },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net, ttlMs: 30, cacheControl: false });
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 30, cacheControl: false });
 
     await fetch('/ignored');
     await fetch('/ignored');
@@ -294,11 +343,29 @@ describe('Cache-Control', () => {
     assert.deepEqual(parseCacheControl('max-age=30, stale-while-revalidate=120, public'), {
       noStore: false,
       noCache: false,
+      mustRevalidate: false,
       maxAgeMs: 30_000,
       staleWhileRevalidateMs: 120_000,
     });
     assert.equal(parseCacheControl('NO-STORE').noStore, true);
     assert.equal(parseCacheControl('no-cache').noCache, true);
+    assert.equal(
+      parseCacheControl('no-cache="set-cookie"').noCache,
+      true,
+      'a per-field no-cache is not a blanket "cacheable"',
+    );
+    assert.equal(
+      parseCacheControl('no-cache="set-cookie, x-field"').noCache,
+      true,
+      '…however many fields it names',
+    );
+    assert.equal(parseCacheControl('must-revalidate').mustRevalidate, true);
+    assert.equal(
+      parseCacheControl('proxy-revalidate').mustRevalidate,
+      true,
+      'the shared-cache spelling counts too',
+    );
+    assert.equal(parseCacheControl('max-age=0').maxAgeMs, 0);
     assert.equal(parseCacheControl(undefined).maxAgeMs, undefined);
     assert.equal(parseCacheControl('max-age=abc').maxAgeMs, undefined, 'junk is ignored');
 
@@ -307,13 +374,154 @@ describe('Cache-Control', () => {
     assert.equal(parseAgeMs('later'), 0, '…and so are unparsable ones');
     assert.equal(parseAgeMs(undefined), 0);
   });
+
+  it('treats a request max-age=0 as a demand to revalidate', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    await fetch('/revalidate');
+    const hit = await fetch('/revalidate');
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'fresh on the second call');
+
+    const revalidated = await fetch('/revalidate', {
+      headers: { 'cache-control': 'max-age=0' },
+    });
+    assert.equal(calls.length, 2, 'RFC 9111 §5.2.2.1: max-age=0 skips the read');
+    assert.equal(revalidated.headers.get('x-blaze-cache'), 'MISS');
+    assert.deepEqual(await revalidated.json(), { version: 2 });
+    assert.deepEqual(
+      storedJson(onlyRecord(cache).record),
+      { version: 2 },
+      '…and the revalidated response replaced the entry',
+    );
+  });
+
+  it('never opens a stale window for must-revalidate or proxy-revalidate', async () => {
+    const strictHeader = 'max-age=0.05, stale-while-revalidate=600, must-revalidate';
+    const proxyHeader = 'max-age=0.05, stale-while-revalidate=600, proxy-revalidate';
+    const network = () =>
+      stubNetwork((url, index) => ({
+        body: { version: index },
+        headers: { 'cache-control': url === '/proxy' ? proxyHeader : strictHeader },
+      }));
+
+    for (const [url, directive] of [
+      ['/strict', 'must-revalidate'],
+      ['/proxy', 'proxy-revalidate'],
+    ]) {
+      const cache = await makeCache();
+      const { net, calls } = network();
+      const fetch = createTestFetch(cache, { fetch: net, staleWhileRevalidate: 600 });
+
+      await fetch(url);
+      const initial = onlyRecord(cache).record;
+      assert.equal(
+        initial.staleUntil,
+        initial.freshUntil,
+        `${directive} reserves no stale window, whatever stale-while-revalidate says`,
+      );
+
+      await delay(100); // fresh window (50ms) elapsed, the 600s stale window wide open
+      const refetched = await fetch(url);
+      assert.equal(refetched.headers.get('x-blaze-cache'), 'MISS', 'never served stale');
+      assert.equal(calls.length, 2, 'straight back to the network');
+      assert.deepEqual(
+        storedJson(onlyRecord(cache).record),
+        { version: 2 },
+        'and the fresh response replaced the entry',
+      );
+    }
+  });
+});
+
+describe('Vary', () => {
+  it('never stores a `Vary: *` response (RFC 9111 §3)', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork(() => ({
+      body: { user: 'private' },
+      headers: { vary: '*' },
+    }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const first = await fetch('/private');
+    const second = await fetch('/private');
+
+    assert.equal(calls.length, 2, 'a Vary: * response is never cacheable');
+    assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(second.headers.get('x-blaze-cache'), 'MISS');
+    assert.deepEqual(await second.json(), { user: 'private' }, 'the response itself is unaffected');
+    assert.equal(cache.size(), 0, 'and nothing was stored');
+  });
+
+  it('refuses to store a response varying on a header the key cannot see', async () => {
+    const cache = await makeCache();
+    // The default `varyHeaders: ['authorization']` folds nothing about `Cookie` into the
+    // key — storing this would hand the next caller someone else's private payload.
+    const { net, calls } = stubNetwork((url, index, headers) => ({
+      body: { cookie: headers.get('cookie') },
+      headers: { vary: 'Cookie' },
+    }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    await fetch('/me', { headers: { cookie: 'session=ada' } });
+    const again = await fetch('/me', { headers: { cookie: 'session=ada' } });
+
+    assert.equal(calls.length, 2, 'an unkeyed Vary header blocks storing');
+    assert.equal(again.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(cache.size(), 0, 'the safe answer for an unkeyed header is: do not cache');
+  });
+
+  it('stores one whose every varying header is folded into the key', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index, headers) => ({
+      body: { lang: headers.get('accept-language') },
+      headers: { vary: 'Accept-Language' },
+    }));
+    const fetch = createTestFetch(cache, { fetch: net, varyHeaders: ['accept-language'] });
+
+    await fetch('/greeting', { headers: { 'accept-language': 'en' } });
+    const en = await fetch('/greeting', { headers: { 'accept-language': 'en' } });
+    assert.equal(calls.length, 1, 'the keyed variant hits');
+    assert.equal(en.headers.get('x-blaze-cache'), 'HIT');
+    assert.deepEqual(await en.json(), { lang: 'en' });
+
+    const fr = await fetch('/greeting', { headers: { 'accept-language': 'fr' } });
+    assert.equal(calls.length, 2, 'a different variant must miss');
+    assert.deepEqual(await fr.json(), { lang: 'fr' }, '…and gets its own variant, not en’s');
+    assert.equal(cache.size(), 2, 'two variants occupy two keys');
+  });
+
+  it('varyIsStorable answers per RFC 9111', () => {
+    assert.equal(varyIsStorable(null, ['authorization']), true, 'no header varies on nothing');
+    assert.equal(varyIsStorable('', ['authorization']), true, '…and neither does an empty one');
+    assert.equal(varyIsStorable(' , ', ['authorization']), true, '…nor a nameless one');
+    assert.equal(varyIsStorable('*', []), false, 'Vary: * is never cacheable');
+    assert.equal(varyIsStorable('accept-encoding, *', []), false, '…not even alongside names');
+    assert.equal(varyIsStorable('cookie', ['authorization']), false, 'an unkeyed name blocks storing');
+    assert.equal(
+      varyIsStorable('Authorization', ['authorization']),
+      true,
+      'header names compare case-insensitively',
+    );
+    assert.equal(
+      varyIsStorable('Accept-Language, authorization', ['accept-language', 'authorization']),
+      true,
+      'every listed name being keyed makes it storable',
+    );
+    assert.equal(
+      varyIsStorable('accept-language, cookie', ['accept-language']),
+      false,
+      '…but one unkeyed name among them is enough to refuse',
+    );
+  });
 });
 
 describe('stale-while-revalidate', () => {
   it('serves stale entries and revalidates in the background', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
-    const fetch = createBlazeFetch(cache, { fetch: net, ttlMs: 150, staleWhileRevalidate: 500 });
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 150, staleWhileRevalidate: 500 });
 
     const first = await fetch('/swr');
     assert.deepEqual(await first.json(), { version: 1 });
@@ -345,7 +553,7 @@ describe('stale-while-revalidate', () => {
       // 200ms of freshness, 10s of stale-but-servable — all of it from the directive.
       headers: { 'cache-control': 'max-age=0.2, stale-while-revalidate=10' },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net, staleWhileRevalidate: true });
+    const fetch = createTestFetch(cache, { fetch: net, staleWhileRevalidate: true });
 
     await fetch('/directed');
     const initial = onlyRecord(cache).record;
@@ -372,7 +580,7 @@ describe('stale-while-revalidate', () => {
   it('is off by default: a stale entry just goes to the network', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
-    const fetch = createBlazeFetch(cache, { fetch: net, ttlMs: 20 });
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 20 });
 
     await fetch('/plain-stale');
     const initial = onlyRecord(cache).record;
@@ -390,13 +598,43 @@ describe('stale-while-revalidate', () => {
     assert.deepEqual(await fresh.json(), { version: 2 });
     assert.ok(onlyRecord(cache).record.storedAt > initial.storedAt, 'the entry was replaced');
   });
+
+  it('does not let the caller’s AbortSignal kill the background refresh', async () => {
+    const cache = await makeCache();
+    const signals = [];
+    let calls = 0;
+    const net = async (input, init) => {
+      calls += 1;
+      signals.push(init?.signal ?? null);
+      return new Response(JSON.stringify({ version: calls }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    // Windows kept comfortably wider than the waits between them, so an assertion never
+    // lands on an entry that merely aged out during the test's own bookkeeping.
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 200, staleWhileRevalidate: 1000 });
+    const controller = new AbortController();
+
+    await fetch('/unmount', { signal: controller.signal }); // stored fresh, signal seen once
+    await delay(250); // fresh window (200ms) elapsed, stale window wide open
+    controller.abort(); // the caller "unmounts" — right after being served, as callers do
+    const stale = await fetch('/unmount', { signal: controller.signal });
+    assert.equal(stale.headers.get('x-blaze-cache'), 'STALE');
+    assert.deepEqual(await stale.json(), { version: 1 });
+
+    await delay(60); // …the refresh had every opportunity to run
+    assert.equal(calls, 2, 'the refresh still ran after the abort');
+    assert.equal(signals[1], null, 'and it did so without inheriting the aborted signal');
+    assert.equal((await fetch('/unmount')).headers.get('x-blaze-cache'), 'HIT');
+    assert.deepEqual(storedJson(onlyRecord(cache).record), { version: 2 }, 'the entry is fresh again');
+  });
 });
 
 describe('force refresh', () => {
   it('bypasses the cache and rewrites it', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     await fetch('/refresh');
     await fetch('/refresh');
@@ -424,12 +662,105 @@ describe('force refresh', () => {
   });
 });
 
+describe('in-flight dedup', () => {
+  it('coalesces concurrent identical requests into one network call', async () => {
+    const cache = await makeCache();
+    // The stub answers as fast as it can — which is the point: dedup must work in the window
+    // where the second caller arrives while the first is still awaiting its network promise.
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const [first, second] = await Promise.all([fetch('/dup'), fetch('/dup')]);
+
+    assert.equal(calls.length, 1, 'the second caller joined the in-flight request');
+    assert.equal(first.headers.get('x-blaze-cache'), 'MISS', 'the leader went to the network');
+    assert.equal(second.headers.get('x-blaze-cache'), 'HIT', 'the joiner replays the stored record');
+    assert.deepEqual(await first.json(), { version: 1 }, 'with its own readable body,');
+    assert.deepEqual(await second.json(), { version: 1 }, 'independently of the leader’s');
+
+    assert.equal((await fetch('/dup')).headers.get('x-blaze-cache'), 'HIT', 'later calls hit too');
+    assert.equal(calls.length, 1, 'and still only one network call in total');
+    assert.deepEqual(storedJson(onlyRecord(cache).record), { version: 1 }, 'one record, stored once');
+  });
+
+  it('never answers a forceRefresh caller from an in-flight sibling', async () => {
+    // `forceRefresh` (like `cache: 'reload'` or a request `no-cache`) is a promise to go to
+    // the network. Joining an in-flight sibling would answer it from the cache — however
+    // recently written — so it leads its own request instead. That also exercises the
+    // identity-checked gate: the forced leader replaces the first one's gate on the way in,
+    // and the first one must not retire the gate standing in for it.
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const [leader, forced] = await Promise.all([
+      fetch('/forced'),
+      fetch('/forced', { forceRefresh: true }),
+    ]);
+
+    assert.equal(calls.length, 2, 'the forced caller fetched for itself');
+    assert.equal(leader.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(forced.headers.get('x-blaze-cache'), 'MISS', 'and was never served a HIT');
+    assert.deepEqual(await forced.json(), { version: 2 }, 'with its own network response');
+
+    // The forced call rewrote the entry; a normal read still sees it.
+    assert.equal((await fetch('/forced')).headers.get('x-blaze-cache'), 'HIT');
+    assert.equal(calls.length, 2, 'and no further network calls were needed');
+  });
+
+  it('lets a joiner fetch for itself when the leader stored nothing', async () => {
+    // A `Vary: *` leader keeps nothing, so there is no record to share — the joiner must
+    // fall through to the network, never replay a response that was never stored.
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({
+      body: { version: index },
+      headers: { vary: '*' },
+    }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const [leader, joiner] = await Promise.all([fetch('/unstorable'), fetch('/unstorable')]);
+
+    assert.equal(calls.length, 2, 'nothing to share means the joiner fetched its own');
+    assert.equal(leader.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(joiner.headers.get('x-blaze-cache'), 'MISS');
+    assert.deepEqual(await joiner.json(), { version: 2 }, 'the joiner got a real response body');
+    assert.equal(cache.size(), 0, 'and still nothing was stored');
+  });
+
+  it('coalesces only the methods it is allowed to cache', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    // Default `methods: ['GET']`: a POST is not cacheable, and what is not cacheable must
+    // not be coalesced either — replaying one caller's side effect under another's name
+    // would be worse than repeating it.
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    await Promise.all([
+      fetch('/write', { method: 'POST', body: '{}' }),
+      fetch('/write', { method: 'POST', body: '{}' }),
+    ]);
+    assert.equal(calls.length, 2, 'a POST outside `methods` is never coalesced');
+    assert.equal(cache.size(), 0, '…nor stored');
+
+    // Opts POST *into* caching, and it coalesces like any cacheable method — an identical
+    // concurrent POST would have been a cache HIT a moment later anyway.
+    const opted = createTestFetch(cache, { fetch: net, methods: ['GET', 'POST'] });
+    const [first, second] = await Promise.all([
+      opted('/write', { method: 'POST', body: '{}' }),
+      opted('/write', { method: 'POST', body: '{}' }),
+    ]);
+    assert.equal(calls.length, 3, 'an opted-in POST does coalesce — one more network call');
+    assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(second.headers.get('x-blaze-cache'), 'HIT', 'replaying its stored outcome');
+  });
+});
+
 describe('keys', () => {
   it('uses a custom cache key when given one', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
     let seen;
-    const fetch = createBlazeFetch(cache, {
+    const fetch = createTestFetch(cache, {
       fetch: net,
       key: (url, init) => {
         seen = init;
@@ -458,7 +789,7 @@ describe('keys', () => {
     const { net, calls } = stubNetwork((url, index, headers) => ({
       body: { token: headers.get('authorization') },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     await fetch('/me', { headers: { authorization: 'Bearer ada' } });
     await fetch('/me', { headers: { authorization: 'Bearer grace' } });
@@ -494,7 +825,7 @@ describe('keys', () => {
   it('builds bare keys when nothing is varied on', () => {
     const init = { method: 'GET', headers: new Headers() };
     assert.equal(defaultCacheKey('/plain', init, []), 'get /plain');
-    assert.equal(defaultCacheKey('/plain', init, ['authorization']), 'get /plain?ztntfp');
+    assert.equal(defaultCacheKey('/plain', init, ['authorization']), 'get /plain?tu3x2x');
 
     const withAuth = {
       method: 'POST',
@@ -507,6 +838,24 @@ describe('keys', () => {
       defaultCacheKey('/plain', { ...withAuth, headers: new Headers() }, ['authorization']),
     );
   });
+
+  it('keeps vary values apart that a naive join would collide', () => {
+    // Under a `join(' ')` encoding these two identities hashed identically — a value
+    // containing the separator could impersonate the boundary between slots, replaying one
+    // identity's payload to the other. The JSON encoding is injective: no pair of value
+    // lists can produce the same input to the hash.
+    const varyHeaders = ['x-a', 'x-b'];
+    const key = (a, b) =>
+      defaultCacheKey('/collide', { method: 'GET', headers: new Headers({ 'x-a': a, 'x-b': b }) }, varyHeaders);
+
+    assert.notEqual(
+      key('x y', ''),
+      key('x', 'y'),
+      "['x y', ''] and ['x', 'y'] are two identities, not one",
+    );
+    assert.notEqual(key('x y', ''), key('', 'x y'), '…and neither may it meet the mirror case');
+    assert.equal(key('x y', ''), key('x y', ''), 'the same identity still keys identically');
+  });
 });
 
 describe('storage decisions', () => {
@@ -517,7 +866,7 @@ describe('storage decisions', () => {
       statusText: 'Internal Server Error',
       body: { error: 'boom' },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const failing = await fetch('/boom');
     await fetch('/boom');
@@ -527,7 +876,7 @@ describe('storage decisions', () => {
     assert.deepEqual(cache.keys(), [], 'the store is verifiably empty');
 
     const seen = [];
-    const lenient = createBlazeFetch(cache, {
+    const lenient = createTestFetch(cache, {
       fetch: net,
       shouldCache: (response, url, init) => {
         seen.push([response.status, url, init.method]);
@@ -551,7 +900,7 @@ describe('storage decisions', () => {
   it('tags entries so they can be invalidated in bulk', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     await fetch('/tags-a');
     await fetch('/tags-b');
@@ -573,17 +922,145 @@ describe('storage decisions', () => {
   it('accepts a custom tag function', async () => {
     const cache = await makeCache();
     const { net } = stubNetwork(() => ({ body: {} }));
-    const fetch = createBlazeFetch(cache, {
+    const fetch = createTestFetch(cache, {
       fetch: net,
       tags: (response, url, init) => [`http-${init.method}`, url],
     });
 
     await fetch('/tagged');
 
-    assert.deepEqual(cache.keysWithTag('http-GET'), ['get /tagged?ztntfp'], 'the custom tag landed');
+    assert.deepEqual(cache.keysWithTag('http-GET'), ['get /tagged?tu3x2x'], 'the custom tag landed');
     assert.equal(cache.keysWithTag('/tagged').length, 1, 'and so did the URL tag');
     assert.equal(cache.keysWithTag('fetch').length, 0, 'the default tag was replaced');
     assert.equal(cache.size(), 1, 'the response itself is stored as usual');
+  });
+
+  it('stores a header named __proto__ instead of losing it to the prototype', async () => {
+    // A legal header name, and one a plain `record[name] = value` silently swallows: the
+    // inherited `__proto__` setter ignores primitives, so the header would vanish between
+    // the network response and the stored record — and again between the record and the
+    // replay, where the platform's plain-object `Headers` conversion drops it the same way.
+    // Hence the bespoke net: even the *stub* has to `append` it, `new Headers({…})` being
+    // the very conversion that loses it.
+    const cache = await makeCache();
+    let calls = 0;
+    const net = async () => {
+      calls += 1;
+      const headers = new Headers({ 'content-type': 'application/json' });
+      headers.append('__proto__', 'blaze');
+      const response = new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+      Object.defineProperty(response, 'url', { value: '/weird' });
+      Object.defineProperty(response, 'redirected', { value: false });
+      return response;
+    };
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const miss = await fetch('/weird');
+    assert.equal(miss.headers.get('__proto__'), 'blaze', 'the network response carries it');
+    const hit = await fetch('/weird');
+    assert.equal(calls, 1, 'the header did not stop it being cached');
+    assert.equal(hit.headers.get('__proto__'), 'blaze', 'and it survives the replay');
+
+    const { record } = onlyRecord(cache);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(record.headers, '__proto__'),
+      true,
+      'as an own property of the stored record, not a prototype mutation',
+    );
+  });
+});
+
+describe('cache-layer failures', () => {
+  it('falls through to the network when cache.get throws, warning once', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const broken = {
+      get() {
+        throw new Error('read exploded');
+      },
+      set: (key, value, options) => cache.set(key, value, options),
+    };
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const fetch = createTestFetch(broken, { fetch: net });
+
+      const first = await fetch('/broken-read');
+      const second = await fetch('/broken-read');
+
+      assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+      assert.equal(calls.length, 2, 'a throwing cache.get reads as a miss, never an error');
+      assert.deepEqual(await second.json(), { version: 2 }, 'the response is delivered whole');
+      assert.equal(warnings.length, 1, 'warned exactly once, not once per call');
+      assert.match(warnings[0][0], /^\[blaze-cache\]/, 'with the package prefix');
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('still returns the response when the write path throws', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const broken = {
+      get: (key) => cache.get(key),
+      set() {
+        throw new Error('write exploded');
+      },
+    };
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const fetch = createTestFetch(broken, { fetch: net });
+
+      const first = await fetch('/broken-write');
+      const second = await fetch('/broken-write');
+
+      assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+      assert.equal(calls.length, 2, 'an unwritable cache is no cache at all, and never an error');
+      assert.deepEqual(await first.json(), { version: 1 }, 'with the body delivered whole');
+      assert.equal(warnings.length, 1, 'the failure was reported once');
+      assert.match(warnings[0][0], /^\[blaze-cache\]/);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('treats a throwing shouldCache or ttlMs as "do not cache"', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const picky = createTestFetch(cache, {
+        fetch: net,
+        shouldCache: () => {
+          throw new Error('callback exploded');
+        },
+      });
+      const first = await picky('/throwing-should-cache');
+      assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+      assert.deepEqual(await first.json(), { version: 1 }, 'the good response still arrives');
+      assert.equal(cache.size(), 0, '…it is simply not cached');
+
+      const pickier = createTestFetch(cache, {
+        fetch: net,
+        ttlMs: () => {
+          throw new Error('callback exploded harder');
+        },
+      });
+      const second = await pickier('/throwing-ttl');
+      assert.equal(second.headers.get('x-blaze-cache'), 'MISS');
+      assert.deepEqual(await second.json(), { version: 2 });
+      assert.equal(calls.length, 2);
+      assert.equal(warnings.length, 2, 'once per wrapper, each reported once');
+      assert.match(warnings[0][0], /^\[blaze-cache\]/);
+      assert.match(warnings[1][0], /^\[blaze-cache\]/);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });
 
@@ -598,7 +1075,7 @@ describe('binary, encoded and chunked bodies', () => {
       raw: png,
       headers: { 'content-type': 'image/png', 'content-length': String(png.byteLength) },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const miss = await fetch('/logo.png');
     assert.equal(miss.headers.get('content-type'), 'image/png');
@@ -636,7 +1113,7 @@ describe('binary, encoded and chunked bodies', () => {
         'content-length': '1425', // the compressed size — not what we hold
       },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     await fetch('/gzipped');
     const hit = await fetch('/gzipped');
@@ -669,7 +1146,7 @@ describe('binary, encoded and chunked bodies', () => {
       }),
       headers: { 'content-type': 'text/plain; charset=utf-8', 'transfer-encoding': 'chunked' },
     }));
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const miss = await fetch('/stream');
     assert.equal(await miss.text(), 'chunk-one-two', 'the streamed body arrives complete');
@@ -694,14 +1171,14 @@ describe('marker header', () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
 
-    const custom = createBlazeFetch(cache, { fetch: net, markerHeader: 'x-my-cache' });
+    const custom = createTestFetch(cache, { fetch: net, markerHeader: 'x-my-cache' });
     assert.equal((await custom('/a')).headers.get('x-my-cache'), 'MISS');
     assert.equal((await custom('/a')).headers.get('x-my-cache'), 'HIT');
     assert.equal((await custom('/a')).headers.get('x-blaze-cache'), null, 'the default is off');
     assert.equal(cache.size(), 1, 'renaming the marker changes nothing about storage');
     assert.deepEqual(storedJson(onlyRecord(cache).record), { url: '/a' });
 
-    const quiet = createBlazeFetch(cache, { fetch: net, markerHeader: false, varyHeaders: [] });
+    const quiet = createTestFetch(cache, { fetch: net, markerHeader: false, varyHeaders: [] });
     assert.equal((await quiet('/plain')).headers.get('x-my-cache'), null);
     assert.equal(cache.has('get /plain'), true, 'without vary headers the key is bare');
     assert.deepEqual(storedJson(cache.get('get /plain')), { url: '/plain' }, 'and it is stored');
@@ -719,7 +1196,7 @@ describe('marker header', () => {
       calls += 1;
       return Response.redirect('https://example.com/moved', 302);
     };
-    const fetch = createBlazeFetch(cache, { fetch: net });
+    const fetch = createTestFetch(cache, { fetch: net });
 
     const first = await fetch('/moved');
     assert.equal(first.status, 302, 'the response passes through untouched');
@@ -737,6 +1214,7 @@ describe('marker header', () => {
     assert.equal(typeof createBlazeFetch, 'function');
     assert.equal(typeof parseAgeMs, 'function');
     assert.equal(typeof parseCacheControl, 'function');
+    assert.equal(typeof varyIsStorable, 'function');
     assert.equal(typeof defaultCacheKey, 'function');
     assert.equal(typeof fnv1a, 'function');
   });

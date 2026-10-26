@@ -20,7 +20,7 @@ export function fnv1a(input: string): string {
  * Default cache key: method + URL, plus a hash of the `varyHeaders` values.
  *
  * ```ts
- * defaultCacheKey('/api/users', init, ['authorization']); // "get /api/users/a3f9k"
+ * defaultCacheKey('/api/users', init, ['authorization']); // "get /api/users?a3f9k"
  * ```
  *
  * The hash is appended whenever `varyHeaders` is non-empty — including when every value is
@@ -37,6 +37,11 @@ export function defaultCacheKey(
   if (varyHeaders.length === 0) return base;
 
   const headers = init.headers instanceof Headers ? init.headers : new Headers(init.headers);
-  const vary = varyHeaders.map((name) => headers.get(name) ?? '').join(' ');
+  // JSON, never a plain join: the encoding must stay *injective*, because a collision here
+  // would replay one identity's payload to another. Joining with a space lets a value
+  // containing the separator impersonate the boundary — `['x y', '']` and `['x', 'y']` are
+  // two different identities, and only a length-delimited encoding (JSON being the simplest)
+  // keeps them apart.
+  const vary = JSON.stringify(varyHeaders.map((name) => headers.get(name) ?? ''));
   return `${base}?${fnv1a(vary)}`;
 }
