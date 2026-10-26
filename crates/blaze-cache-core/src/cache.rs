@@ -14,6 +14,15 @@ use crate::node::Node;
 use crate::stats::CacheStats;
 use crate::tags::TagIndex;
 
+/// Entries the hash index reserves on construction, whatever the cache's capacity.
+///
+/// A cache is built with a *ceiling*, not a size, and that ceiling is caller-supplied — so
+/// reserving it wholesale turns one absurd number into a panic (`usize::MAX`) or a
+/// multi-gigabyte allocation (the wasm boundary, where a JS `-1` reaches Rust as ~4.29e9).
+/// Capping the reservation keeps construction O(1) in the caller's number; the map still
+/// grows to fit as entries actually arrive.
+const EAGER_RESERVE: usize = 1024;
+
 /// Remaining lifetime and tags of a live entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryMeta {
@@ -90,13 +99,19 @@ where
     /// Creates a cache holding at most `capacity` entries.
     ///
     /// `capacity` is clamped to at least `1`.
+    ///
+    /// The hash index is only reserved up to [`EAGER_RESERVE`] entries however: `capacity`
+    /// is a ceiling, not a predicted size, and it is routinely caller-supplied (the JS
+    /// boundary, config files). Reserving it in full would let a single absurd number —
+    /// `usize::MAX` — panic with "hash table capacity overflow", or ask wasm for gigabytes
+    /// before the first entry exists. Past the reserve the map grows amortized.
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         Self {
             nodes: Vec::new(),
             free: Vec::new(),
             index: HashMap::with_capacity_and_hasher(
-                capacity,
+                capacity.min(EAGER_RESERVE),
                 foldhash::fast::RandomState::default(),
             ),
             queue: Sieve::new(),

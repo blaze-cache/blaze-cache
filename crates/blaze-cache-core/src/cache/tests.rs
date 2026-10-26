@@ -99,6 +99,33 @@ fn zero_capacity_is_clamped_to_one() {
     assert_eq!(cache.get("a"), None);
 }
 
+/// `capacity` is caller-supplied, and the index used to reserve it up front — so the largest
+/// possible number panicked with "hash table capacity overflow" before a single entry
+/// existed. `capacity` is a ceiling, not a size, so it must only shape eviction.
+#[test]
+fn an_absurd_capacity_does_not_panic_or_reserve_up_front() {
+    let mut cache: Cache<String, u64> = Cache::new(usize::MAX);
+    assert_eq!(
+        cache.capacity(),
+        usize::MAX,
+        "the ceiling is still honoured"
+    );
+
+    for i in 0..50 {
+        cache.insert(format!("k{i}"), i);
+    }
+    assert_eq!(
+        cache.len(),
+        50,
+        "nothing is evicted: nothing reached the ceiling"
+    );
+    assert_eq!(cache.get("k49"), Some(&49));
+
+    // …and it still behaves like a cache once a real ceiling applies.
+    cache.set_capacity(4);
+    assert_eq!(cache.len(), 4);
+}
+
 #[test]
 fn shrinking_capacity_evicts_immediately() {
     let mut cache = Cache::new(4);
