@@ -674,3 +674,35 @@ fn tag_index_stays_consistent_across_a_full_capacity_churn() {
         "every live entry carried the tag, so every live entry must go"
     );
 }
+
+/// A TTL large enough to overflow the monotonic instant range used to panic with
+/// "overflow when adding duration to instant" — reachable from nothing but a
+/// caller-supplied `Duration`. It now reads as "no deadline".
+#[test]
+fn an_overflowing_ttl_never_panics_and_means_no_deadline() {
+    let mut cache = Cache::new(4);
+
+    cache.insert_with(
+        "huge",
+        1,
+        EntryOptions::new().ttl(Duration::from_secs(u64::MAX)),
+    );
+    assert_eq!(
+        cache.ttl("huge"),
+        Some(None),
+        "an unreachable deadline is the same statement as no deadline"
+    );
+
+    assert!(cache.touch("huge", Some(Duration::from_secs(u64::MAX))));
+    assert_eq!(cache.ttl("huge"), Some(None));
+    assert_eq!(cache.get("huge"), Some(&1), "and it is still readable");
+
+    // The honest TTLs are untouched by the fallback.
+    cache.insert_with("short", 2, EntryOptions::new().ttl(Duration::from_secs(5)));
+    assert!(
+        cache
+            .ttl("short")
+            .flatten()
+            .is_some_and(|d| d > Duration::ZERO)
+    );
+}

@@ -29,7 +29,13 @@ impl EntryOptions {
 
     /// Expire the entry `ttl` after it is written.
     ///
-    /// `Duration::ZERO` expires the write immediately, which is a no-op insertion.
+    /// A zero-length TTL is treated as *no TTL*: the entry never expires. That mirrors what
+    /// [`Cache::insert_with`](crate::Cache::insert_with) does with it (a deadline of "now"
+    /// would only create a phantom entry nobody could ever read). Callers meaning
+    /// "do not cache this" should simply not insert.
+    ///
+    /// A TTL so large it would overflow the monotonic clock is likewise stored as "no
+    /// deadline" rather than panicking.
     pub fn ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self

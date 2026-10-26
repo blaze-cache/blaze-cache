@@ -444,10 +444,13 @@ where
 
         // The clock is only needed when a TTL is actually requested — a plain write must not
         // pay a wasm→JS `performance.now()` call just to discard the result.
+        // `checked_add`: a TTL large enough to overflow the instant range means "centuries
+        // from now", and storing no deadline says exactly that — while `+` would panic on
+        // nothing more than a caller-supplied `Duration`.
         let expires_at = options
             .ttl_opt()
             .filter(|ttl| !ttl.is_zero())
-            .map(|ttl| Instant::now() + ttl);
+            .and_then(|ttl| Instant::now().checked_add(ttl));
         let new_tag_ids = self
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
@@ -541,7 +544,11 @@ where
 
         if let Some(ttl) = ttl {
             let base = now.unwrap_or_else(Instant::now);
-            let new = (!ttl.is_zero()).then(|| base + ttl);
+            // `checked_add` rather than `+`: an overflowing TTL is a caller-supplied
+            // `Duration`, and panicking on it would hand any embedder a denial of service.
+            // Overflowing means "never in our lifetime" — the same answer a missing
+            // deadline gives, which is what a zero TTL already maps to here.
+            let new = (!ttl.is_zero()).then(|| base.checked_add(ttl)).flatten();
             let old = {
                 let node = self.nodes[idx].as_mut().expect("live slot");
                 std::mem::replace(&mut node.expires_at, new)
