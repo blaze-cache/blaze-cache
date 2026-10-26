@@ -44,7 +44,14 @@ export interface IndexedDbPersistenceOptions extends IndexedDbOptions {
 
 /** Options accepted by {@link BlazeCache.create}. */
 export interface BlazeCacheOptions {
-  /** Maximum number of entries kept in memory (clamped to `>= 1`). Default {@link DEFAULT_CAPACITY}. */
+  /**
+   * Maximum number of entries kept in memory. The wasm binding normalises it before it is
+   * ever used: below `1` clamps up, above `1_000_000` clamps down, and a non-finite value
+   * (`NaN`, `Infinity`) falls back to the wasm default of 1024. Pass a value inside that
+   * range to be sure of what {@link BlazeCache.capacity} reports back.
+   *
+   * Default {@link DEFAULT_CAPACITY}.
+   */
   capacity?: number;
   /**
    * Durable storage. `false`/omitted means memory only.
