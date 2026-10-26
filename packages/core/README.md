@@ -51,8 +51,17 @@ cache.stats();                     // { hits, misses, evictions, expirations, �
 
 * **Types are bundled** — no `@types/*` packages to install.
 * **ESM only, browser only.** Node/SSR targets are out of scope by design.
+* **Values are shared by reference** — `set` hands the object over and `get`/`peek`/
+  `entry` hand the same object back, so mutating it rewrites the cache (and, after the
+  next flush, the persisted row). Clone on the way out if you need to edit: the sharing
+  is what keeps `get`/`set` allocation-free.
 * **Persistence is optional** and off by default; a blocked IndexedDB (private mode)
-  degrades to memory-only instead of breaking the app.
+  degrades to memory-only instead of breaking the app. A flush that fails later — a quota
+  error, a transient IndexedDB problem — is logged and its records go straight back on
+  the queue for the next flush, rather than being dropped.
+* **`capacity` is normalised** — below `1` clamps up, above `1_000_000` clamps down, and
+  a non-finite value falls back to the wasm default — so `capacity()` reports a real
+  number back.
 
 ## Documentation
 

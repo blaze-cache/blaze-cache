@@ -31,8 +31,17 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
 
 ## Behaviour
 
-* **`Cache-Control` is honoured on both sides** — `max-age` overrides `ttlMs`;
-  `no-store` (on the request or the response) bypasses the cache entirely.
+* **`Cache-Control` is honoured on both sides** — `max-age` overrides `ttlMs` *minus the
+  response's `Age`* (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
+  `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
+  — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
+  request skip the read.
+* **Freshness is enforced by the adapter, not by the store** — each record carries the
+  deadline it was written with, so even a store that never expires anything (a plain `Map`
+  shim satisfies the interface) still cannot replay a response past its freshness lifetime.
+* **The key is the URL axios will actually request** — an absolute `url` ignores
+  `baseURL`, the join collapses slashes exactly as axios' `buildFullPath` does, and the
+  result is canonicalised through `new URL`. One endpoint, one entry.
 * **`Authorization` participates in the key** (hashed, never stored verbatim), so a
   personalized response is never replayed to a different user. Tune with `varyHeaders`.
 * **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
@@ -50,6 +59,9 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
   describe the body a GET *would* return.
 * Only responses that pass `validateStatus` are stored; by default the cache keeps
   `GET` requests answering `2xx`.
+* **A cache that throws costs one extra request, never a failed response** — the read and
+  the write are both guarded, and the failure is reported once on the console instead of
+  turning a good network response into a rejected promise.
 
 ## Testing
 

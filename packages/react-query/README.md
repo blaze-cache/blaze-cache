@@ -34,14 +34,20 @@ const todos = useBlazeQuery(cache, {
 
 A mirrored query is injected as `initialData` **with its original `dataUpdatedAt`** —
 the first paint after a reload comes from the cache instantly, while TanStack still
-treats the data as stale and refetches in the background.
+treats the data as stale and refetches in the background. Options that already carry
+`initialData` or `initialDataUpdatedAt` are left entirely alone, and the mirror is looked
+up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 
 ## Behaviour
 
-* Successful fetches and `setQueryData` are written to the shared cache;
-  `removeQueries` deletes from it.
-* Invalidation deliberately keeps the data, so stale-while-revalidate always has
-  something to paint.
+* Successful fetches and `setQueryData` are written to the shared cache.
+* An **explicit** `removeQueries` or `clear` deletes from it. Ordinary garbage
+  collection — a query left unobserved past `gcTime` — deliberately does **not**: that
+  is in-session housekeeping, and the persisted copy is what paints the next session.
+* Invalidation keeps the data too, so stale-while-revalidate always has something to
+  paint.
+* Renders never touch cache statistics: the pre-fetch lookup prefers `peek` over `get`,
+  so StrictMode's double render cannot move the hit rate or influence eviction.
 * Error states stay in TanStack — only data crosses into the cache.
 * TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
 

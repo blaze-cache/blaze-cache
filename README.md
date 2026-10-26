@@ -101,7 +101,10 @@ dependencies you can drop `wasm` entirely — the package then resolves the bina
 to its own module URL (see [Bundler setup](#bundler-setup)).
 
 With `persistence` enabled, `create` hydrates from IndexedDB before it resolves, so data
-written by the previous session is readable on the very next line.
+written by the previous session is readable on the very next line. A row that no longer
+matches the record shape — an older package version, another tab, a flaky adapter — is
+skipped individually and reported once, so one bad row costs that row rather than the
+whole hydration.
 
 ### 2. Cache HTTP responses (optional)
 
@@ -164,6 +167,9 @@ await cache.dispose(); // flushes pending writes, then frees the wasm memory
 ```
 
 The instance is unusable afterwards — call `createCache()` again for a fresh one.
+Teardown happens even when that last flush fails: the timers, listeners and wasm memory
+are still released, and the storage error is rethrown to you afterwards, so a full disk
+cannot leak the instance.
 
 ## Why Wasm
 
@@ -191,7 +197,11 @@ eviction reaches it. `stats().expirations` counts entries that expired rather th
 being explicitly removed.
 
 A `ttlMs` of `0` (or any non-positive or non-finite value) means *no expiry*. This
-matches the Rust core, where `Duration::ZERO` is treated as "unbounded".
+matches the Rust core, where `Duration::ZERO` is treated as "unbounded". The same holds
+for a TTL so far out that it overflows the monotonic clock: it reads as "never expires"
+rather than raising. A *positive* value below a millisecond is rounded **up** to 1 ms, so
+the shortest TTL you can ask for is one tick — not, as a truncating conversion would make
+it, forever.
 
 ### Tags
 
@@ -205,13 +215,17 @@ cache.invalidateTags('profile');   // ['user:1', 'user:2'] — deduplicated, in 
 ```
 
 Writing a key **replaces** its tag set; there is no partial merge. Tag ids are
-monotonic and never reused, so invalidation is a set difference rather than a scan.
+monotonic and never reused, so invalidation is a set difference rather than a scan — and
+because names are interned into a ~4.3-billion-entry id space that is never recycled
+within a process, a bounded vocabulary (`'user:42'`, `'profile'`) beats per-object UUIDs.
 
 ### Eviction
 
-`capacity` bounds the number of entries. When it is reached, SIEVE evicts the oldest
-entry that has not been read since the last eviction pass — entries you actually read
-are protected, which makes the cache scan-resistant.
+`capacity` bounds the number of entries. The wasm binding normalises it before it is used
+— below `1` clamps up, above `1_000_000` clamps down, and a non-finite value falls back to
+the default — so `capacity()` always reports a number inside that range. When the bound is
+reached, SIEVE evicts the oldest entry that has not been read since the last eviction pass
+— entries you actually read are protected, which makes the cache scan-resistant.
 
 A write never evicts itself: capacity is freed **before** the new entry is published.
 
@@ -250,6 +264,19 @@ cache.touch('user', { ttlMs: 60_000 }); // refresh TTL to 60s
   leave it alone, pass `0` to drop it, and note that it returns `false` for a missing or
   already expired key. The stored value is never changed.
 
+### Values
+
+Values are handed back **by reference**: the object you pass to `set` is the very object
+that `get`, `peek`, `entry` and `entries` return later. Mutating either one silently
+rewrites the cache — and, after the next flush, the persisted row — with no error and no
+warning. Treat values living in the cache as read-only: clone on the way *out*
+(`structuredClone(cache.get(key))`) before editing, or clone on the way *in* if you want
+to keep mutating your own copy.
+
+The sharing is deliberate, not an oversight: the hot path never clones or serialises a
+value, which is what keeps `get`/`set` allocation-free. The contract is ownership
+transfer, not deep-copy semantics.
+
 ### Stats
 
 ```ts
@@ -276,8 +303,12 @@ caches in the same database never collide. Writes are debounced, flushed on `pag
 and `visibilitychange`, and absolute expiry is reconstructed from `storedAt` at
 hydration — records that expired while the tab was away are dropped on load.
 
-Failures degrade to memory-only with a console warning rather than rejecting:
-a blocked IndexedDB (private mode, enterprise policy) should never break the app.
+Failures are contained at both ends. An adapter that cannot open at all (private mode,
+enterprise policy) degrades to memory-only with a console warning rather than breaking
+the app. A flush that fails *later* — a quota error, a transient IndexedDB problem — is
+logged and, crucially, every record it had claimed is put straight back on the queue, so
+the next flush retries them instead of losing them. Only an awaited `flush()` or
+`dispose()` surfaces that error to you.
 
 Any storage can be plugged in:
 
@@ -287,9 +318,27 @@ interface CachePersistence {
   save(records: PersistedRecord[]): Promise<void>;
   remove(keys: string[]): Promise<void>;
   clear(): Promise<void>;
+  keys?(): Promise<string[]>;   // reconciliation — see below
   close?(): Promise<void>;
 }
 ```
+
+`keys()` — the optional method that keeps storage honest — exists because the wasm core
+drops entries on its own: a capacity eviction or a lapsed TTL never emits a change event,
+so without a way to list what storage still holds, those rows would outlive every flush,
+re-hydrate at the next startup and eat quota until persistence dies. Implementing it is
+recommended; adapters that skip it keep working exactly as before.
+
+### Multiple tabs
+
+Tabs share one IndexedDB namespace but nothing else: each holds its own wasm instance,
+hydrated once at startup, and each flushes the keys it wrote. There is no coordination
+between them — writes are **last-writer-wins per key**. That is what you want for
+ordinary use (the foreground tab refetches on focus and rewrites its own copy), but a tab
+that keeps working while hidden can flush a value older than the one the focused tab just
+wrote, and that older value is what hydration paints after a reload until revalidation
+corrects it. If it matters, use a short `ttlMs` on records written from background tabs,
+or filter on a timestamp stored inside the value.
 
 ## axios
 
@@ -307,8 +356,17 @@ Behaviour worth knowing:
 
 * The adapter stores the **raw** response body, so axios runs `transformResponse` on a
   hit exactly as it would on a network response — a hit is indistinguishable from a miss.
-* `Cache-Control` is honoured on both sides: `max-age` overrides `ttlMs`; `no-store`
-  (on the request or the response) bypasses the cache entirely.
+* `Cache-Control` is honoured on both sides: `max-age` overrides `ttlMs` **minus the
+  response's `Age`** (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
+  `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
+  — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
+  request skip the read.
+* Freshness is enforced by the adapter, not trusted from the store: every record carries
+  the deadline it was written with, so a store that never expires anything (a plain `Map`
+  shim qualifies) still cannot replay a stale entry.
+* The key is built from the URL axios will actually request — an absolute `url` ignores
+  `baseURL`, and slashes are collapsed exactly as axios' own `buildFullPath` does — so one
+  endpoint occupies one entry instead of several spellings of it.
 * `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`.
   A response's own `Vary` is checked too: `Vary: *` is never stored, and one varying on a
@@ -318,6 +376,8 @@ Behaviour worth knowing:
   stored `404` rejects just like a live one.
 * Only responses that pass `validateStatus` are candidates for storage; the default
   stores `GET` requests answering `2xx`.
+* A cache that throws costs one extra request, never a failed response: reads and writes
+  are guarded, and the failure is reported once on the console.
 * `installBlazeCache` captures the instance's existing adapter *before* replacing it,
   which is what guarantees the wrapper can never call itself.
 
@@ -348,8 +408,18 @@ Behaviour worth knowing:
 * Only `GET` is cached by default (`methods` adds `'HEAD'`), and only `2xx` responses are
   stored unless `shouldCache` says otherwise.
 * `Cache-Control` is honoured on both sides: `max-age`, minus the response's `Age`,
-  overrides `ttlMs`; `no-store` bypasses the read *and* the write; `cache: 'no-cache'` and
-  `forceRefresh` skip the read and rewrite the entry.
+  overrides `ttlMs`; `no-store` bypasses the read *and* the write; `cache: 'no-cache'`,
+  `forceRefresh` and `max-age=0` on the request skip the read and rewrite the entry; a
+  response `no-cache` — per-field spelling included — is never stored; and
+  `must-revalidate`/`proxy-revalidate` closes the stale window entirely, however short.
+* Identical concurrent requests **coalesce**: one caller leads, and the rest wait for its
+  write to settle and replay the record it stored, so a burst of the same `GET` opens one
+  connection instead of N. Only cacheable requests lead (a `POST` is never folded into
+  another), callers that explicitly demanded the network are never joined, and a leader
+  that fails simply opens the gate over an empty cache so its joiners fetch in turn.
+* A cache-layer failure never fails a response the network delivered: a throwing
+  `cache.get`, `cache.set` or `shouldCache` callback costs at most one console warning,
+  after which the wrapper keeps working uncached.
 * `staleWhileRevalidate` serves the stale body immediately and refetches in the background.
   Those responses are marked **`STALE`** rather than `HIT` — the one marker value beyond
   `HIT | MISS`, so a stale paint stays visible in the network tab.
@@ -391,11 +461,18 @@ const todos = useBlazeQuery(cache, {
 TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
 `useBlazeQuery` seeds `initialData` **with its original `dataUpdatedAt`**, so the first
 paint after a reload is instant while TanStack still considers the data stale and
-refetches in the background.
+refetches in the background. Options that already carry `initialData` or
+`initialDataUpdatedAt` are left entirely alone — your data, your timestamp. The lookup is
+hashed exactly as TanStack hashes it, so a custom `queryKeyHashFn` (per query, in
+`setQueryDefaults` or under `defaultOptions.queries`) is honoured on both sides of the
+mirror.
 
-The mirror reacts to query events: successful fetches and `setQueryData` are written,
-`removeQueries` deletes, and invalidation deliberately keeps the data so stale-while-
-revalidate still has something to paint. Error states stay in TanStack.
+The mirror reacts to query events: successful fetches and `setQueryData` are written;
+an **explicit** `removeQueries` or `clear` deletes; invalidation deliberately keeps the
+data so stale-while-revalidate still has something to paint. Ordinary garbage collection
+— a query that sat unobserved past `gcTime` — is housekeeping rather than a purge, so the
+mirror survives it: that copy is what paints the next session. Error states stay in
+TanStack.
 
 ## Bundler setup
 
@@ -458,9 +535,10 @@ either side drifts, and each marker-header assertion is paired with a look *insi
 the store, so a green run means the payload really landed there.
 
 The `fetch` and `axios` packages additionally ship an opt-in **live** suite that talks to
-real public APIs (`api.github.com` and `raw.githubusercontent.com`, keyless, well under
-GitHub's unauthenticated 60 requests/hour) so that *actual* `Cache-Control` headers are
-exercised rather than a stub's idea of them:
+real public APIs — `api.github.com` and `raw.githubusercontent.com` (keyless, and well
+within GitHub's unauthenticated 60 requests/hour) plus `jsonplaceholder.typicode.com` —
+so that *actual* `Cache-Control` and `Vary` headers are exercised rather than a stub's
+idea of them:
 
 ```sh
 pnpm test:live                             # every package's live suite

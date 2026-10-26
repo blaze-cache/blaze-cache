@@ -45,8 +45,14 @@ window.fetch = fetch;                   // now every request in the app is cache
 * **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
   else (including errors from uncached methods) always goes to the network.
 * **`Cache-Control` is honoured on both sides** when `cacheControl` is on (the default):
-  `max-age` overrides `ttlMs`, `Age` is deducted, `no-store`/`no-cache` on the request skip
-  the read, and the same directives on the response stop it being stored.
+  on the request, `no-store`/`no-cache` and `max-age=0` skip the read; on the response,
+  `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache` — the per-field
+  `no-cache="set-cookie"` form included — stop it being stored.
+  `must-revalidate`/`proxy-revalidate` gets no stale window, however short the fresh one.
+* **Identical concurrent requests coalesce** — one caller leads and the rest replay the
+  record it stored, so a burst of the same `GET` opens one connection. Only cacheable
+  requests lead, callers that demanded the network are never joined, and a leader that
+  fails opens the gate over an empty cache so its joiners fetch in turn.
 * **Only successful responses are stored** — the default `shouldCache` keeps `2xx`; replace
   it to widen or narrow that.
 * **`Authorization` participates in the default key** (hashed, never stored verbatim), so a
@@ -54,7 +60,9 @@ window.fetch = fetch;                   // now every request in the app is cache
 * **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
   a response varying on a header you have not put in `varyHeaders` is left uncached rather
   than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
-  That is the safe default working as intended — list them to opt in.
+  That is the safe default working as intended — list them to opt in. The check runs
+  before *every* store, `cacheControl: false` included: variant correctness is not a
+  freshness preference.
 * **A hit is a real `Response`** — status, status text, headers, body, `url` after a
   redirect and `redirected` are replayed exactly, so your code cannot tell the difference
   apart from the marker header.
@@ -71,7 +79,10 @@ window.fetch = fetch;                   // now every request in the app is cache
   bytes — which breaks anything that measures a download. `HEAD` keeps its headers: no
   body was sent, so its `content-length` is what a GET *would* return.
 * **Failures behave like plain `fetch`** — a rejected network call still rejects; a cache
-  that cannot store a response never breaks the request that produced it.
+  that cannot store a response never breaks the request that produced it. Reads, writes
+  and the `shouldCache` callback are all guarded: the first cache-layer failure is
+  announced once on the console, then the wrapper keeps working *without* the cache rather
+  than warning on every call.
 
 ## Options
 
@@ -155,8 +166,12 @@ pnpm --filter @blaze-cache/fetch test         # stubbed network — deterministi
 pnpm --filter @blaze-cache/fetch test:live    # real public API — opt-in, needs the network
 ```
 
-The live suite calls `api.github.com` (keyless, well under ten requests per run) to prove
-that *real* `Cache-Control` headers are read correctly — a stub can only simulate that.
+The live suite calls `api.github.com`, `raw.githubusercontent.com` and
+`jsonplaceholder.typicode.com` — all keyless, and well within GitHub's unauthenticated 60
+requests/hour — to prove that *real* `Cache-Control` and `Vary` headers are read
+correctly; a stub can only simulate that. It also lists each server's vary headers in
+`varyHeaders`, which is exactly the configuration a real deployment needs: a response
+varying on a header the key does not fold in is deliberately left uncached.
 Every test in it is skipped unless `BLAZE_CACHE_LIVE=1` is set, so the default suite always
 passes with no network at all.
 
