@@ -10,8 +10,11 @@ stale-while-revalidate and an `x-blaze-cache: HIT | MISS` marker.
 ## Install
 
 ```sh
-npm install @blaze-cache/fetch @blaze-cache/core
+npm install @blaze-cache/fetch@beta @blaze-cache/core@beta
 ```
+
+`@beta` is npm's dist-tag for the prerelease; drop it to install the last stable
+release.
 
 ## Quick start
 

@@ -15,8 +15,11 @@ also usable on its own.
 ## Install
 
 ```sh
-npm install @blaze-cache/core
+npm install @blaze-cache/core@beta
 ```
+
+`@beta` is npm's dist-tag for the prerelease; drop it to install the last stable
+release.
 
 ## Quick start
 

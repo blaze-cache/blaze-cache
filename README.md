@@ -45,13 +45,15 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core
-npm install @blaze-cache/axios         # optional — axios adapter
-npm install @blaze-cache/fetch         # optional — drop-in fetch() replacement
-npm install @blaze-cache/react-query   # optional — TanStack Query v5
+npm install @blaze-cache/core@beta
+npm install @blaze-cache/axios@beta         # optional — axios adapter
+npm install @blaze-cache/fetch@beta         # optional — drop-in fetch() replacement
+npm install @blaze-cache/react-query@beta   # optional — TanStack Query v5
 ```
 
-`pnpm add …` and `yarn add …` are equivalent.
+`pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
+prerelease this branch documents; drop it (`@blaze-cache/core`, no tag) to install
+the last stable release instead.
 
 | Package | Expects as a peer dependency |
 | --- | --- |

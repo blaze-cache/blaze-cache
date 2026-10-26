@@ -10,8 +10,11 @@ support and IndexedDB persistence.
 ## Install
 
 ```sh
-npm install @blaze-cache/axios   # axios ≥ 1.7 is a peer dependency
+npm install @blaze-cache/axios@beta   # axios ≥ 1.7 is a peer dependency
 ```
+
+`@beta` is npm's dist-tag for the prerelease; drop it to install the last stable
+release.
 
 ## Quick start
 
