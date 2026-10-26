@@ -327,3 +327,45 @@ fn a_hostile_capacity_is_normalised_before_it_reaches_the_core() {
     cache.set("k", JsValue::from_f64(1.0), None, vec![]);
     assert_eq!(cache.get("k").and_then(|v| v.as_f64()), Some(1.0));
 }
+
+/// `ms as u64` truncates towards zero, so a positive sub-millisecond TTL used to become
+/// `Duration::ZERO` — which the core reads as *no expiry*, the exact opposite of what the
+/// caller asked for.
+#[wasm_bindgen_test]
+fn a_sub_millisecond_ttl_expires_instead_of_becoming_immortal() {
+    let mut cache = BlazeCache::new(4.0);
+
+    // `ms as u64` truncates 0.5 to 0, and the core reads `Duration::ZERO` as "no expiry" —
+    // so a sub-millisecond TTL used to produce an entry that outlived the heat death of the
+    // universe. What matters is that a deadline exists at all.
+    cache.set("fleeting", JsValue::NULL, Some(0.5), vec![]);
+    assert!(
+        cache.ttl("fleeting").is_some(),
+        "a positive TTL must install a deadline, never truncate to 'never expires'"
+    );
+
+    // The rules for zero, negatives and NaN are deliberately unchanged: still "no expiry".
+    cache.set("immortal", JsValue::NULL, Some(0.0), vec![]);
+    assert_eq!(cache.ttl("immortal"), None);
+    cache.set("also", JsValue::NULL, Some(-5.0), vec![]);
+    assert_eq!(cache.ttl("also"), None);
+
+    // `touch` truncates the same way, so a renewed sub-millisecond deadline used to vanish.
+    cache.set("touched", JsValue::NULL, None, vec![]);
+    assert_eq!(
+        cache.ttl("touched"),
+        None,
+        "it starts out with no deadline at all"
+    );
+    assert!(cache.touch("touched", Some(0.5)));
+    assert!(
+        cache.ttl("touched").is_some(),
+        "touching with a positive TTL installs a deadline"
+    );
+
+    // The proof: the sub-millisecond entry really does die, while the zero-TTL one lives on.
+    wait_ms(60.0);
+    assert!(!cache.has("fleeting"), "the sub-millisecond entry expired");
+    assert_eq!(cache.ttl("fleeting"), None);
+    assert!(cache.has("immortal"), "…while the zero-TTL one did not");
+}

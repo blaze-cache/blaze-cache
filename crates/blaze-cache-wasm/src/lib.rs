@@ -101,7 +101,10 @@ impl BlazeCache {
         let mut options = EntryOptions::new().tags(tags);
         if let Some(ms) = ttl_ms {
             if ms.is_finite() && ms > 0.0 {
-                options = options.ttl(Duration::from_millis(ms as u64));
+                // `ms as u64` truncates towards zero, so `0.5` would become `Duration::ZERO`
+                // — read by the core as "no expiry", i.e. the exact opposite of a
+                // sub-millisecond TTL. Round *up*: a positive TTL always means "expires".
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
         }
         self.inner.insert_with(key.to_owned(), value, options);
@@ -117,7 +120,9 @@ impl BlazeCache {
     pub fn touch(&mut self, key: &str, ttl_ms: Option<f64>) -> bool {
         let ttl = ttl_ms.map(|ms| {
             if ms.is_finite() && ms > 0.0 {
-                Duration::from_millis(ms as u64)
+                // Same rounding-up rule as `set`: a positive TTL must never truncate to
+                // zero, which the core would read as "drop the deadline".
+                Duration::from_millis((ms as u64).max(1))
             } else {
                 Duration::ZERO
             }
