@@ -36,6 +36,12 @@ impl EntryOptions {
     }
 
     /// Replace the tag list with `tags`.
+    ///
+    /// Tag *names* are interned into a `u32` id space that is never reused (a recycled id
+    /// would let a stale entry inherit somebody else's tag). The space therefore holds
+    /// ~4.29 billion **distinct** names over the lifetime of the process — names are
+    /// forgotten when their last member leaves, but their ids are not handed out again.
+    /// Prefer a bounded vocabulary (`"user:42"`, `"profile"`) over per-object UUIDs.
     pub fn tags<I, S>(mut self, tags: I) -> Self
     where
         I: IntoIterator<Item = S>,

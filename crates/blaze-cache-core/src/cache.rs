@@ -431,6 +431,17 @@ where
     /// Re-inserting an existing key refreshes its value, its deadline **and** its tags, and
     /// re-queues it as the newest entry (unvisited).
     pub fn insert_with(&mut self, key: K, value: V, options: EntryOptions) -> Option<V> {
+        let existing = self.index.get(&key).copied();
+
+        // Make room *before* anything is interned. Eviction forgets a tag once its last
+        // member dies, so sweeping between `intern_all` and `attach` would orphan the tag
+        // the new node is about to carry: `attach` would find no such id, silently do
+        // nothing, and `invalidate_tags` would then never reach this entry. Only new keys
+        // need room — a replacement reuses the slot it already occupies.
+        if existing.is_none() {
+            while self.index.len() >= self.capacity && self.evict_one().is_some() {}
+        }
+
         // The clock is only needed when a TTL is actually requested — a plain write must not
         // pay a wasm→JS `performance.now()` call just to discard the result.
         let expires_at = options
@@ -441,7 +452,7 @@ where
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
 
-        let previous = match self.index.get(&key).copied() {
+        let previous = match existing {
             Some(idx) => {
                 let (old_expires_at, old_tag_ids) = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
@@ -472,9 +483,8 @@ where
                 ))
             }
             None => {
-                // Make room *before* publishing the node: a write must never be able to
-                // evict the entry it just created.
-                while self.index.len() >= self.capacity && self.evict_one().is_some() {}
+                // Room was made above, before the tags were interned: a write must never be
+                // able to evict the entry it just created, nor orphan the tags it carries.
                 let node = Node::new(key.clone(), value, expires_at, new_tag_ids.clone());
                 let idx = match self.free.pop() {
                     Some(idx) => {

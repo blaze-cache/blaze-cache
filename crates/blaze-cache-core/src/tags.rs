@@ -61,10 +61,20 @@ impl TagIndex {
     }
 
     /// Marks `node` as a member of `id`.
+    ///
+    /// The id was interned moments ago and ids are never reused, so finding no tag here
+    /// means the caller's tag list has silently diverged from the index — which is exactly
+    /// how a live entry ends up unreachable by [`invalidate_tags`](crate::Cache::invalidate_tags).
+    /// That must never pass unnoticed.
     pub(crate) fn attach(&mut self, id: u32, node: usize) {
-        if let Some(tag) = self.tags.get_mut(&id) {
-            tag.members.insert(node);
-        }
+        let Some(tag) = self.tags.get_mut(&id) else {
+            debug_assert!(
+                false,
+                "blaze-cache: attaching node to forgotten tag id {id} — the tag index lost a member"
+            );
+            return;
+        };
+        tag.members.insert(node);
     }
 
     /// Removes `node` from `id`, forgetting the tag once it has no members left.

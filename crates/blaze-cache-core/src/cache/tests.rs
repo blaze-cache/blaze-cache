@@ -620,3 +620,57 @@ fn touch_protects_the_entry_from_the_next_eviction() {
     assert_eq!(cache.get("b"), None, "the untouched one went instead");
     assert_eq!(cache.stats().evictions, 1);
 }
+
+// ---------------------------------------------------------------- regression
+
+/// Eviction used to run *between* interning the new entry's tags and attaching them.
+/// When the sweep dropped the tag's last member it forgot the tag outright, so the
+/// following `attach` silently no-oped: the new node carried an id the index had lost,
+/// `keys_with_tag` came back empty and — worst of all — `invalidate_tags` could no longer
+/// reach a live entry, which is the one thing tags exist to do.
+#[test]
+fn a_tag_survives_the_eviction_of_its_only_previous_member() {
+    let mut cache = Cache::new(2);
+    cache.insert_with("a", 1, EntryOptions::new().tag("x"));
+    cache.insert_with("b", 2, EntryOptions::new().tag("y"));
+    // Evicts "a", the only other member of "x", then publishes "c" tagged "x".
+    cache.insert_with("c", 3, EntryOptions::new().tag("x"));
+
+    assert_eq!(tagged_keys(&cache, "x"), vec!["c"]);
+    assert_eq!(cache.tags_of("c"), Some(vec!["x".to_owned()]));
+    assert!(cache.has_tag("c", "x"));
+    assert_eq!(
+        cache.invalidate_tags(["x"]),
+        vec!["c"],
+        "stale data survived"
+    );
+    assert_eq!(cache.len(), 1, "only b is left");
+}
+
+/// Same hole, one step wider: the evicted member and the new entry share the tag *and* the
+/// sweep has to walk past a visited entry to find its victim. The tag must still resolve.
+#[test]
+fn tag_index_stays_consistent_across_a_full_capacity_churn() {
+    let mut cache = Cache::new(3);
+    for round in 0..6 {
+        let key = format!("k{round}");
+        cache.insert_with(key, round, EntryOptions::new().tag("hot").tag("all"));
+        cache.get("k0"); // mark something visited so the sweep skips it
+    }
+
+    // Whatever survived, the invariant is the same: the index and the nodes agree.
+    let live = keys_of(&cache);
+    assert!(!live.is_empty());
+    for key in &live {
+        assert!(
+            cache.has_tag(key, "hot"),
+            "{key} is live but the tag index lost it"
+        );
+    }
+    let invalidated = cache.invalidate_tags(["hot"]);
+    assert_eq!(
+        invalidated.len(),
+        live.len(),
+        "every live entry carried the tag, so every live entry must go"
+    );
+}
