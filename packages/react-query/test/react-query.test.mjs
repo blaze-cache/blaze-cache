@@ -2,11 +2,13 @@
  * Smoke tests for `@blaze-cache/react-query`.
  *
  * They run against the **built** artifacts (`dist/` + the real wasm binary) and drive a real
- * `QueryClient`, so the mirror is exercised exactly as TanStack drives it.
+ * `QueryClient`, so the mirror is exercised exactly as TanStack drives it — including
+ * TanStack's own garbage collector, which fires on a real (shortened) `gcTime` timer.
  *
- * `useBlazeQuery` is deliberately not covered here: rendering a hook needs a DOM renderer
- * (jsdom / testing-library), which this repo does not carry. Its data path — the pre-fetch
- * lookup and the seeding — is the sync layer tested below.
+ * Rendering `useBlazeQuery` itself is deliberately not covered here: running a hook needs a
+ * DOM renderer (jsdom / testing-library), which this repo does not carry. Its whole data
+ * path — the hash resolution, the mirror read and the seeding — lives in the pure
+ * `seedBlazeQueryOptions`, which is tested below alongside the sync layer.
  *
  *   pnpm --filter @blaze-cache/react-query test
  */
@@ -20,6 +22,8 @@ import { createCache } from '@blaze-cache/core';
 import {
   createBlazeQueryClient,
   hashQueryKey,
+  resolveQueryHash,
+  seedBlazeQueryOptions,
   syncBlazeQueryCache,
   useBlazeQuery,
 } from '@blaze-cache/react-query';
@@ -36,6 +40,8 @@ describe('module surface', () => {
     assert.equal(typeof createBlazeQueryClient, 'function');
     assert.equal(typeof syncBlazeQueryCache, 'function');
     assert.equal(typeof hashQueryKey, 'function');
+    assert.equal(typeof resolveQueryHash, 'function');
+    assert.equal(typeof seedBlazeQueryOptions, 'function');
     assert.equal(typeof useBlazeQuery, 'function');
   });
 });
@@ -151,6 +157,219 @@ describe('syncBlazeQueryCache', () => {
 
     stop();
     await client.clear();
+  });
+
+  it('keeps the mirror through garbage collection but deletes it on an explicit purge', async () => {
+    const cache = await makeCache();
+    // A tiny `gcTime` reproduces the audit's scenario in milliseconds: zero observers,
+    // `gcTime` elapsed → `optionalRemove()` → `queryCache.remove()` → the very same
+    // `removed` event an explicit purge produces, with nothing in the event to tell them
+    // apart. Waiting it out on a real timer also proves TanStack really does this.
+    const client = new QueryClient({ defaultOptions: { queries: { gcTime: 10 } } });
+    const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
+
+    const queryKey = ['todos'];
+    client.setQueryData(queryKey, [1, 2, 3]);
+    const hash = hashQueryKey(queryKey);
+    assert.equal(cache.has(hash), true, 'the query is mirrored while it lives');
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(
+      client.getQueryCache().find({ queryKey }),
+      undefined,
+      'TanStack garbage-collected the query — the audit premise holds',
+    );
+    assert.equal(cache.has(hash), true, 'GC must NOT destroy the persisted mirror');
+
+    // Explicit purges still propagate — through both wrapped APIs.
+    client.setQueryData(queryKey, [1, 2, 3]);
+    assert.equal(cache.has(hash), true, 're-mirrored after the GC removal');
+    client.removeQueries({ queryKey });
+    assert.equal(cache.has(hash), false, 'removeQueries still deletes the mirror');
+
+    client.setQueryData(['other'], 42);
+    assert.equal(cache.has(hashQueryKey(['other'])), true, 'another query is mirrored');
+    await client.clear();
+    assert.equal(cache.size(), 0, 'clear still deletes the mirror');
+
+    stop();
+  });
+
+  it('patches removeQueries/clear while attached and restores them on unsubscribe', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const originalRemoveQueries = client.removeQueries;
+    const originalClear = client.clear;
+
+    const stop = syncBlazeQueryCache(client, { cache });
+    assert.notEqual(client.removeQueries, originalRemoveQueries, 'removeQueries is wrapped');
+    assert.notEqual(client.clear, originalClear, 'clear is wrapped');
+
+    stop();
+    assert.equal(client.removeQueries, originalRemoveQueries, 'the original removeQueries is back');
+    assert.equal(client.clear, originalClear, 'the original clear is back');
+    assert.equal(
+      Object.hasOwn(client, 'removeQueries'),
+      false,
+      'no wrapper is left behind on the client',
+    );
+    assert.equal(Object.hasOwn(client, 'clear'), false, '…for either method');
+
+    // The restored originals are intact — still TanStack's own behaviour.
+    client.setQueryData(['x'], 1);
+    client.removeQueries({ queryKey: ['x'] });
+    assert.equal(
+      client.getQueryCache().find({ queryKey: ['x'] }),
+      undefined,
+      'the original removeQueries still removes queries',
+    );
+
+    // A detached sync mirrors nothing anymore.
+    client.setQueryData(['y'], 2);
+    assert.equal(cache.size(), 0, 'detaching stops the mirror');
+
+    await client.clear();
+  });
+});
+
+describe('seedBlazeQueryOptions', () => {
+  it('seeds both timestamps from the mirror — but never touches caller-supplied data', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
+
+    client.setQueryData(['todos'], [1, 2]);
+    const mirror = cache.get(hashQueryKey(['todos']));
+
+    // Caller supplies neither → both fields are seeded together, in sync with the mirror.
+    const seeded = seedBlazeQueryOptions(cache, client, { queryKey: ['todos'] });
+    assert.deepEqual(seeded.initialData, [1, 2], 'the mirrored payload is seeded');
+    assert.equal(seeded.initialDataUpdatedAt, mirror.dataUpdatedAt, 'with the mirror timestamp');
+
+    // Caller supplies data *and* a timestamp → the mirror keeps its fields to itself.
+    const supplied = seedBlazeQueryOptions(cache, client, {
+      queryKey: ['todos'],
+      initialData: [9],
+      initialDataUpdatedAt: 1_000,
+    });
+    assert.deepEqual(supplied.initialData, [9], "the caller's data survives");
+    assert.equal(supplied.initialDataUpdatedAt, 1_000, "the caller's timestamp survives");
+
+    // Caller supplies data without a timestamp → the mirror must not stamp its own,
+    // unrelated, old timestamp onto it: TanStack would read that as ancient data and
+    // refetch immediately, defeating the caller's fresh `initialData`.
+    const dataOnly = seedBlazeQueryOptions(cache, client, {
+      queryKey: ['todos'],
+      initialData: [9],
+    });
+    assert.deepEqual(dataOnly.initialData, [9], "the caller's data survives");
+    assert.equal(
+      dataOnly.initialDataUpdatedAt,
+      undefined,
+      'the mirror timestamp no longer rides along',
+    );
+
+    // No mirror record at all → options pass through untouched.
+    const cold = seedBlazeQueryOptions(cache, client, { queryKey: ['missing'] });
+    assert.equal(cold.initialData, undefined, 'nothing seeded without a mirror');
+    assert.equal(cold.initialDataUpdatedAt, undefined);
+
+    stop();
+  });
+
+  it('reads what sync wrote when a custom queryKeyHashFn is configured', async () => {
+    const cache = await makeCache();
+    const clientHash = (queryKey) => `client:${hashKey(queryKey)}`;
+    const client = new QueryClient({
+      defaultOptions: { queries: { queryKeyHashFn: clientHash } },
+    });
+    const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
+
+    // Client-level default: sync writes under TanStack's custom hash…
+    client.setQueryData(['todos'], [1]);
+    assert.equal(cache.has(clientHash(['todos'])), true, 'sync honored the custom hasher');
+    assert.equal(cache.has(hashKey(['todos'])), false, 'nothing landed under the default hash');
+    assert.equal(
+      resolveQueryHash(client, ['todos']),
+      clientHash(['todos']),
+      'the resolver replays TanStack’s option chain',
+    );
+
+    // …and the lookup lands on it instead of silently missing the mirror.
+    const seeded = seedBlazeQueryOptions(cache, client, { queryKey: ['todos'] });
+    assert.deepEqual(seeded.initialData, [1], 'the custom-hash path reads what sync wrote');
+    assert.equal(seeded.initialDataUpdatedAt, cache.get(clientHash(['todos'])).dataUpdatedAt);
+
+    // Per-query `queryKeyHashFn` beats the client default on both sides of the fence.
+    const perQueryHash = (queryKey) => `per:${hashKey(queryKey)}`;
+    await client.fetchQuery({
+      queryKey: ['posts'],
+      queryKeyHashFn: perQueryHash,
+      queryFn: async () => ['p'],
+    });
+    assert.equal(cache.has(perQueryHash(['posts'])), true, 'mirrored under the per-query hash');
+    const seededPer = seedBlazeQueryOptions(cache, client, {
+      queryKey: ['posts'],
+      queryKeyHashFn: perQueryHash,
+    });
+    assert.deepEqual(seededPer.initialData, ['p'], 'the per-query hasher reads its own entry');
+
+    // `setQueryDefaults` sits between the two and wins over the client default.
+    client.setQueryDefaults(['settings'], {
+      queryKeyHashFn: (queryKey) => `defaults:${hashKey(queryKey)}`,
+    });
+    client.setQueryData(['settings'], { theme: 'dark' });
+    assert.equal(
+      cache.has(`defaults:${hashKey(['settings'])}`),
+      true,
+      'mirrored under the per-key default hash',
+    );
+    const seededDefaults = seedBlazeQueryOptions(cache, client, { queryKey: ['settings'] });
+    assert.deepEqual(
+      seededDefaults.initialData,
+      { theme: 'dark' },
+      'setQueryDefaults hashing is replayed too',
+    );
+
+    stop();
+  });
+
+  it('reads the mirror with peek so renders never move the stats', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
+
+    client.setQueryData(['todos'], [1]);
+    assert.equal(typeof cache.peek, 'function', 'the concrete cache offers the pure read');
+
+    let gets = 0;
+    const counting = {
+      get: (key) => {
+        gets += 1;
+        return cache.get(key);
+      },
+      peek: (key) => cache.peek(key),
+      set: (key, value, options) => cache.set(key, value, options),
+      delete: (key) => cache.delete(key),
+      has: (key) => cache.has(key),
+    };
+
+    const seeded = seedBlazeQueryOptions(counting, client, { queryKey: ['todos'] });
+    assert.equal(gets, 0, 'peek is preferred — the side-effecting get never runs');
+    assert.deepEqual(seeded.initialData, [1], 'and the lookup still finds the mirror');
+
+    // A cache predating `peek` (optional on the interface) still works via `get`.
+    const getOnly = {
+      get: counting.get,
+      set: counting.set,
+      delete: counting.delete,
+      has: counting.has,
+    };
+    const fallback = seedBlazeQueryOptions(getOnly, client, { queryKey: ['todos'] });
+    assert.equal(gets, 1, 'falls back to the recording read when peek is absent');
+    assert.deepEqual(fallback.initialData, [1], 'with the same seeded payload');
+
+    stop();
   });
 });
 

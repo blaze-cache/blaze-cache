@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query';
-import type { QueryCacheNotifyEvent } from '@tanstack/react-query';
+import type { QueryCacheNotifyEvent, QueryFilters } from '@tanstack/react-query';
 
 import type { BlazeQueryClientOptions, BlazeQuerySyncOptions } from './types.js';
 
@@ -18,10 +18,34 @@ const DEFAULT_TAGS: readonly string[] = ['react-query'];
  * | `updated` + `success`/`setState` | mirrored — a completed fetch or `setQueryData` |
  * | `updated` + `invalidate` | **kept** — stale data stays so `staleTime: 0` can still paint instantly |
  * | `updated` + `error` | ignored — TanStack owns error state in-session |
- * | `removed` | deleted, so `removeQueries` really removes it |
+ * | `removed` after an explicit purge | deleted, so `removeQueries`/`clear` really remove it |
+ * | `removed` after garbage collection | **kept** — GC is in-session housekeeping, not a purge |
  *
- * Returns the unsubscribe function; {@link createBlazeQueryClient} wires it into
- * `client.destroy()`.
+ * ### Telling garbage collection from an explicit purge
+ *
+ * TanStack emits the same `removed` event for both, carrying nothing that distinguishes
+ * them: once a query has sat at zero observers for `gcTime` (5 minutes by default),
+ * `optionalRemove()` calls `queryCache.remove()` and the subscriber is none the wiser.
+ * Deleting the mirror there would gut the design — navigate away for a few minutes, come
+ * back, and every persisted query has silently vanished, taking the "instant first paint
+ * from IndexedDB" feature with it.
+ *
+ * Since the event offers no hook, the explicit APIs are wrapped instead: for the lifetime of
+ * this subscription, `client.removeQueries` and `client.clear` raise an `explicitRemoval`
+ * flag around the original call — in a `try/finally`, bound to the client so the signature
+ * and return value are untouched — and the subscriber deletes the mirror only while that
+ * flag is up (`skip` still applies). The returned unsubscribe function restores the
+ * originals verbatim, so a long-lived client is never left permanently patched; if a second
+ * sync is stacked on the same client, wrappers restore in whichever order they detach (the
+ * outermost one always puts back exactly what it found).
+ *
+ * Returns the unsubscribe function — call it to detach. {@link createBlazeQueryClient} does
+ * not need it: the listener hangs off the client's own `QueryCache`, so client, cache and
+ * subscription are collected together when you drop the client. There is also nothing to
+ * wire teardown into — TanStack's `QueryClient` has no `destroy()` method, and its real
+ * lifecycle hooks (`mount`/`unmount`) fire on every `QueryClientProvider` mount — including
+ * StrictMode's immediate re-mount — so hooking them would detach the mirror while the client
+ * very much still lives.
  */
 export function syncBlazeQueryCache(
   client: QueryClient,
@@ -31,12 +55,68 @@ export function syncBlazeQueryCache(
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const tags = options.tags ?? DEFAULT_TAGS;
 
-  return client.getQueryCache().subscribe((event: QueryCacheNotifyEvent) => {
+  // Raised only while a wrapped explicit purge is on the stack — see the doc comment above.
+  let explicitRemoval = false;
+
+  // Whatever sits on the client's own properties right now — usually nothing, since the
+  // methods live on `QueryClient.prototype`, but another sync stacked on this client would
+  // have left its wrapper here, and we must put that back untouched.
+  const previousRemoveQueries = Object.getOwnPropertyDescriptor(client, 'removeQueries');
+  const previousClear = Object.getOwnPropertyDescriptor(client, 'clear');
+
+  // Bound to the client, so the wrappers below are transparent: same signature, same return
+  // value, same private-field access as the methods they stand in for.
+  const originalRemoveQueries = client.removeQueries.bind(client) as (
+    filters?: QueryFilters,
+  ) => void;
+  const originalClear = client.clear.bind(client);
+
+  const patchedRemoveQueries: typeof client.removeQueries = (filters?: QueryFilters) => {
+    explicitRemoval = true;
+    try {
+      return originalRemoveQueries(filters);
+    } finally {
+      explicitRemoval = false;
+    }
+  };
+  const patchedClear: typeof client.clear = () => {
+    explicitRemoval = true;
+    try {
+      return originalClear();
+    } finally {
+      explicitRemoval = false;
+    }
+  };
+
+  client.removeQueries = patchedRemoveQueries;
+  client.clear = patchedClear;
+
+  /**
+   * Puts back exactly what was on the client before this sync patched it — normally removing
+   * our own property so the prototype method shows through again. Only while our wrapper is
+   * still the outermost one: a sync attached later stacked its wrapper on top of ours, and
+   * it will restore us itself when *it* detaches, so unwinding out of order must not rip it
+   * away mid-flight.
+   */
+  const restore = (
+    name: 'removeQueries' | 'clear',
+    wrapper: unknown,
+    previous: PropertyDescriptor | undefined,
+  ): void => {
+    if (client[name] !== wrapper) return;
+    if (previous) Object.defineProperty(client, name, previous);
+    else Reflect.deleteProperty(client, name);
+  };
+
+  const unsubscribe = client.getQueryCache().subscribe((event: QueryCacheNotifyEvent) => {
     const { query } = event;
     const hash = query.queryHash;
 
     if (event.type === 'removed') {
-      if (!options.skip?.(query.queryKey, hash)) cache.delete(hash);
+      // GC and explicit purges are indistinguishable in the event — the wrapper flag above
+      // is the only difference. Keep the mirror through GC: the persisted copy exists for
+      // the next session's first paint, not for this one's housekeeping.
+      if (explicitRemoval && !options.skip?.(query.queryKey, hash)) cache.delete(hash);
       return;
     }
 
@@ -50,6 +130,12 @@ export function syncBlazeQueryCache(
 
     cache.set(hash, { data, dataUpdatedAt: query.state.dataUpdatedAt }, { ttlMs, tags });
   });
+
+  return () => {
+    unsubscribe();
+    restore('removeQueries', patchedRemoveQueries, previousRemoveQueries);
+    restore('clear', patchedClear, previousClear);
+  };
 }
 
 /**
@@ -63,8 +149,11 @@ export function syncBlazeQueryCache(
  * ```
  *
  * The subscription lives exactly as long as the client: the `QueryCache` holds the listener,
- * and the client holds the cache, so they are collected together once you drop the client.
- * Need an explicit handle? Use {@link syncBlazeQueryCache} instead.
+ * and the client holds the cache, so they are collected together once you drop the client —
+ * there is no `destroy()` on TanStack's `QueryClient` to wire teardown into, and none is
+ * needed. The method wrappers {@link syncBlazeQueryCache} installs live just as long and go
+ * with the client; attach by hand via {@link syncBlazeQueryCache} if you want an unsubscribe
+ * that releases them earlier.
  */
 export function createBlazeQueryClient(options: BlazeQueryClientOptions): QueryClient {
   const { client: clientOptions, ...syncOptions } = options;

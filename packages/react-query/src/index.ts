@@ -25,8 +25,8 @@
  */
 
 export { createBlazeQueryClient, syncBlazeQueryCache } from './sync.js';
-export { hashQueryKey } from './hash.js';
-export { useBlazeQuery } from './useBlazeQuery.js';
+export { hashQueryKey, resolveQueryHash } from './hash.js';
+export { seedBlazeQueryOptions, useBlazeQuery } from './useBlazeQuery.js';
 
 export type {
   BlazeQueryCacheLike,

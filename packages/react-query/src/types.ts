@@ -20,6 +20,17 @@ export interface BlazeQueryRecord<T = unknown> {
  */
 export interface BlazeQueryCacheLike {
   get(key: string): BlazeQueryRecord | undefined;
+  /**
+   * The same lookup as {@link BlazeQueryCacheLike.get}, minus every side effect: no hit or miss
+   * is recorded and the entry is not marked visited for eviction.
+   *
+   * Optional, so a cache that only implements `get` keeps typechecking — {@link useBlazeQuery}
+   * falls back to the recording read for those. The concrete `BlazeCache` has it, and the hook
+   * prefers it: rendering must not be able to move the hit rate or decide who gets evicted
+   * next, and renders happen far more often than real reads (StrictMode double-renders,
+   * discarded concurrent renders).
+   */
+  peek?(key: string): BlazeQueryRecord | undefined;
   set(
     key: string,
     value: BlazeQueryRecord,
