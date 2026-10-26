@@ -4,7 +4,7 @@
 # `rust-toolchain.toml` — rustup installs whatever the file declares on first use, so no
 # job pins a version here. Two jobs:
 #
-#   host  — rustfmt, clippy (-D warnings), `cargo test --workspace` (36 unit + 3 doctest)
+#   host  — rustfmt, clippy (-D warnings), `cargo test --workspace` (41 unit + 3 doctest)
 #   wasm  — `wasm-pack test --node`: the `#[wasm_bindgen_test]` suite in bindings tests.rs
 #           against the real wasm-bindgen glue, running in Node (no WebDriver needed).
 name: Rust
