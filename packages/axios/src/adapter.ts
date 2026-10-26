@@ -7,7 +7,7 @@ import type {
   InternalAxiosRequestConfig,
 } from 'axios';
 
-import { parseCacheControl } from './cache-control.js';
+import { parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
 import { defaultCacheKey } from './key.js';
 import { readHeader, toAxiosHeaders, toPlainHeaders } from './headers.js';
 import type {
@@ -50,15 +50,34 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
   return async function blazeCacheAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse> {
     const requestControl = parseCacheControl(readHeader(config.headers, 'Cache-Control'));
     // `no-store`: neither read nor write. `no-cache`: may store, but must not serve blindly.
+    // `max-age=0`: the caller declares that nothing stored is fresh any more (RFC 9111
+    // §5.2.2.1) — and with no conditional requests available here, the only honest answer
+    // is to skip the read and go to the network.
     const skipWrite = requestControl.noStore;
-    const skipRead = requestControl.noStore || requestControl.noCache;
+    const skipRead =
+      requestControl.noStore || requestControl.noCache || requestControl.maxAgeMs === 0;
     const key = keyOf(config);
 
     if (!skipRead) {
-      const record = cache.get(key);
-      if (record) {
-        return settle(cachedResponse(record, config, markerHeader), config);
+      let cached: CachedAxiosResponse | undefined;
+      try {
+        const record = cache.get(key);
+        if (record && Date.now() <= record.freshUntil) {
+          cached = cachedResponse(record, config, markerHeader);
+        } else if (record) {
+          // Past its own deadline — the store itself may never expire anything (the types
+          // bless a plain `Map` shim, which drops nothing), so the record is dropped here.
+          // Left alone it would linger as dead weight that nothing is allowed to serve.
+          cache.delete?.(key);
+        }
+      } catch (error) {
+        // A cache that throws must cost one extra request — never a failed response.
+        console.warn(
+          '[blaze-cache] reading from the cache failed — falling back to the network',
+          error,
+        );
       }
+      if (cached) return settle(cached, config);
     }
 
     const response = await network(config);
@@ -66,23 +85,46 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
       response.headers = toAxiosHeaders(response.headers).set(markerHeader, MISS);
     }
 
-    if (!skipWrite && shouldCache(response, config)) {
-      const control = parseCacheControl(readHeader(response.headers, 'Cache-Control'));
-      const ttlMs = control.maxAgeMs ?? resolveTtl(options.ttlMs, response, config);
-      // `max-age=0` (or a non-positive TTL) means "do not keep this".
-      if (!(control.noStore || control.noCache) && ttlMs > 0) {
-        const method = (config.method ?? 'get').toLowerCase();
-        const record: AxiosCacheRecord = {
-          status: response.status,
-          statusText: response.statusText,
-          headers: storedHeaders(response.headers, response.data),
-          // Raw on purpose: axios runs `transformResponse` on replay, exactly as it would
-          // for a fresh network response.
-          data: response.data,
-          storedAt: Date.now(),
-        };
-        const tags = options.tags?.(response, config) ?? ['axios', `${method} ${config.url ?? ''}`];
-        cache.set(key, record, { ttlMs, tags });
+    if (!skipWrite) {
+      try {
+        // The response's own `Vary` gates the store: `Vary: *` is never cacheable, and a
+        // response varying on a header outside `varyHeaders` would be replayed to callers
+        // who differ in exactly that header — see `varyIsStorable` for why "unknown ⇒ do
+        // not store" is the only safe answer.
+        const storable =
+          shouldCache(response, config) &&
+          varyIsStorable(readHeader(response.headers, 'Vary'), varyHeaders);
+        if (storable) {
+          const control = parseCacheControl(readHeader(response.headers, 'Cache-Control'));
+          // `Age` spends the origin's freshness budget before it reaches us: a response
+          // replayed with `max-age=60, Age: 50` has ten seconds of life left, not sixty.
+          const ageMs = parseAgeMs(readHeader(response.headers, 'Age'));
+          const ttlMs = (control.maxAgeMs ?? resolveTtl(options.ttlMs, response, config)) - ageMs;
+          // `max-age=0` (or a non-positive TTL) means "do not keep this" — and so does a
+          // response whose `Age` already carries it past its freshness lifetime: by the time
+          // it landed here there was nothing fresh left to store.
+          if (!(control.noStore || control.noCache) && ttlMs > 0) {
+            const method = (config.method ?? 'get').toLowerCase();
+            const storedAt = Date.now();
+            const record: AxiosCacheRecord = {
+              status: response.status,
+              statusText: response.statusText,
+              headers: storedHeaders(response.headers, response.data),
+              // Raw on purpose: axios runs `transformResponse` on replay, exactly as it would
+              // for a fresh network response.
+              data: response.data,
+              storedAt,
+              freshUntil: storedAt + ttlMs,
+            };
+            const tags =
+              options.tags?.(response, config) ?? ['axios', `${method} ${config.url ?? ''}`];
+            cache.set(key, record, { ttlMs, tags });
+          }
+        }
+      } catch (error) {
+        // The network response is good; a broken cache layer (hooks or store) must not be
+        // able to turn it into a failed request. Serving it unstored costs one request.
+        console.warn('[blaze-cache] storing the response failed — it is returned unstored', error);
       }
     }
 

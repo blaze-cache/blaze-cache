@@ -16,6 +16,14 @@ export interface AxiosCacheRecord {
   data: unknown;
   /** `Date.now()` when the response was stored. */
   storedAt: number;
+  /**
+   * `Date.now()` at which this record stops being fresh.
+   *
+   * The read path checks this itself instead of trusting the store: {@link BlazeAxiosCacheLike}
+   * is deliberately structural — a plain `Map` shim qualifies — and such a store never
+   * expires anything, so without this deadline a record would be replayed forever.
+   */
+  freshUntil: number;
 }
 
 /**
@@ -84,6 +92,13 @@ export interface BlazeAxiosCacheOptions {
 export interface BlazeAxiosCacheLike {
   get(key: string): AxiosCacheRecord | undefined;
   set(key: string, value: AxiosCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  /**
+   * Optional, so a minimal `Map` shim still satisfies the interface.
+   *
+   * When present, the adapter uses it to drop a record it found past {@link AxiosCacheRecord.freshUntil} —
+   * without it a non-expiring store would keep dead weight it is never allowed to serve.
+   */
+  delete?(key: string): boolean | void;
 }
 
 export type { AxiosAdapter, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig };

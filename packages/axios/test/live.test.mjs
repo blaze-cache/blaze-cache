@@ -62,7 +62,17 @@ const realApi = (cache, options = {}) => {
       return real(config);
     },
   });
-  installBlazeCache(instance, { cache, ttlMs: 30_000, ...options });
+  installBlazeCache(instance, {
+    cache,
+    ttlMs: 30_000,
+    // GitHub answers `Vary: Accept,Accept-Encoding, X-Requested-With`. The default
+    // `varyHeaders` is only `['authorization']`, and a response varying on a header we
+    // don't key on is deliberately *not* stored — an unknown variant must never be replayed.
+    // Naming them here is what keys the entry on them, so the round-trip assertions below
+    // run against a real, storable response instead of never finding one.
+    varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with'],
+    ...options,
+  });
   return { instance, requests: () => requests };
 };
 

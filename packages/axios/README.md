@@ -35,6 +35,10 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
   `no-store` (on the request or the response) bypasses the cache entirely.
 * **`Authorization` participates in the key** (hashed, never stored verbatim), so a
   personalized response is never replayed to a different user. Tune with `varyHeaders`.
+* **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
+  a response varying on a header you have not put in `varyHeaders` is left uncached rather
+  than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
+  That is the safe default working as intended — list them to opt in.
 * **A hit behaves like a network response** — the raw body is stored, so
   `transformResponse` runs on it exactly as it would on a miss, and it is replayed
   through the *current* request's `validateStatus` (a stored `404` still rejects).
@@ -54,7 +58,7 @@ pnpm --filter @blaze-cache/axios test        # offline — canned adapter, no ne
 pnpm --filter @blaze-cache/axios test:live   # live — real public APIs, needs the network
 ```
 
-The offline suite (14 tests) stubs the network so it can assert exact call counts and look
+The offline suite (26 tests) stubs the network so it can assert exact call counts and look
 inside the store: payload, status, stored headers, TTL window, tags and key shape. The
 live suite (4 tests) runs against `api.github.com` and a real PNG, proving that the
 server's own `Cache-Control` is parsed, that a rejected `401` never overwrites a good

@@ -20,7 +20,9 @@ import {
   defaultCacheKey,
   fnv1a,
   installBlazeCache,
+  parseAgeMs,
   parseCacheControl,
+  varyIsStorable,
 } from '@blaze-cache/axios';
 
 const wasmBytes = await readFile(
@@ -301,6 +303,192 @@ describe('adapter', () => {
     );
     assert.equal(record.data, null, 'with no body stored alongside it');
   });
+
+  it('spends the response Age against the freshness window', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({
+      '/aged': {
+        status: 200,
+        data: { n: 1 },
+        // Replayed by an intermediary halfway to its deadline — the remaining ten seconds,
+        // not the full sixty, are what we may keep.
+        headers: { 'cache-control': 'max-age=60', age: '50' },
+      },
+      '/ancient': {
+        status: 200,
+        data: { n: 2 },
+        headers: { 'cache-control': 'max-age=60', age: '60' },
+      },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/aged', headers: new AxiosHeaders() });
+    const { key, record } = onlyRecord(cache);
+    assert.equal(
+      record.freshUntil - record.storedAt,
+      10_000,
+      'max-age=60 minus Age=50 leaves exactly 10s of freshness',
+    );
+    assert.ok(
+      cache.entry(key).ttlMs <= 10_000 && cache.entry(key).ttlMs > 9_000,
+      `the store agrees, got ${cache.entry(key).ttlMs}ms`,
+    );
+
+    await blaze({ method: 'get', url: '/aged', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 1, 'the shortened window still serves a hit');
+
+    // Age ≥ max-age: the response arrived already past its freshness lifetime.
+    await blaze({ method: 'get', url: '/ancient', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/ancient', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 3, 'a response with no freshness left is never stored');
+    assert.equal(cache.size(), 1, 'the store still holds only /aged');
+  });
+
+  it('refuses to store a response whose Vary it cannot honour', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({
+      '/star': { status: 200, data: { n: 1 }, headers: { vary: '*' } },
+      // Not among the configured varyHeaders (`['authorization']`) — we cannot tell two
+      // requests apart by a header the key never sees.
+      '/unconfigured': { status: 200, data: { n: 2 }, headers: { vary: 'accept-encoding' } },
+      // Configured, and matched case-insensitively: `Authorization` ≡ `authorization`.
+      '/configured': { status: 200, data: { n: 3 }, headers: { vary: 'Authorization' } },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/star', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/star', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/unconfigured', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/unconfigured', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/configured', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/configured', headers: new AxiosHeaders() });
+
+    assert.equal(
+      calls.length,
+      5,
+      'Vary: * and an unconfigured vary always bounce to the network; the configured one hits',
+    );
+    assert.equal(cache.size(), 1, 'only the response we can key correctly is stored');
+    assert.ok(onlyRecord(cache).key.includes('/configured'));
+  });
+
+  it('honours freshUntil even when the cache itself never expires anything', async () => {
+    // The documented interface allows a plain `Map` shim — which drops nothing, ever. Only
+    // the record's own clock can stop it from replaying stale responses.
+    const store = new Map();
+    const shim = {
+      get: (key) => store.get(key),
+      set: (key, value) => store.set(key, value),
+      delete: (key) => store.delete(key),
+    };
+    let allowStore = true;
+    const { adapter, calls } = stubNetwork({ '/shim': { status: 200, data: { n: 1 } } });
+    const blaze = blazeAdapter({ cache: shim, adapter, shouldCache: () => allowStore });
+
+    await blaze({ method: 'get', url: '/shim', headers: new AxiosHeaders() });
+    const hit = await blaze({ method: 'get', url: '/shim', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 1, 'while fresh, the shim-served record is a hit');
+    assert.equal(hit.fromBlazeCache, true);
+
+    const [key] = [...store.keys()];
+    store.get(key).freshUntil = Date.now() - 1;
+    allowStore = false;
+    const miss = await blaze({ method: 'get', url: '/shim', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 2, 'past freshUntil it is a miss, shim or no shim');
+    assert.equal(miss.fromBlazeCache, undefined);
+    assert.equal(store.size, 0, 'and the expired record was deleted, not left to linger');
+  });
+
+  it('lets a request Cache-Control: max-age=0 bypass the read', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({
+      '/m0': { status: 200, data: { n: 1 }, headers: { 'cache-control': 'max-age=60' } },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/m0', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/m0', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 1, 'by itself the stored response is fresh enough');
+
+    // RFC 9111 §5.2.2.1: max-age=0 means "nothing stored counts as fresh" — and with no
+    // conditional requests available here, skipping the read is the only honest answer.
+    const fresh = await blaze({
+      method: 'get',
+      url: '/m0',
+      headers: new AxiosHeaders({ 'cache-control': 'max-age=0' }),
+    });
+    assert.equal(calls.length, 2, 'the read was bypassed');
+    assert.equal(fresh.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(fresh.fromBlazeCache, undefined);
+  });
+
+  it('never lets a throwing cache layer fail a good response', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/boom': { status: 200, data: { ok: true } } });
+    const blaze = blazeAdapter({
+      cache,
+      adapter,
+      shouldCache: () => {
+        throw new Error('shouldCache exploded');
+      },
+    });
+
+    const response = await blaze({ method: 'get', url: '/boom', headers: new AxiosHeaders() });
+    assert.equal(response.status, 200, 'the network response reaches the caller untouched');
+    assert.equal(cache.size(), 0, 'nothing was stored');
+    assert.equal(calls.length, 1);
+
+    const noRead = blazeAdapter({
+      cache: {
+        get() {
+          throw new Error('cache.get exploded');
+        },
+        set() {},
+      },
+      adapter,
+    });
+    const fellThrough = await noRead({ method: 'get', url: '/boom', headers: new AxiosHeaders() });
+    assert.equal(fellThrough.status, 200, 'a throwing read falls through to the network');
+    assert.equal(calls.length, 2);
+  });
+
+  it('stores and replays a literal __proto__ header as an own property', async () => {
+    const cache = await makeCache();
+    // A legal header name that plain assignment cannot carry — `Object.defineProperty`, not
+    // `headers.__proto__ = …`, is what makes this an own key in the first place.
+    const headers = { 'content-type': 'application/json' };
+    Object.defineProperty(headers, '__proto__', {
+      value: 'still-here',
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    const { adapter } = stubNetwork({ '/proto': { status: 200, data: { ok: true }, headers } });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/proto', headers: new AxiosHeaders() });
+    const { record } = onlyRecord(cache);
+    assert.ok(
+      Object.keys(record.headers).includes('__proto__'),
+      'the legal header survived into the store',
+    );
+    assert.equal(record.headers['__proto__'], 'still-here', 'with its value intact');
+    assert.equal(
+      Object.getPrototypeOf(record.headers),
+      Object.prototype,
+      'as a plain own key, not a re-targeted prototype',
+    );
+
+    const hit = await blaze({ method: 'get', url: '/proto', headers: new AxiosHeaders() });
+    assert.equal(hit.headers.get('__proto__'), 'still-here', 'and it comes back on replay');
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
+    assert.equal(
+      Object.getPrototypeOf(hit.headers),
+      AxiosHeaders.prototype,
+      'without disturbing the AxiosHeaders prototype chain',
+    );
+    assert.ok(!('still-here' in {}), 'and nothing leaked onto Object.prototype');
+  });
 });
 
 describe('installBlazeCache', () => {
@@ -414,6 +602,82 @@ describe('defaultCacheKey', () => {
       'non-GET methods key differently too',
     );
   });
+
+  it('resolves baseURL + url instead of concatenating them', () => {
+    // The concatenation bug: `…/v1` + `s/users` and `…/v` + `1s/users` used to produce one
+    // identical key for two different endpoints — a cross-endpoint replay waiting to happen.
+    const one = defaultCacheKey(
+      { baseURL: 'https://api.test/v1', url: 's/users', headers: {} },
+      [],
+    );
+    const two = defaultCacheKey({ baseURL: 'https://api.test/v', url: '1s/users', headers: {} }, []);
+    assert.notEqual(one, two, 'two endpoints must not share a key');
+
+    // …and the mirror image: axios requests `https://api.test/v1/users` for *both* of these
+    // (`buildFullPath` collapses the slashes), so both must land on one key too.
+    const trailing = defaultCacheKey(
+      { baseURL: 'https://api.test/v1/', url: '/users', headers: {} },
+      [],
+    );
+    const bare = defaultCacheKey({ baseURL: 'https://api.test/v1', url: '/users', headers: {} }, []);
+    assert.equal(trailing, bare, 'the same request must find the same entry');
+    assert.ok(
+      trailing.startsWith('get https://api.test/v1/users?'),
+      `the key names the URL axios builds, got ${trailing}`,
+    );
+
+    // An absolute url ignores the base entirely — `baseURL + url` used to glue them into
+    // `https://api.testhttps://…`.
+    const elsewhere = defaultCacheKey(
+      { baseURL: 'https://api.test', url: 'https://other.test/u', headers: {} },
+      [],
+    );
+    assert.ok(elsewhere.startsWith('get https://other.test/u?'), `got ${elsewhere}`);
+
+    // Not absolute-able? Fall back to the join, which is still the string axios requests.
+    const relative = defaultCacheKey({ baseURL: '/api', url: 'users', headers: {} }, []);
+    assert.ok(relative.startsWith('get /api/users?'), `relative bases stay relative: ${relative}`);
+    const noBase = defaultCacheKey({ url: 'users', headers: {} }, []);
+    assert.ok(noBase.startsWith('get users?'), `no base means the raw url: ${noBase}`);
+  });
+
+  it('keeps vary values apart without a shared delimiter', () => {
+    // A space join makes these two hash alike, although they describe different requests:
+    // the values' own spaces cannot be told apart from the separator between names.
+    const spaced = defaultCacheKey({ url: '/u', headers: { a: 'x', b: 'y z' } }, ['a', 'b']);
+    const shifted = defaultCacheKey({ url: '/u', headers: { a: 'x y', b: 'z' } }, ['a', 'b']);
+    assert.notEqual(spaced, shifted, '[a="x", b="y z"] is not [a="x y", b="z"]');
+    assert.equal(
+      defaultCacheKey({ url: '/u', headers: { a: 'x', b: 'y z' } }, ['a', 'b']),
+      spaced,
+      'while the same values still map to the same key',
+    );
+  });
+
+  it('keeps an own __proto__ param from merging two different keys', () => {
+    // `defineProperty`, not `__proto__: value` literal syntax — that would re-target the
+    // object's prototype instead of creating the own property we need to test.
+    const params = Object.defineProperty({}, '__proto__', {
+      value: 'x',
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    const withProto = { url: '/u', params, headers: {} };
+    const without = { url: '/u', params: {}, headers: {} };
+
+    assert.notEqual(
+      defaultCacheKey(withProto, []),
+      defaultCacheKey(without, []),
+      'a param the stringify must not be allowed to lose',
+    );
+    assert.equal(
+      defaultCacheKey(withProto, []),
+      defaultCacheKey(withProto, []),
+      '…and it is still stable',
+    );
+    assert.equal(Object.prototype.x, undefined, 'nothing leaked onto Object.prototype');
+  });
 });
 
 describe('fnv1a', () => {
@@ -434,5 +698,57 @@ describe('parseCacheControl', () => {
     assert.equal(parseCacheControl('no-store').noStore, true);
     assert.equal(parseCacheControl('NO-CACHE').noCache, true);
     assert.equal(parseCacheControl(undefined).maxAgeMs, undefined);
+  });
+
+  it('treats no-cache="field1" as no-cache', () => {
+    // The field-names parameter only narrows *what* must be revalidated — it never turns
+    // the directive into something a cache without conditional requests may serve blindly.
+    assert.deepEqual(parseCacheControl('no-cache="field1"'), {
+      noStore: false,
+      noCache: true,
+      maxAgeMs: undefined,
+    });
+    assert.deepEqual(parseCacheControl('max-age=60, no-cache="set-cookie"'), {
+      noStore: false,
+      noCache: true,
+      maxAgeMs: 60_000,
+    });
+    assert.equal(parseCacheControl('no-cache-field').noCache, false, 'unrelated names stay out');
+  });
+});
+
+describe('parseAgeMs', () => {
+  it('parses usable ages and treats everything else as zero', () => {
+    assert.equal(parseAgeMs('42'), 42_000);
+    assert.equal(parseAgeMs(' 5 '), 5_000, 'surrounding whitespace is not a number');
+    assert.equal(parseAgeMs('-1'), 0, 'a negative age is meaningless');
+    assert.equal(parseAgeMs('later'), 0, 'and so is an unparsable one');
+    assert.equal(parseAgeMs('Infinity'), 0, '…as is one without a bound');
+    assert.equal(parseAgeMs(undefined), 0, 'absent means "we know nothing"');
+    assert.equal(parseAgeMs(null), 0);
+  });
+});
+
+describe('varyIsStorable', () => {
+  it('refuses Vary: * and any vary it cannot fold into the key', () => {
+    assert.equal(varyIsStorable(null, ['authorization']), true, 'no Vary asks for nothing');
+    assert.equal(varyIsStorable(undefined, ['authorization']), true);
+    assert.equal(varyIsStorable('', ['authorization']), true, 'an empty one either');
+    assert.equal(varyIsStorable('  ', ['authorization']), true);
+    assert.equal(
+      varyIsStorable('Authorization', ['authorization']),
+      true,
+      'field names are case-insensitive',
+    );
+    assert.equal(
+      varyIsStorable('authorization, accept-encoding', ['authorization']),
+      false,
+      'one unconfigured name is enough to refuse the store',
+    );
+    assert.equal(
+      varyIsStorable('*', ['authorization']),
+      false,
+      'Vary: * is never cacheable (RFC 9111 §3)',
+    );
   });
 });
