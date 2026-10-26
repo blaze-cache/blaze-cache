@@ -311,6 +311,9 @@ Behaviour worth knowing:
   (on the request or the response) bypasses the cache entirely.
 * `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`.
+  A response's own `Vary` is checked too: `Vary: *` is never stored, and one varying on a
+  header outside `varyHeaders` is left uncached rather than risk replaying the wrong
+  variant — add the server's headers there to opt those responses in.
 * A cached response is replayed through the *current* request's `validateStatus`, so a
   stored `404` rejects just like a live one.
 * Only responses that pass `validateStatus` are candidates for storage; the default
@@ -353,8 +356,14 @@ Behaviour worth knowing:
 * `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`,
   or replace the whole key with `key`.
-* The body is buffered before the `Response` is handed back, so a hit replays exactly the
-  bytes the network sent — status, headers and `url` included.
+* A response's own `Vary` is honoured before anything is stored: `Vary: *` is never cached,
+  and a response varying on a header you have not listed in `varyHeaders` is deliberately
+  left uncached — an unknown variant must never be replayed to the caller it doesn't belong
+  to. This is the conservative default; add the server's headers to `varyHeaders` if you
+  want those responses cached.
+* The `Response` is handed back immediately — the bytes are buffered in the background from
+  a teed clone, so a streaming body is never held up waiting for the cache. A hit still
+  replays exactly the bytes the network sent — status, headers and `url` included.
 * Binary, `Blob` and chunked bodies are handled: the payload is buffered as raw bytes, so a
   hit replays byte-for-byte with `content-type` intact and `blob()` still reports the right
   type and size. Because `fetch` has already decoded the body, `content-encoding` and
