@@ -12,6 +12,7 @@
 //!   exactly which keys disappeared — that is what keeps IndexedDB in sync.
 #![allow(clippy::unused_unit)]
 
+use js_sys::Array;
 use std::time::Duration;
 
 use blaze_cache_core::{Cache, EntryOptions};
@@ -101,15 +102,66 @@ impl BlazeCache {
         let mut options = EntryOptions::new().tags(tags);
         if let Some(ms) = ttl_ms {
             if ms.is_finite() && ms > 0.0 {
-                // `ms as u64` truncates towards zero, so `0.5` would become `Duration::ZERO`
-                // — read by the core as "no expiry", i.e. the exact opposite of a
-                // sub-millisecond TTL. Round *up*: a positive TTL always means "expires".
                 options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
         }
         self.inner.insert_with(key.to_owned(), value, options);
     }
 
+    /// Batch get: looks up every key in one boundary crossing. Returns `JsValue::UNDEFINED`
+    /// for missing or expired entries. Each hit marks the entry visited for SIEVE.
+    #[wasm_bindgen(js_name = getMany)]
+    pub fn get_many(&mut self, keys: Vec<String>) -> Vec<JsValue> {
+        keys.iter()
+            .map(|k| self.inner.get(k).cloned().unwrap_or(JsValue::UNDEFINED))
+            .collect()
+    }
+
+    /// Batch set: stores every key/value pair in one boundary crossing.
+    ///
+    /// `ttl_ms[i] < 0` means no expiry. `tag_offsets[i]`..`tag_offsets[i+1]` index into
+    /// `tags_flat` for the tags of entry `i`.
+    #[wasm_bindgen(js_name = setMany)]
+    pub fn set_many(
+        &mut self,
+        keys: Vec<String>,
+        values: JsValue,
+        ttl_ms: Vec<f64>,
+        tags_flat: Vec<String>,
+        tag_offsets: Vec<usize>,
+    ) {
+        let values_arr = Array::from(&values);
+        let len = keys.len().min(values_arr.length() as usize).min(ttl_ms.len());
+        for i in 0..len {
+            let start = tag_offsets.get(i).copied().unwrap_or(0);
+            let end = tag_offsets.get(i + 1).copied().unwrap_or(start);
+            let entry_tags = &tags_flat[start..end];
+
+            let mut options = EntryOptions::new().tags(entry_tags.iter().map(|s| s.as_str()));
+            let ms = ttl_ms[i];
+            if ms.is_finite() && ms > 0.0 {
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+            }
+            let value = values_arr.get(i as u32);
+            self.inner.insert_with(keys[i].clone(), value, options);
+        }
+    }
+
+    /// Batch has: returns `1` for each key that is present and not expired, `0` otherwise.
+    #[wasm_bindgen(js_name = hasMany)]
+    pub fn has_many(&self, keys: Vec<String>) -> Vec<u8> {
+        keys.iter()
+            .map(|k| if self.inner.contains_key(k) { 1 } else { 0 })
+            .collect()
+    }
+
+    /// Batch delete: returns `1` for each key that was present, `0` otherwise.
+    #[wasm_bindgen(js_name = deleteMany)]
+    pub fn delete_many(&mut self, keys: Vec<String>) -> Vec<u8> {
+        keys.iter()
+            .map(|k| if self.inner.remove(k).is_some() { 1 } else { 0 })
+            .collect()
+    }
     /// Marks `key` as recently used for eviction and optionally renews its TTL — the stored
     /// value is never changed. Returns `false` when the key is missing or expired.
     ///
