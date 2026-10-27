@@ -14,15 +14,6 @@ use crate::node::Node;
 use crate::stats::CacheStats;
 use crate::tags::TagIndex;
 
-/// Entries the hash index reserves on construction, whatever the cache's capacity.
-///
-/// A cache is built with a *ceiling*, not a size, and that ceiling is caller-supplied — so
-/// reserving it wholesale turns one absurd number into a panic (`usize::MAX`) or a
-/// multi-gigabyte allocation (the wasm boundary, where a JS `-1` reaches Rust as ~4.29e9).
-/// Capping the reservation keeps construction O(1) in the caller's number; the map still
-/// grows to fit as entries actually arrive.
-const EAGER_RESERVE: usize = 1024;
-
 /// Remaining lifetime and tags of a live entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryMeta {
@@ -49,9 +40,8 @@ pub struct EntryView<'a, K, V> {
 /// # Behaviour
 ///
 /// * Lookups take `&mut self` because a hit marks the entry as *visited* for SIEVE — the same
-///   trade [`lru`](https://docs.rs/lru) makes. [`peek`](Self::peek) is the read that does not.
-/// * [`len`](Self::len) is `O(1)` and counts entries that have expired but were not pruned yet;
-///   [`live_len`](Self::live_len) counts only the ones that are actually there.
+///   trade [`lru`](https://docs.rs/lru) makes.
+/// * [`len`](Self::len) is `O(1)` and counts entries that have expired but were not pruned yet.
 /// * Writes never allocate more than one node; capacity pressure evicts during the write.
 ///
 /// ```rust
@@ -99,19 +89,13 @@ where
     /// Creates a cache holding at most `capacity` entries.
     ///
     /// `capacity` is clamped to at least `1`.
-    ///
-    /// The hash index is only reserved up to [`EAGER_RESERVE`] entries however: `capacity`
-    /// is a ceiling, not a predicted size, and it is routinely caller-supplied (the JS
-    /// boundary, config files). Reserving it in full would let a single absurd number —
-    /// `usize::MAX` — panic with "hash table capacity overflow", or ask wasm for gigabytes
-    /// before the first entry exists. Past the reserve the map grows amortized.
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         Self {
             nodes: Vec::new(),
             free: Vec::new(),
             index: HashMap::with_capacity_and_hasher(
-                capacity.min(EAGER_RESERVE),
+                capacity,
                 foldhash::fast::RandomState::default(),
             ),
             queue: Sieve::new(),
@@ -141,12 +125,6 @@ where
     }
 
     /// Number of stored entries that are present **and** not expired.
-    ///
-    /// Expired-but-unpruned slots are skipped, so this is the count that `get`, `keys` and
-    /// `entries` actually see — unlike [`len`](Self::len), which is `O(1)` and counts them.
-    ///
-    /// `O(1)` while no entry carries a deadline (`ttl_count == 0`); otherwise a single
-    /// oldest-first walk that reads the clock exactly once.
     #[must_use]
     pub fn live_len(&self) -> usize {
         if self.ttl_count == 0 {
@@ -164,6 +142,7 @@ where
         }
         count
     }
+
 
     /// Current counters.
     #[must_use]
@@ -217,6 +196,25 @@ where
         Some(&self.nodes[idx].as_ref().expect("live slot").value)
     }
 
+
+    /// Fetches a value **without** recording a hit or a miss, and without marking the entry
+    /// visited for SIEVE.
+    pub fn peek<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let idx = *self.index.get(key)?;
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count == 0 {
+            return Some(&node.value);
+        }
+        if node.expires_at.is_some() && node.is_expired(Instant::now()) {
+            return None;
+        }
+        Some(&node.value)
+    }
+
     /// [`get`](Self::get) followed by a clone — convenient across API boundaries.
     pub fn get_cloned<Q>(&mut self, key: &Q) -> Option<V>
     where
@@ -225,26 +223,6 @@ where
         V: Clone,
     {
         self.get(key).cloned()
-    }
-
-    /// Fetches a value **without** recording a hit or a miss, and without marking the entry
-    /// visited for SIEVE — a look that leaves no footprint.
-    ///
-    /// An expired entry is simply not there, and nothing is reclaimed: `peek` takes `&self`,
-    /// so unlike [`get`](Self::get) it cannot even tidy up behind you. Use it for UI checks
-    /// ("is this key here?") where counting the read would skew the hit rate.
-    #[must_use]
-    pub fn peek<Q>(&self, key: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let idx = *self.index.get(key)?;
-        let node = self.nodes[idx].as_ref().expect("live slot");
-        if self.ttl_count > 0 && node.is_expired(Instant::now()) {
-            return None;
-        }
-        Some(&node.value)
     }
 
     /// `true` when the key is present **and** not expired. Never mutates the cache.
@@ -285,15 +263,8 @@ where
         Some(self.meta_for(node, Some(now)))
     }
 
+
     /// Time left on `key`'s deadline.
-    ///
-    /// * `Some(None)` — stored, but it carries no deadline (it lives until evicted);
-    /// * `Some(Some(d))` — `d` remains before it expires;
-    /// * `None` — the key is unknown or already expired.
-    ///
-    /// Like [`meta`](Self::meta) this is a pure read: no statistics, no eviction state and
-    /// nothing reclaimed.
-    #[must_use]
     pub fn ttl<Q>(&self, key: &Q) -> Option<Option<Duration>>
     where
         K: Borrow<Q>,
@@ -301,19 +272,16 @@ where
     {
         let idx = *self.index.get(key)?;
         let node = self.nodes[idx].as_ref().expect("live slot");
-        let now = if self.ttl_count == 0 {
-            // No deadline exists anywhere, so nothing can be expired and no clock is needed
-            // (see `get` for why that call matters on wasm).
-            None
-        } else {
-            let now = Instant::now();
-            if node.is_expired(now) {
-                return None;
-            }
-            Some(now)
-        };
-        Some(ttl_remaining(node, now))
+        if self.ttl_count == 0 {
+            return Some(ttl_remaining(node, None));
+        }
+        let now = Instant::now();
+        if node.is_expired(now) {
+            return None;
+        }
+        Some(ttl_remaining(node, Some(now)))
     }
+
 
     /// Full view of one key — value, remaining TTL and tags — without touching statistics or
     /// the eviction state. Used by persistence layers to serialise a single entry.
@@ -364,11 +332,14 @@ where
 
     /// Builds the public metadata view of a live node.
     ///
-    /// `now` is `None` exactly when the cache holds no deadlines (`ttl_count == 0`); see
-    /// [`ttl_remaining`].
+    /// `now` is `None` exactly when the cache holds no deadlines (`ttl_count == 0`); since
+    /// `expires_at` is then `None` for every node, `ttl_remaining` is `None` regardless.
     fn meta_for(&self, node: &Node<K, V>, now: Option<Instant>) -> EntryMeta {
         EntryMeta {
-            ttl_remaining: ttl_remaining(node, now),
+            ttl_remaining: node
+                .expires_at
+                .zip(now)
+                .map(|(at, now)| at.saturating_duration_since(now)),
             tags: self.tags.names(&node.tags),
         }
     }
@@ -402,28 +373,19 @@ where
     }
 
     /// Tags currently attached to `key`.
-    ///
-    /// Like [`meta`](Self::meta), an expired entry answers `None`: every read in this API
-    /// agrees on what "present" means, so code branching on tags can never disagree with
-    /// [`get`](Self::get) about the same key.
     pub fn tags_of<Q>(&self, key: &Q) -> Option<Vec<String>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
-        let node = self.nodes[idx].as_ref().expect("live slot");
-        if self.ttl_count > 0 && node.is_expired(Instant::now()) {
-            return None;
-        }
-        Some(self.tags.names(&node.tags))
+        Some(
+            self.tags
+                .names(&self.nodes[idx].as_ref().expect("live slot").tags),
+        )
     }
 
-    /// `true` when `key` is present, not expired and carries `tag`.
-    ///
-    /// Expiry is honoured exactly as in [`get`](Self::get): a key whose TTL elapsed is not
-    /// "carrying" anything, so a `has_tag` gate can never take a branch that `get` would
-    /// then refuse to back up.
+    /// `true` when `key` is present and carries `tag`.
     #[must_use]
     pub fn has_tag<Q>(&self, key: &Q, tag: &str) -> bool
     where
@@ -433,17 +395,11 @@ where
         let Some(id) = self.tags.resolve(tag) else {
             return false;
         };
-        let Some(&idx) = self.index.get(key) else {
-            return false;
-        };
-        let Some(node) = self.nodes[idx].as_ref() else {
-            return false;
-        };
-        // `ttl_count == 0` means no deadline exists anywhere: skip the clock (see `get`).
-        if self.ttl_count > 0 && node.is_expired(Instant::now()) {
-            return false;
-        }
-        node.tags.contains(&id)
+        self.index.get(key).is_some_and(|&idx| {
+            self.nodes[idx]
+                .as_ref()
+                .is_some_and(|n| n.tags.contains(&id))
+        })
     }
 
     // --------------------------------------------------------------- writes
@@ -461,22 +417,8 @@ where
     /// Re-inserting an existing key refreshes its value, its deadline **and** its tags, and
     /// re-queues it as the newest entry (unvisited).
     pub fn insert_with(&mut self, key: K, value: V, options: EntryOptions) -> Option<V> {
-        let existing = self.index.get(&key).copied();
-
-        // Make room *before* anything is interned. Eviction forgets a tag once its last
-        // member dies, so sweeping between `intern_all` and `attach` would orphan the tag
-        // the new node is about to carry: `attach` would find no such id, silently do
-        // nothing, and `invalidate_tags` would then never reach this entry. Only new keys
-        // need room — a replacement reuses the slot it already occupies.
-        if existing.is_none() {
-            while self.index.len() >= self.capacity && self.evict_one().is_some() {}
-        }
-
         // The clock is only needed when a TTL is actually requested — a plain write must not
         // pay a wasm→JS `performance.now()` call just to discard the result.
-        // `checked_add`: a TTL large enough to overflow the instant range means "centuries
-        // from now", and storing no deadline says exactly that — while `+` would panic on
-        // nothing more than a caller-supplied `Duration`.
         let expires_at = options
             .ttl_opt()
             .filter(|ttl| !ttl.is_zero())
@@ -485,7 +427,7 @@ where
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
 
-        let previous = match existing {
+        let previous = match self.index.get(&key).copied() {
             Some(idx) => {
                 let (old_expires_at, old_tag_ids) = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
@@ -516,8 +458,9 @@ where
                 ))
             }
             None => {
-                // Room was made above, before the tags were interned: a write must never be
-                // able to evict the entry it just created, nor orphan the tags it carries.
+                // Make room *before* publishing the node: a write must never be able to
+                // evict the entry it just created.
+                while self.index.len() >= self.capacity && self.evict_one().is_some() {}
                 let node = Node::new(key.clone(), value, expires_at, new_tag_ids.clone());
                 let idx = match self.free.pop() {
                     Some(idx) => {
@@ -543,51 +486,37 @@ where
         previous
     }
 
-    /// Marks `key` as recently used and optionally renews its deadline, without changing the
-    /// stored value.
-    ///
-    /// "Recently used" means the SIEVE *visited* bit — precisely the protection
-    /// [`get`](Self::get) grants, which is what makes the entry survive the next eviction
-    /// sweep. The queue itself is never reordered (see [`eviction`](crate::eviction)): SIEVE's
-    /// whole point is that a read costs a bit flip, not a relink.
-    ///
-    /// * `Some(ttl)` — replaces the deadline with `now + ttl`. As in
-    ///   [`insert_with`](Self::insert_with), a `Duration::ZERO` means "never expires" and
-    ///   drops any deadline already there;
-    /// * `None` — the current deadline is left exactly as it is.
-    ///
-    /// Returns `false` when the key is unknown or already expired: there is nothing to
-    /// refresh, and an expired entry is never resurrected.
+
+    /// Marks `key` as recently used and optionally renews its deadline.
     pub fn touch<Q>(&mut self, key: &Q, ttl: Option<Duration>) -> bool
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let Some(&idx) = self.index.get(key) else {
-            return false;
-        };
-        // Read the clock only when a deadline exists to check — the same fast path as `get`.
-        let now = (self.ttl_count > 0).then(Instant::now);
-        if now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now)) {
+        let Some(&idx) = self.index.get(key) else { return false };
+        let now = if self.ttl_count > 0 { Some(Instant::now()) } else { None };
+        if now.is_some_and(|n| self.nodes[idx].as_ref().expect("live slot").is_expired(n)) {
             return false;
         }
-
         if let Some(ttl) = ttl {
-            let base = now.unwrap_or_else(Instant::now);
-            // `checked_add` rather than `+`: an overflowing TTL is a caller-supplied
-            // `Duration`, and panicking on it would hand any embedder a denial of service.
-            // Overflowing means "never in our lifetime" — the same answer a missing
-            // deadline gives, which is what a zero TTL already maps to here.
-            let new = (!ttl.is_zero()).then(|| base.checked_add(ttl)).flatten();
+            let new = if ttl.is_zero() {
+                None
+            } else {
+                now.and_then(|n| n.checked_add(ttl))
+            };
             let old = {
-                let node = self.nodes[idx].as_mut().expect("live slot");
-                std::mem::replace(&mut node.expires_at, new)
+                let n = self.nodes[idx].as_mut().expect("live slot");
+                std::mem::replace(&mut n.expires_at, new)
             };
             self.shift_ttl(old, new);
         }
-        self.nodes[idx].as_mut().expect("live slot").visited = true;
+        {
+            let n = self.nodes[idx].as_mut().expect("live slot");
+            n.visited = true;
+        }
         true
     }
+
 
     /// Removes `key`, returning its value.
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
@@ -717,11 +646,6 @@ where
     }
 }
 
-/// Time left on `node`'s deadline at `now`.
-///
-/// `now` is `None` exactly when the owning cache holds no deadlines (`ttl_count == 0`);
-/// `expires_at` is then `None` for every node too, so the answer is `None` either way — which
-/// is what lets those call sites skip the clock without ever producing a wrong answer.
 fn ttl_remaining<K, V>(node: &Node<K, V>, now: Option<Instant>) -> Option<Duration> {
     node.expires_at
         .zip(now)

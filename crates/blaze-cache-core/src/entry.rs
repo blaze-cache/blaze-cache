@@ -29,25 +29,13 @@ impl EntryOptions {
 
     /// Expire the entry `ttl` after it is written.
     ///
-    /// A zero-length TTL is treated as *no TTL*: the entry never expires. That mirrors what
-    /// [`Cache::insert_with`](crate::Cache::insert_with) does with it (a deadline of "now"
-    /// would only create a phantom entry nobody could ever read). Callers meaning
-    /// "do not cache this" should simply not insert.
-    ///
-    /// A TTL so large it would overflow the monotonic clock is likewise stored as "no
-    /// deadline" rather than panicking.
+    /// `Duration::ZERO` expires the write immediately, which is a no-op insertion.
     pub fn ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
     /// Replace the tag list with `tags`.
-    ///
-    /// Tag *names* are interned into a `u32` id space that is never reused (a recycled id
-    /// would let a stale entry inherit somebody else's tag). The space therefore holds
-    /// ~4.29 billion **distinct** names over the lifetime of the process — names are
-    /// forgotten when their last member leaves, but their ids are not handed out again.
-    /// Prefer a bounded vocabulary (`"user:42"`, `"profile"`) over per-object UUIDs.
     pub fn tags<I, S>(mut self, tags: I) -> Self
     where
         I: IntoIterator<Item = S>,
