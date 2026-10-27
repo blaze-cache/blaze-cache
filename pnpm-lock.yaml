@@ -12,6 +12,15 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  benchmarks/cache:
+    dependencies:
+      '@blaze-cache/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      quick-lru:
+        specifier: ^7.3.0
+        version: 7.3.0
+
   examples/browser:
     dependencies:
       '@blaze-cache/axios':
@@ -745,6 +754,10 @@ packages:
     resolution: {integrity: sha512-cJ+oHTW1VAEa8cJslgmUZrc+sjRKgAKl3Zyse6+PV38hZe/V6Z14TbCuXcan9F9ghlz4QrFr2c92TNF82UkYHA==}
     engines: {node: '>=10'}
 
+  quick-lru@7.3.0:
+    resolution: {integrity: sha512-k9lSsjl36EJdK7I06v7APZCbyGT2vMTsYSRX1Q2nbYmnkBqgUhRkAuzH08Ciotteu/PLJmIF2+tti7o3C/ts2g==}
+    engines: {node: '>=18'}
+
   react-dom@19.3.1:
     resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
     peerDependencies:
@@ -1378,6 +1391,8 @@ snapshots:
       source-map-js: 1.2.2
 
   proxy-from-env@2.1.0: {}
+
+  quick-lru@7.3.0: {}
 
   react-dom@19.3.1(react@19.3.1):
     dependencies:
