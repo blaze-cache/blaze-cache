@@ -4,6 +4,7 @@ import type {
   CacheEntry,
   CacheListener,
   CacheStats,
+  SetManyEntry,
   SetOptions,
   TouchOptions,
 } from './types.js';
@@ -158,6 +159,16 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   }
 
   /**
+   * Batch lookup: returns the value for each key, or `undefined` when missing/expired.
+   * Crosses the wasm boundary once instead of once per key.
+   *
+   * Each hit marks the entry visited for SIEVE, exactly like {@link BlazeCache.get}.
+   */
+  getMany(keys: string[]): (V | undefined)[] {
+    return this.#wasm.getMany(keys) as (V | undefined)[];
+  }
+
+  /**
    * The same lookup as {@link BlazeCache.get}, minus every side effect: no hit or miss is
    * recorded, the entry is not marked used for eviction, and nothing is reclaimed.
    *
@@ -183,6 +194,17 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   /** `true` when `key` is present and not expired. Never changes eviction state. */
   has(key: string): boolean {
     return this.#wasm.has(key);
+  }
+
+  /**
+   * Batch existence check: returns `true` for each key that is present and not expired.
+   * Crosses the wasm boundary once instead of once per key.
+   */
+  hasMany(keys: string[]): boolean[] {
+    const flags = this.#wasm.hasMany(keys) as unknown as Uint8Array;
+    const result = new Array<boolean>(flags.length);
+    for (let i = 0; i < flags.length; i += 1) result[i] = flags[i] === 1;
+    return result;
   }
 
   /**
@@ -260,6 +282,48 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   }
 
   /**
+   * Batch write: stores every key/value pair in one wasm boundary crossing.
+   *
+   * Each entry's `ttlMs` and `tags` are applied independently. A negative `ttlMs` means
+   * "no expiry". Crosses the boundary once instead of once per entry.
+   *
+   * Listeners are notified for each entry when change consumers exist.
+   */
+  setMany(entries: SetManyEntry<V>[]): void {
+    const n = entries.length;
+    const keys = new Array<string>(n);
+    const values = new Array<unknown>(n);
+    const ttlMs = new Float64Array(n);
+    const tagsFlat: string[] = [];
+    const tagOffsets = new Uint32Array(n + 1);
+    tagOffsets[0] = 0;
+
+    for (let i = 0; i < n; i += 1) {
+      const entry = entries[i]!;
+      keys[i] = entry.key;
+      values[i] = entry.value;
+      ttlMs[i] = entry.options?.ttlMs ?? -1;
+      const tags = entry.options?.tags;
+      if (tags) {
+        for (const tag of tags) tagsFlat.push(tag);
+      }
+      tagOffsets[i + 1] = tagsFlat.length;
+    }
+
+    this.#wasm.setMany(
+      keys,
+      values as unknown as any[],
+      ttlMs,
+      tagsFlat,
+      tagOffsets,
+    );
+
+    if (this.#hasChangeConsumers) {
+      for (let i = 0; i < n; i += 1) this.#notify({ type: 'set', key: entries[i]!.key });
+    }
+  }
+
+  /**
    * Marks `key` as recently used for eviction and optionally renews its TTL — the stored
    * value is never changed.
    *
@@ -280,6 +344,22 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     const removed = this.#wasm.delete(key);
     if (removed && this.#hasChangeConsumers) this.#notify({ type: 'delete', key });
     return removed;
+  }
+
+  /**
+   * Batch delete: removes every key, returning `true` for each key that was present.
+   * Crosses the wasm boundary once instead of once per key.
+   */
+  deleteMany(keys: string[]): boolean[] {
+    const removed = this.#wasm.deleteMany(keys) as unknown as Uint8Array;
+    const result = new Array<boolean>(removed.length);
+    for (let i = 0; i < removed.length; i += 1) result[i] = removed[i] === 1;
+    if (this.#hasChangeConsumers) {
+      for (let i = 0; i < removed.length; i += 1) {
+        if (result[i]) this.#notify({ type: 'delete', key: keys[i]! });
+      }
+    }
+    return result;
   }
 
   /** Removes every entry carrying any of `tags`, returning the removed keys. */

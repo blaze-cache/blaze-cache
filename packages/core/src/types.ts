@@ -15,6 +15,15 @@ export interface SetOptions {
 }
 
 /**
+ * One entry in a {@link BlazeCache.setMany} batch.
+ */
+export interface SetManyEntry<V = any> {
+  key: string;
+  value: V;
+  options?: SetOptions;
+}
+
+/**
  * Options applied to a single {@link BlazeCache.touch}.
  */
 export interface TouchOptions {
@@ -80,7 +89,7 @@ export type CacheListener = (change: CacheChange) => void;
  *
  * The value type defaults to `any` on purpose: adapters store their own record shapes in a
  * cache that may be shared. Type it explicitly (`BlazeCacheLike<AxiosCacheRecord>`) when you
- * want the compiler to check both directions.
+ * want the compiler to check both sides.
  */
 export interface BlazeCacheLike<V = any> {
   get(key: string): V | undefined;
@@ -89,4 +98,29 @@ export interface BlazeCacheLike<V = any> {
   delete(key: string): boolean;
   /** Number of entries that are present **and** not expired. */
   size(): number;
+
+  // ---------------------------------------------------------------- batch operations
+
+  /**
+   * Batch lookup: returns the value for each key, or `undefined` when missing/expired.
+   * Crosses the wasm boundary once instead of once per key.
+   */
+  getMany(keys: string[]): (V | undefined)[];
+
+  /**
+   * Batch existence check: returns `true` for each key that is present and not expired.
+   * Crosses the wasm boundary once instead of once per key.
+   */
+  hasMany(keys: string[]): boolean[];
+
+  /**
+   * Batch write: stores every key/value pair in one wasm boundary crossing.
+   */
+  setMany(entries: SetManyEntry<V>[]): void;
+
+  /**
+   * Batch delete: removes every key, returning `true` for each key that was present.
+   * Crosses the wasm boundary once instead of once per key.
+   */
+  deleteMany(keys: string[]): boolean[];
 }

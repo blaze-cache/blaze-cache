@@ -32,6 +32,7 @@ export type {
   CacheEntry,
   CacheListener,
   CacheStats,
+  SetManyEntry,
   SetOptions,
   TouchOptions,
 } from './types.js';

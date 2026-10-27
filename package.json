@@ -18,6 +18,7 @@
     "test:js": "pnpm build:wasm && pnpm -r test",
     "test:live": "pnpm build:wasm && pnpm -r test:live",
     "test:wasm": "wasm-pack test --node crates/blaze-cache-wasm",
+    "bench": "pnpm build:wasm && pnpm --filter @blaze-cache/core build && pnpm --filter blaze-cache-bench bench",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm typecheck",
     "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target"
   },
