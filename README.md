@@ -45,10 +45,10 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta
-npm install @blaze-cache/axios@beta         # optional — axios adapter
-npm install @blaze-cache/fetch@beta         # optional — drop-in fetch() replacement
-npm install @blaze-cache/react-query@beta   # optional — TanStack Query v5
+npm install @blaze-cache/core@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
+npm install @blaze-cache/axios@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
+npm install @blaze-cache/fetch@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
+npm install @blaze-cache/react-query@beta   # prerelease — 0.2.2-beta branch (WIP, not yet published)
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
@@ -237,7 +237,8 @@ polling a key can never turn it into an eviction-proof resident.
 ### Introspection
 
 Five reads answer "what is in there, and for how long?" — none of them counts a hit or
-a miss:
+a miss. All are available in the Rust core (`blaze-cache-core`) and exposed through the
+wasm bindings as of `0.2.2-beta`:
 
 ```ts
 const cache = await createCache({ capacity: 1000 });
