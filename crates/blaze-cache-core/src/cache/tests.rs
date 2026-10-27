@@ -282,7 +282,7 @@ fn removing_middle_entries_keeps_the_queue_linked() {
     cache.insert("e", 5);
     cache.insert("f", 6);
     assert_eq!(
-        cache.keys().copied().collect::<Vec<_>>(),
+        cache.keys().cloned().collect::<Vec<_>>(),
         vec!["a", "d", "e", "f"],
         "the survivors keep their queue order"
     );
@@ -291,7 +291,7 @@ fn removing_middle_entries_keeps_the_queue_linked() {
     cache.insert("g", 7);
     assert_eq!(cache.stats().evictions, 1);
     assert_eq!(
-        cache.keys().copied().collect::<Vec<_>>(),
+        cache.keys().cloned().collect::<Vec<_>>(),
         vec!["d", "e", "f", "g"]
     );
 }
@@ -464,4 +464,87 @@ fn ttl_count_never_drifts_under_mixed_churn() {
         !cache.is_empty(),
         "sanity: the churn must leave entries behind"
     );
+}
+
+// ------------------------------------------------------- memory / stress tests
+
+#[test]
+fn rapid_churn_maintains_invariants() {
+    let mut cache = Cache::new(4);
+    for i in 0..500 {
+        let k = format!("k{}", i % 10);
+        cache.insert_with(k.clone(), i, EntryOptions::new().ttl(Duration::from_secs(60)));
+        assert_eq!(
+            cache.len(),
+            cache.keys().count(),
+            "len/keys drift at insert {i}"
+        );
+        assert_eq!(
+            cache.ttl_count,
+            cache.entries().iter().filter(|e| e.meta.ttl_remaining.is_some()).count(),
+            "ttl_count drift at insert {i}"
+        );
+        if i % 3 == 0 {
+            cache.remove(&k);
+            assert_eq!(
+                cache.len(),
+                cache.keys().count(),
+                "len/keys drift after remove {i}"
+            );
+        }
+    }
+}
+
+#[test]
+fn middle_removal_does_not_corrupt_queue() {
+    let mut cache = Cache::new(4);
+    for i in 0..5 {
+        cache.insert(format!("n{i}"), i);
+    }
+    for i in 1..4 {
+        assert!(cache.remove(&format!("n{i}")).is_some());
+        assert_eq!(
+            cache.len(),
+            cache.keys().count(),
+            "queue/index desync after removing n{i}"
+        );
+    }
+    cache.insert("z".to_string(), 99);
+    assert_eq!(
+        cache.len(),
+        cache.keys().count(),
+        "queue/index desync after refill"
+    );
+    assert!(cache.get("n4").is_some() || cache.get("z").is_some());
+}
+
+#[test]
+fn huge_ttl_never_panics_and_means_no_deadline() {
+    let mut cache = Cache::new(4);
+    cache.insert_with(
+        "huge",
+        1,
+        EntryOptions::new().ttl(Duration::from_secs(u64::MAX)),
+    );
+    assert_eq!(cache.ttl("huge"), Some(None));
+    assert!(cache.get("huge").is_some());
+}
+
+#[test]
+fn clear_and_refill_maintains_queue() {
+    let mut cache = Cache::new(4);
+    for k in ["a", "b", "c", "d"] {
+        cache.insert(k, 1);
+    }
+    cache.clear();
+    assert!(cache.is_empty());
+    assert_eq!(cache.len(), 0);
+    for k in ["e", "f", "g"] {
+        cache.insert(k, 2);
+    }
+    assert_eq!(cache.len(), 3);
+    cache.insert("h", 3);
+    assert_eq!(cache.len(), 4);
+    let keys: Vec<&str> = cache.keys().copied().collect();
+    assert_eq!(keys, vec!["e", "f", "g", "h"]);
 }
