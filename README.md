@@ -511,6 +511,8 @@ packages/
   <name>/test/           that package's Node test suite
 examples/
   browser/               Vite + React demo with a mock API and a latency counter
+benchmarks/
+  cache/                 pnpm bench — blaze-cache vs quick-lru and the native Map
 .github/
   workflows/             rust.yml (fmt, clippy, tests) + js.yml (offline on PR, live nightly)
 ```
@@ -525,6 +527,7 @@ pnpm typecheck        # every package, against workspace sources
 pnpm test             # cargo test --workspace
 pnpm test:js          # build the wasm, then run every package's tests against dist/
 pnpm test:live        # the opt-in live suites (fetch + axios) against real public APIs
+pnpm bench            # blaze-cache vs quick-lru and the native Map (~40s)
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
 pnpm dev              # build, then serve the browser example
 pnpm clean            # remove build outputs
@@ -552,6 +555,40 @@ Every test in those suites is skipped unless `BLAZE_CACHE_LIVE=1` (each package'
 [`.github/workflows/js.yml`](.github/workflows/js.yml) mirrors that split — the offline
 suites gate every push and PR, the live ones run on a nightly cron and on manual
 dispatch, so a third-party outage can never fail an unrelated PR.
+
+## Benchmarks
+
+`pnpm bench` runs [`benchmarks/cache/`](benchmarks/cache), which times `@blaze-cache/core`
+against `quick-lru` and the native `Map` over five workloads — cold fill, a hit, a miss, a
+90/10 mixed load under capacity pressure, and one headline that switches on every feature at
+once. Before a single timing is taken, every adapter in a scenario must produce *deeply
+equal* probe observations, so the three are provably asked the same question rather than a
+similar-looking one.
+
+From one run on an Apple M2 — nanoseconds per operation, **lower is better**:
+
+| Scenario | Map | QuickLRU | blaze-cache |
+| --- | ---: | ---: | ---: |
+| `fill` | **46.0** | 56.8 | 106.9 |
+| `get-hit` | **32.4** | 90.4 | 69.0 |
+| `mixed-90-10` | **48.1** | 72.6 | 83.8 |
+
+The headline asks the question this cache exists for — *give me a bounded, expiring,
+tag-invalidatable cache: what does each one cost?* — so its columns differ from the three
+above, since a bare `Map` or `QuickLRU` cannot answer it at all:
+
+| `full-featured` | Map + LRU + TTL + tags | QuickLRU + tag index | blaze-cache |
+| --- | ---: | ---: | ---: |
+| ns/op | 192.6 | **102.9** | 141.9 |
+
+Of the caches that actually bound themselves, blaze is the faster **read** path — 1.3× on a
+hit — and beats the three layers you would otherwise write and own by 1.4×, while `QuickLRU`
+plus a hand-written tag mirror stays 1.4× quicker still, for a cache you also then maintain.
+blaze pays for that on writes, where every `set` crosses the JS→wasm boundary and marshals
+its key (and deadline, and tags) into linear memory. `Map` wins the first table because it
+is asked to do the least: no capacity, no TTL, no tags, no index.
+Numbers move with the machine, so read [`benchmarks/cache/README.md`](benchmarks/cache/README.md)
+for the full table, the spread column and the methodology before quoting any figure.
 
 ## Contributors
 
