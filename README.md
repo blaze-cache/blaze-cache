@@ -45,10 +45,10 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
-npm install @blaze-cache/axios@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
-npm install @blaze-cache/fetch@beta         # prerelease — 0.2.2-beta branch (WIP, not yet published)
-npm install @blaze-cache/react-query@beta   # prerelease — 0.2.2-beta branch (WIP, not yet published)
+npm install @blaze-cache/core@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
+npm install @blaze-cache/axios@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
+npm install @blaze-cache/fetch@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
+npm install @blaze-cache/react-query@beta   # prerelease — 0.2.3-beta branch (WIP, not yet published)
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
@@ -171,7 +171,8 @@ await cache.dispose(); // flushes pending writes, then frees the wasm memory
 The instance is unusable afterwards — call `createCache()` again for a fresh one.
 Teardown happens even when that last flush fails: the timers, listeners and wasm memory
 are still released, and the storage error is rethrown to you afterwards, so a full disk
-cannot leak the instance.
+cannot leak the instance. Every event listener is dropped with the rest — though it costs
+nothing to call `on`/`off` on the disposed instance: registration is inert, never a crash.
 
 ## Why Wasm
 
@@ -238,7 +239,7 @@ polling a key can never turn it into an eviction-proof resident.
 
 Five reads answer "what is in there, and for how long?" — none of them counts a hit or
 a miss. All are available in the Rust core (`blaze-cache-core`) and exposed through the
-wasm bindings as of `0.2.2-beta`:
+wasm bindings as of `0.2.3-beta`:
 
 ```ts
 const cache = await createCache({ capacity: 1000 });
@@ -290,6 +291,98 @@ cache.stats();
 `has()`, `entry()`, `peek()` and `ttl()` deliberately do *not* touch statistics or eviction
 state — they are the non-observing reads, useful for persistence and for UI checks.
 
+### Events
+
+Everything the cache does can be observed through a typed event system. `on(type, listener)`
+subscribes to one event type, `on(listener)` subscribes to **all** of them (wildcard), both
+return their own unsubscribe function, and `once` / `off` complete the API:
+
+```ts
+const cache = await createCache({ capacity: 2 });
+
+// One event type — the payload is typed to exactly that event.
+const offEvict = cache.on('evict', ({ key, value }) => {
+  console.log('the cache dropped', key, value);
+});
+
+// Wildcard: every event, payload the full union (narrow on `event.type`).
+cache.on((event) => {
+  if (event.type === 'hit') console.log('hit', event.key, event.value);
+});
+
+cache.once('clear', () => console.log('first clear, only once'));
+
+cache.off('evict');   // every `evict` listener
+cache.off();          // every listener, period
+offEvict();           // …or just this one handle (idempotent)
+```
+
+| Event | Emitted when | Payload |
+| --- | --- | --- |
+| `set` | a key was stored (insert or replace) | `key` |
+| `delete` | a key was removed and was present | `key` |
+| `clear` | the cache was emptied | — |
+| `invalidate` | `invalidateTags()` removed entries | `keys` |
+| `prune` | `prune()` removed expired entries | `keys` |
+| `touch` | `touch()` renewed a live entry's deadline | `key` |
+| `evict` | the core dropped an entry to stay within capacity | `key`, `value` |
+| `expire` | the core reclaimed an entry whose TTL elapsed | `key`, `value` |
+| `hit` | `get()` / `getMany()` found a live entry | `key`, `value` |
+| `miss` | a lookup found nothing (absent or expired) | `key` |
+
+Eight of those are raised in TypeScript around the call you made. `evict` and `expire` are
+the exception — capacity sweeps and TTL reclamation happen *inside* the Rust core, mid-`set`
+or lazily during a `get`, where no JavaScript exists to observe them. For those the core
+keeps an opt-in **drop log**: the first listener interested in `evict`/`expire` (typed or
+wildcard) switches it on through the wasm binding, and after each operation that can
+reclaim memory the cache drains it and emits one event per dropped entry — with the `value`
+you would have read a moment earlier. With no such listener the log stays off and the hot
+path pays a single predictable branch. Drains run after `get`, `getMany`, `set` and
+`setMany`; `evict`/`expire` events land right after the operation that caused them.
+
+Listeners run synchronously and in registration order (typed listeners first, wildcards
+last), a throwing listener is logged and skipped — never able to undo or block a mutation —
+and reads that record nothing (`peek`, `has`, `ttl`, `size`, `keys`, `entry`) emit nothing.
+
+Legacy code that used the original `on(listener)` keeps working: that form *is* the
+wildcard now, so such listeners additionally see `hit`/`miss`/`evict`/`expire`.
+
+### API at a glance
+
+`createCache(options)` accepts `capacity`, `persistence` and `wasm` (see
+[Setup](#1-create-the-cache) and [Bundler setup](#bundler-setup)); everything else below
+is a method on the returned cache. Reads that record nothing are marked ⊘ — no hit, no
+miss, no eviction state, no event.
+
+| | Method | Returns / does |
+| --- | --- | --- |
+| **Read** | `get(key)` | value or `undefined` — counts a hit or a miss |
+| | `getMany(keys)` | one entry per key, same accounting as `get` |
+| | `peek(key)` ⊘ | value or `undefined`, invisible to stats and eviction |
+| | `has(key)` / `hasMany(keys)` ⊘ | presence of live (unexpired) entries |
+| | `entry(key)` / `entries()` ⊘ | `{ key, value, ttlMs, tags }` snapshots |
+| | `keys()` ⊘ | every live key |
+| | `ttl(key)` ⊘ | ms left, or `undefined` for *never expires* or *not here* |
+| | `size()` / `capacity()` ⊘ | live entries / the normalised bound |
+| | `stats()` ⊘ | `{ hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }` |
+| | `keysWithTag(tag)` / `tagsOf(key)` / `hasTag(key, tag)` ⊘ | tag index reads |
+| **Write** | `set(key, value, { ttlMs, tags })` | stores (insert or replace) |
+| | `setMany(entries)` | batched `set` |
+| | `touch(key, { ttlMs })` | marks used; renews the deadline when `ttlMs` is given |
+| | `delete(key)` / `deleteMany(keys)` | `true` when the key was present |
+| | `invalidateTags(...tags)` | the keys removed |
+| | `prune()` | the expired keys reclaimed |
+| | `clear()` | empties the cache |
+| | `resetStats()` | zeroes the counters, entries untouched |
+| **Observe** | `on(type, listener)` / `on(listener)` | subscribe (typed / wildcard); returns unsubscribe |
+| | `once(…)` | the same, listener removed as it fires |
+| | `off()` / `off(type)` / `off(type, listener)` / `off(listener)` | removes listeners without the handle |
+| **Persist** | `flush()` | awaits the pending write-through queue |
+| | `dispose()` | flushes, frees the wasm memory, drops every listener |
+
+Values travel **by reference** in and out of every read and write — see
+[Values](#values) before mutating one.
+
 ## Persistence
 
 Persistence is optional and off by default.
@@ -327,7 +420,8 @@ interface CachePersistence {
 ```
 
 `keys()` — the optional method that keeps storage honest — exists because the wasm core
-drops entries on its own: a capacity eviction or a lapsed TTL never emits a change event,
+drops entries on its own: a capacity eviction or a lapsed TTL never queues a delete for
+persistence (the `evict`/`expire` events reach *subscribers*, not the flush bookkeeping),
 so without a way to list what storage still holds, those rows would outlive every flush,
 re-hydrate at the next startup and eat quota until persistence dies. Implementing it is
 recommended; adapters that skip it keep working exactly as before.
@@ -530,6 +624,7 @@ pnpm test:js          # build the wasm, then run every package's tests against d
 pnpm test:live        # the opt-in live suites (fetch + axios) against real public APIs
 pnpm bench            # blaze-cache vs quick-lru and the native Map (~40s)
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
+pnpm test:wasm        # wasm-pack test --node (the bindings, against the wasm crate)
 pnpm dev              # build, then serve the browser example
 pnpm clean            # remove build outputs
 ```
@@ -572,6 +667,7 @@ From one run on an Apple M2 — nanoseconds per operation, **lower is better**:
 | --- | ---: | ---: | ---: |
 | `fill` | **46.0** | 56.8 | 106.9 |
 | `get-hit` | **32.4** | 90.4 | 69.0 |
+| `get-miss` | **29.8** | 34.1 | 53.0 |
 | `mixed-90-10` | **48.1** | 72.6 | 83.8 |
 
 The headline asks the question this cache exists for — *give me a bounded, expiring,

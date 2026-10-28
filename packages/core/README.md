@@ -8,7 +8,8 @@ WebAssembly client-side cache for the browser: SIEVE eviction, per-entry TTLs, t
 invalidation and optional IndexedDB persistence.
 
 The engine behind
-[`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) and
+[`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios),
+[`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) and
 [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) —
 also usable on its own.
 
@@ -41,6 +42,53 @@ cache.stats();                     // { hits, misses, evictions, expirations, �
 `create` instantiates the wasm module once, so everything after it is **synchronous** —
 `get`/`set` never allocate a `Promise`.
 
+## Events
+
+Everything the cache does is observable through a typed event system. `on(type, listener)`
+subscribes to one event type, `on(listener)` subscribes to **all** of them (wildcard), both
+return their own unsubscribe function, and `once` / `off` complete the API:
+
+```ts
+// One event type — the payload is typed to exactly that event.
+const offEvict = cache.on('evict', ({ key, value }) => {
+  console.log('the cache dropped', key, value);
+});
+
+// Wildcard: every event, payload the full union (narrow on `event.type`).
+cache.on((event) => {
+  if (event.type === 'hit') console.log('hit', event.key, event.value);
+});
+
+cache.once('clear', () => console.log('first clear, only once'));
+
+cache.off('evict');   // every `evict` listener
+cache.off();          // every listener, period
+offEvict();           // …or just this one handle (idempotent)
+```
+
+| Event | Emitted when | Payload |
+| --- | --- | --- |
+| `set` | a key was stored (insert or replace) | `key` |
+| `delete` | a key was removed and was present | `key` |
+| `clear` | the cache was emptied | — |
+| `invalidate` | `invalidateTags()` removed entries | `keys` |
+| `prune` | `prune()` removed expired entries | `keys` |
+| `touch` | `touch()` renewed a live entry's deadline | `key` |
+| `evict` | the core dropped an entry to stay within capacity | `key`, `value` |
+| `expire` | the core reclaimed an entry whose TTL elapsed | `key`, `value` |
+| `hit` | `get()` / `getMany()` found a live entry | `key`, `value` |
+| `miss` | a lookup found nothing (absent or expired) | `key` |
+
+Eight of those are raised in TypeScript around the call you made; `evict` and `expire`
+happen *inside* the Rust core and are delivered from an opt-in **drop log** — the first
+listener interested in them switches it on through the wasm binding, and with no such
+listener the hot path pays a single predictable branch. Listeners run synchronously in
+registration order (typed first, wildcards last), a throwing listener is logged and
+skipped — never able to undo a mutation — and reads that record nothing (`peek`, `has`,
+`ttl`, `size`, `keys`, `entry`) emit nothing. `dispose()` clears every listener along with
+the wasm memory. The full design notes live in the
+[repository README](https://github.com/blaze-cache/blaze-cache#events).
+
 ## Good to know
 
 * **The `.wasm` ships inside this package** — no CDN setup. If your bundler
@@ -65,10 +113,13 @@ cache.stats();                     // { hits, misses, evictions, expirations, �
 * **`capacity` is normalised** — below `1` clamps up, above `1_000_000` clamps down, and
   a non-finite value falls back to the wasm default — so `capacity()` reports a real
   number back.
+* **Events cost nothing when unused** — with no listeners the bus is a size check per
+  operation, and the Rust core's drop log stays off until somebody asks for
+  `evict`/`expire` (see [Events](#events)).
 
 ## Documentation
 
-Setup, persistence, eviction, tags and the full API are documented in the
+Setup, persistence, eviction, tags, events and the full API are documented in the
 [repository README](https://github.com/blaze-cache/blaze-cache#readme).
 
 ## License

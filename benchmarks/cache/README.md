@@ -21,7 +21,7 @@ spread column gets noisier.
 
 ## What is compared
 
-Each scenario picks two or three of these.
+Each scenario picks three of these.
 
 | Adapter | Store | Eviction | TTL | Tags |
 | --- | --- | --- | --- | --- |

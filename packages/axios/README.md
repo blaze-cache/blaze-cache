@@ -65,6 +65,17 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
 * **A cache that throws costs one extra request, never a failed response** — the read and
   the write are both guarded, and the failure is reported once on the console instead of
   turning a good network response into a rejected promise.
+* **Cache activity is observable** — the adapter reads with `cache.get` and writes with
+  `cache.set`, so the shared cache's typed event system sees every request it serves:
+
+  ```ts
+  cache.on('hit', ({ key }) => console.log('replayed', key));
+  cache.on('miss', ({ key }) => console.log('fetched', key));
+  cache.on('evict', ({ key }) => console.log('dropped', key));
+  ```
+
+  `on` returns its own unsubscribe function; the full event table is in the
+  [repository README](https://github.com/blaze-cache/blaze-cache#events).
 
 ## Testing
 
@@ -90,6 +101,7 @@ Setup, core concepts and the complete axios reference live in the
 ## Part of Blaze Cache
 
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
 * [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
 
 ## License

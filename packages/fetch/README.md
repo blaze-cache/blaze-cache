@@ -86,6 +86,17 @@ window.fetch = fetch;                   // now every request in the app is cache
   and the `shouldCache` callback are all guarded: the first cache-layer failure is
   announced once on the console, then the wrapper keeps working *without* the cache rather
   than warning on every call.
+* **Cache activity is observable** — the wrapper reads with `cache.get` and writes with
+  `cache.set`, so the shared cache's typed event system sees every request it serves:
+
+  ```ts
+  cache.on('hit', ({ key }) => console.log('replayed', key));
+  cache.on('miss', ({ key }) => console.log('fetched', key));
+  cache.on('evict', ({ key }) => console.log('dropped', key));
+  ```
+
+  `on` returns its own unsubscribe function; the full event table is in the
+  [repository README](https://github.com/blaze-cache/blaze-cache#events).
 
 ## Options
 

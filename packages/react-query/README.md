@@ -51,6 +51,15 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
   paint.
 * Renders never touch cache statistics: the pre-fetch lookup prefers `peek` over `get`,
   so StrictMode's double render cannot move the hit rate or influence eviction.
+* That holds for events too — `peek` emits nothing, so renders are silent; the writes the
+  mirror performs surface as `set` events on the shared cache:
+
+  ```ts
+  cache.on('set', ({ key }) => console.log('mirrored', key));
+  ```
+
+  `on` returns its own unsubscribe function; the full event table is in the
+  [repository README](https://github.com/blaze-cache/blaze-cache#events).
 * Error states stay in TanStack — only data crosses into the cache.
 * TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
 
@@ -63,6 +72,7 @@ Setup and the full integration reference live in the
 
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
 * [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
+* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
 
 ## License
 
