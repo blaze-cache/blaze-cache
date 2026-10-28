@@ -45,10 +45,10 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
-npm install @blaze-cache/axios@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
-npm install @blaze-cache/fetch@beta         # prerelease — 0.2.3-beta branch (WIP, not yet published)
-npm install @blaze-cache/react-query@beta   # prerelease — 0.2.3-beta branch (WIP, not yet published)
+npm install @blaze-cache/core@beta         # prerelease — 0.2.3-beta
+npm install @blaze-cache/axios@beta         # prerelease — 0.2.3-beta
+npm install @blaze-cache/fetch@beta         # prerelease — 0.2.3-beta
+npm install @blaze-cache/react-query@beta   # prerelease — 0.2.3-beta
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
