@@ -157,7 +157,7 @@ export function buildScenarios(capacity) {
     {
       id: 'fill',
       title: 'insert `capacity` distinct keys into an empty cache',
-      adapters: ['quicklru', 'blaze'],
+      adapters: ['map', 'quicklru', 'blaze'],
       notes: [
         'One batch is one cold fill. The clear that makes it repeatable runs outside the timed region, so no adapter is charged for emptying itself.',
       ],
@@ -179,7 +179,7 @@ export function buildScenarios(capacity) {
     {
       id: 'get-hit',
       title: 'read a key that is present',
-      adapters: ['quicklru', 'blaze'],
+      adapters: ['map', 'quicklru', 'blaze'],
       notes: [
         'Random reads over the resident set. Map does no bookkeeping at all, QuickLRU promotes the entry in its recency order on every hit, and blaze sets SIEVE’s visited bit — each library doing the bookkeeping its own eviction policy requires.',
       ],
@@ -199,7 +199,7 @@ export function buildScenarios(capacity) {
     {
       id: 'get-miss',
       title: 'read a key that was never written',
-      adapters: ['quicklru', 'blaze'],
+      adapters: ['map', 'quicklru', 'blaze'],
       notes: [
         'The cache is full and holds `capacity` entries, but every read comes from a disjoint namespace — all three pay for a lookup that finds nothing.',
       ],
@@ -219,7 +219,7 @@ export function buildScenarios(capacity) {
     {
       id: 'mixed-90-10',
       title: '90% reads / 10% writes under capacity pressure',
-      adapters: ['quicklru', 'blaze'],
+      adapters: ['map', 'quicklru', 'blaze'],
       notes: [
         'The control for `full-featured`: this load plan is exactly the same, with no deadline and no tags on the writes.',
         'Reads come from a hot half, writes go to a cold half of a `2 × capacity` key space, so the bounded caches evict continuously while Map — which has no eviction policy — simply keeps everything.',
@@ -251,7 +251,7 @@ export function buildScenarios(capacity) {
     {
       id: 'full-featured',
       title: 'the same load, with TTL and tags on every write',
-      adapters: ['quicklru-full', 'blaze'],
+      adapters: ['map-full', 'quicklru-full', 'blaze'],
       notes: [
         'The headline, and the only row that answers the question a cache like this is actually asked: what does a bounded, expiring, tag-invalidatable cache cost?',
         `Identical to \`mixed-90-10\` in every respect but one — each write also carries a one-hour deadline and one of ${TAG_COUNT} tags, and one tag is retired every ${cycle} iterations (a quarter of \`capacity\`), so the two rows differ by exactly the price of TTL, tags and invalidation on this load.`,
