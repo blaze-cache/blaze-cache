@@ -502,7 +502,13 @@ where
             let new = if ttl.is_zero() {
                 None
             } else {
-                now.and_then(|n| n.checked_add(ttl))
+                // The clock fast-path above is `None` exactly when *no* entry carries a
+                // deadline — which is the ordinary state when a first renewal happens —
+                // and a `None` here would be stored as "no deadline at all". Take the
+                // reading on demand instead of skipping it; `checked_add` overflow falls
+                // back to "never expires", the same reading `insert_with` gives an absurd
+                // TTL.
+                now.unwrap_or_else(Instant::now).checked_add(ttl)
             };
             let old = {
                 let n = self.nodes[idx].as_mut().expect("live slot");

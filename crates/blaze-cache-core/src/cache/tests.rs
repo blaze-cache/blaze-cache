@@ -548,3 +548,34 @@ fn clear_and_refill_maintains_queue() {
     let keys: Vec<&str> = cache.keys().copied().collect();
     assert_eq!(keys, vec!["e", "f", "g", "h"]);
 }
+
+#[test]
+fn touch_installs_a_deadline_even_when_no_entry_has_one_yet() {
+    // The read path skips the clock entirely while `ttl_count == 0` (nothing could be
+    // expired) — but *installing* a deadline still needs a reading. `touch` used to reuse
+    // the skipped `None` and silently stored "no deadline".
+    let mut cache = Cache::new(4);
+    cache.insert("k", 1);
+    assert_eq!(cache.ttl("k"), Some(None), "starts out with no deadline");
+
+    assert!(cache.touch("k", Some(Duration::from_secs(60))));
+    let ttl = cache.ttl("k").expect("the entry is still there");
+    assert!(
+        ttl.is_some_and(|ttl| ttl > Duration::from_secs(59)),
+        "the renewal landed ({ttl:?})"
+    );
+
+    // A renewal while other entries *do* carry deadlines keeps working the same way.
+    cache.insert_with("other", 2, EntryOptions::new().ttl(Duration::from_secs(5)));
+    assert!(cache.touch("k", Some(Duration::from_secs(30))));
+    assert!(
+        cache
+            .ttl("k")
+            .unwrap()
+            .is_some_and(|ttl| ttl <= Duration::from_secs(30)),
+    );
+
+    // Zero still means "drop the deadline" — untouched semantics.
+    assert!(cache.touch("k", Some(Duration::ZERO)));
+    assert_eq!(cache.ttl("k"), Some(None));
+}
