@@ -456,6 +456,210 @@ describe('change listeners', () => {
   });
 });
 
+describe('events', () => {
+  it('delivers to a typed listener only for its own event type', async () => {
+    const cache = await makeCache();
+    const sets = [];
+    const deletes = [];
+    cache.on('set', (event) => sets.push(event));
+    cache.on('delete', (event) => deletes.push(event));
+
+    cache.set('k', 1);
+    cache.get('k'); // a hit is none of their business
+    cache.delete('k');
+    cache.get('k'); // nor a miss
+    cache.clear(); // nor a clear
+
+    assert.deepEqual(sets, [{ type: 'set', key: 'k' }]);
+    assert.deepEqual(deletes, [{ type: 'delete', key: 'k' }]);
+    await cache.dispose();
+  });
+
+  it('reports hits and misses with their payloads', async () => {
+    const cache = await makeCache();
+    const events = [];
+    cache.on('hit', (event) => events.push(event));
+    cache.on('miss', (event) => events.push(event));
+
+    cache.set('k', { n: 1 });
+    const value = cache.get('k');
+    const missing = cache.get('nope');
+
+    assert.equal(missing, undefined);
+    assert.equal(events.length, 2, 'one event per lookup');
+    assert.deepEqual(events[1], { type: 'miss', key: 'nope' });
+    assert.equal(events[0].type, 'hit');
+    assert.equal(events[0].key, 'k');
+    assert.equal(events[0].value, value, 'the hit carries the live reference');
+    await cache.dispose();
+  });
+
+  it('emits per-key events across batch reads and writes', async () => {
+    const cache = await makeCache();
+    cache.set('a', 1);
+    cache.set('b', 2);
+    const seen = [];
+    cache.on((event) => seen.push(`${event.type}:${event.key ?? '*'}`));
+
+    const values = cache.getMany(['a', 'missing', 'b']);
+    assert.deepEqual(values, [1, undefined, 2]);
+    assert.deepEqual(seen, ['hit:a', 'miss:missing', 'hit:b']);
+
+    seen.length = 0;
+    cache.setMany([
+      { key: 'c', value: 3 },
+      { key: 'd', value: 4, options: { ttlMs: 5_000 } },
+    ]);
+    assert.deepEqual(seen, ['set:c', 'set:d']);
+
+    seen.length = 0;
+    assert.deepEqual(cache.deleteMany(['c', 'never-there', 'd']), [true, false, true]);
+    assert.deepEqual(seen, ['delete:c', 'delete:d'], 'absent keys emit nothing');
+    await cache.dispose();
+  });
+
+  it('fires `once` exactly once, and a spent unsubscribe is a no-op', async () => {
+    const cache = await makeCache();
+    const seen = [];
+    cache.once('set', (event) => seen.push(event));
+
+    cache.set('k1', 1);
+    cache.set('k2', 2);
+    assert.deepEqual(seen, [{ type: 'set', key: 'k1' }]);
+
+    const off = cache.once('set', (event) => seen.push(event));
+    off();
+    off(); // double-release must not throw or drift the listener counts
+    cache.set('k3', 3);
+    assert.equal(seen.length, 1);
+    await cache.dispose();
+  });
+
+  it('removes listeners through every `off` form', async () => {
+    const cache = await makeCache();
+    const targeted = [];
+    const sibling = [];
+    const wildcard = [];
+    const target = (event) => targeted.push(event);
+    const shared = (event) => sibling.push(event);
+
+    cache.on('set', target);
+    cache.on('set', (event) => sibling.push(event));
+    const offWildcard = cache.on((event) => wildcard.push(event));
+
+    cache.set('k1', 1);
+    assert.deepEqual(targeted.map((e) => e.key), ['k1']);
+
+    cache.off('set', target); // one registration of one type
+    cache.set('k2', 2);
+    assert.deepEqual(targeted.map((e) => e.key), ['k1'], 'the removed listener stayed removed');
+    assert.deepEqual(sibling.map((e) => e.key), ['k1', 'k2'], 'its sibling kept running');
+    assert.deepEqual(wildcard.map((e) => e.key), ['k1', 'k2'], 'the wildcard kept running');
+
+    cache.off('set'); // every listener of one type
+    cache.set('k3', 3);
+    assert.deepEqual(sibling.map((e) => e.key), ['k1', 'k2']);
+    assert.deepEqual(wildcard.map((e) => e.key), ['k1', 'k2', 'k3'], 'off("set") is type-scoped');
+
+    // The same function registered as a typed and a wildcard listener — one `off(fn)`
+    // releases both, and a duplicate registration never double-counts.
+    const both = [];
+    const offDup = cache.on('set', shared);
+    cache.on('set', shared);
+    cache.on(shared);
+    cache.off(shared);
+    offDup();
+    cache.set('k4', 4);
+    assert.deepEqual(both, []);
+
+    cache.off(); // everything
+    offWildcard();
+    cache.set('k5', 5);
+    assert.deepEqual(
+      wildcard.map((e) => e.key),
+      ['k1', 'k2', 'k3', 'k4'],
+      'k5 landed after the final off()',
+    );
+    await cache.dispose();
+  });
+
+  it('emits `evict` with the dropped value, only while someone listens', async () => {
+    const cache = await makeCache({ capacity: 1 });
+    const seen = [];
+    const offEvict = cache.on('evict', (event) => seen.push(event));
+
+    cache.set('a', 'first');
+    cache.set('b', 'second'); // capacity pressure — the core drops 'a' by itself
+    assert.deepEqual(seen, [{ type: 'evict', key: 'a', value: 'first' }]);
+
+    offEvict(); // last drop listener out → the core's drop log switches off again
+    cache.set('c', 'third'); // evicts 'b', now unrecorded
+    assert.equal(seen.length, 1, 'no events once the last `evict` listener is gone');
+    await cache.dispose();
+  });
+
+  it('orders the operation first and the core’s drop after it', async () => {
+    const cache = await makeCache({ capacity: 1 });
+    const seen = [];
+    cache.on((event) => seen.push(`${event.type}:${event.key ?? '*'}`));
+
+    cache.set('a', 1);
+    cache.set('b', 2); // set:b lands, then the eviction its write caused
+    assert.deepEqual(seen, ['set:a', 'set:b', 'evict:a']);
+    await cache.dispose();
+  });
+
+  it('emits `expire` when a read reclaims the dead entry', async () => {
+    const cache = await makeCache();
+    cache.set('gone', 'bye', { ttlMs: 60 });
+    await delay(150); // past the deadline — nothing has looked at the entry yet
+
+    const seen = [];
+    cache.on((event) => seen.push(event));
+    assert.equal(cache.get('gone'), undefined);
+
+    assert.deepEqual(
+      seen.map((event) => event.type),
+      ['miss', 'expire'],
+      'the lookup misses, and the core’s lazy reclamation explains why',
+    );
+    assert.deepEqual(seen[1], { type: 'expire', key: 'gone', value: 'bye' });
+    await cache.dispose();
+  });
+
+  it('keeps `prune` explicit: removing entries yourself emits no `expire`', async () => {
+    const cache = await makeCache();
+    cache.set('gone', 1, { ttlMs: 60 });
+    await delay(150);
+
+    const seen = [];
+    cache.on((event) => seen.push(event));
+    assert.deepEqual(cache.prune(), ['gone']);
+    assert.deepEqual(
+      seen.map((event) => event.type),
+      ['prune'],
+      'the caller asked for it, so the core records nothing on its behalf',
+    );
+    await cache.dispose();
+  });
+
+  it('stays silent for the reads that record nothing', async () => {
+    const cache = await makeCache();
+    cache.set('k', 1, { tags: ['t'] });
+    const seen = [];
+    cache.on((event) => seen.push(event));
+
+    cache.peek('k');
+    cache.has('k');
+    cache.ttl('k');
+    cache.size();
+    cache.keys();
+    cache.entry('k');
+    assert.deepEqual(seen, [], 'observational reads emit nothing at all');
+    await cache.dispose();
+  });
+});
+
 describe('lifecycle', () => {
   it('flushes without persistence and disposes cleanly', async () => {
     const cache = await makeCache();
@@ -657,6 +861,260 @@ describe('persistence adapter', () => {
     assert.equal(warns.length, 1, 'one complaint for the whole run, not one per row');
     assert.match(String(warns[0][0]), /^\[blaze-cache\] skipping malformed persisted record/);
 
+    await cache.dispose();
+  });
+});
+
+/**
+ * Persistence × events: the two features that both sit on top of every mutation.
+ *
+ * Each test names the bug it exists to catch — silent failures here are the expensive
+ * kind, because storage drifts away from memory with no error anywhere (the `touch`
+ * regression was caught exactly this way, by watching what reached the adapter).
+ */
+describe('persistence with events', () => {
+  it('hydrates from storage without marking anything dirty', async () => {
+    // Catches: hydration accidentally routed through `set`/`#notify`. Every row would be
+    // rewritten on startup (or dropped into the dirty queue) even though nothing changed.
+    const base = memoryAdapter();
+    base.rows.set('pre', { key: 'pre', value: 42, tags: [], ttlMs: null, storedAt: Date.now() });
+    const calls = { save: 0, remove: 0, clear: 0 };
+    const adapter = {
+      ...base,
+      save: async (records) => {
+        calls.save += 1;
+        return base.save(records);
+      },
+      remove: async (keys) => {
+        calls.remove += 1;
+        return base.remove(keys);
+      },
+      clear: async () => {
+        calls.clear += 1;
+        return base.clear();
+      },
+    };
+
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    assert.equal(cache.get('pre'), 42, 'the stored row hydrated');
+
+    const seen = [];
+    cache.on((event) => seen.push(event));
+    await cache.flush();
+
+    assert.deepEqual(seen, [], 'nothing happened after subscribing — hydration is past');
+    assert.equal(calls.save, 0, 'no row was rewritten on startup');
+    assert.equal(calls.remove, 0, 'and nothing was reconciled away');
+    assert.equal(calls.clear, 0);
+    await cache.dispose();
+  });
+
+  it('lets hit/miss listeners run without ever dirtying a row', async () => {
+    // Catches: read events leaking into the change bookkeeping — every `get` would
+    // schedule a flush and rewrite rows, turning a read workload into write amplification.
+    const adapter = memoryAdapter();
+    const saves = { count: 0 };
+    const save = adapter.save;
+    adapter.save = async (records) => {
+      saves.count += 1;
+      return save(records);
+    };
+
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    cache.set('k', 1);
+    await cache.flush();
+    const savesBefore = saves.count;
+
+    const events = [];
+    cache.on((event) => events.push(event));
+    assert.equal(cache.get('k'), 1, 'a hit…');
+    assert.equal(cache.get('nope'), undefined, '…and a miss, both delivered');
+    await cache.flush();
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['hit', 'miss'],
+      'the reads still reached the listeners',
+    );
+    assert.equal(saves.count, savesBefore, 'but not one of them wrote anything back');
+    assert.deepEqual([...adapter.rows.keys()], ['k'], 'storage is exactly where it was');
+    await cache.dispose();
+  });
+
+  it('reconciles a capacity eviction away while an `evict` listener watches', async () => {
+    // Catches: the drop log (only enabled when someone listens) breaking flush
+    // bookkeeping — with tracking on, `drainDrops` runs inside `set` right where the
+    // dirty-marking happens, which is a path the tracking-off tests never enter.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter }, capacity: 2 });
+    const evicted = [];
+    cache.on('evict', (event) => evicted.push(event)); // → core drop log switches on
+
+    cache.set('a', 'first');
+    await cache.flush();
+    assert.equal(adapter.rows.has('a'), true, 'the entry starts out persisted');
+
+    cache.set('b', 2);
+    cache.set('c', 3); // capacity pressure — the core drops 'a' by itself
+    assert.deepEqual(
+      evicted,
+      [{ type: 'evict', key: 'a', value: 'first' }],
+      'the listener saw the dropped entry, value included',
+    );
+    assert.equal(adapter.rows.has('a'), true, 'storage still holds the row for now');
+
+    await cache.flush();
+    assert.deepEqual(
+      [...adapter.rows.keys()].sort(),
+      ['b', 'c'],
+      'the stale row is reconciled away — with the drop log on',
+    );
+    await cache.dispose();
+  });
+
+  it('reconciles an expired row away while an `expire` listener watches', async () => {
+    // Same hazard as the eviction case, entered through the lazy-reclamation path in
+    // `get` instead of the capacity sweep in `set`.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    cache.set('gone', 'bye', { ttlMs: 80 });
+    cache.set('stays', 2);
+    await cache.flush();
+    assert.equal(adapter.rows.has('gone'), true, 'the expiring entry starts out persisted');
+
+    const expired = [];
+    cache.on('expire', (event) => expired.push(event)); // → drop log on before the read
+    await delay(150);
+    assert.equal(cache.get('gone'), undefined, 'the read reclaims it');
+    assert.deepEqual(
+      expired,
+      [{ type: 'expire', key: 'gone', value: 'bye' }],
+      'the listener got the corpse, value included',
+    );
+
+    await cache.flush();
+    assert.equal(adapter.rows.has('gone'), false, 'the expired row is reconciled away');
+    assert.equal(adapter.rows.has('stays'), true, 'live rows are untouched');
+    await cache.dispose();
+  });
+
+  it('isolates a throwing listener without losing the flush', async () => {
+    // Catches: event delivery sharing a fate with persistence — a bad subscriber must
+    // not stop the dirty-marking that runs before it, nor the flush that follows.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+    cache.set('k', 1);
+    await cache.flush();
+    assert.equal(adapter.rows.has('k'), true, 'the row starts out persisted');
+
+    const errors = [];
+    const heard = [];
+    cache.on(() => {
+      throw new Error('boom');
+    });
+    cache.on((event) => heard.push(`${event.type}:${event.key ?? '*'}`));
+
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args);
+    try {
+      cache.set('k', 2);
+      await cache.flush();
+      assert.equal(adapter.rows.get('k')?.value, 2, 'the write reached storage despite the thrower');
+
+      cache.delete('k');
+      await cache.flush();
+      assert.equal(adapter.rows.has('k'), false, '…and so did the delete');
+
+      cache.set('k', 3);
+      await cache.flush();
+      assert.equal(adapter.rows.get('k')?.value, 3, '…and the re-write');
+    } finally {
+      console.error = originalError;
+    }
+
+    assert.equal(errors.length, 3, 'each failure was logged instead of escaping');
+    assert.match(errors[0][0], /^\[blaze-cache\]/, 'with the library prefix');
+    assert.deepEqual(heard, ['set:k', 'delete:k', 'set:k'], 'the sibling heard every event');
+    await cache.dispose();
+  });
+
+  it('keeps persisting after every listener is removed', async () => {
+    // Catches: persistence bookkeeping accidentally gated on the subscriber set (it must
+    // be gated on the adapter's own presence) — storage would silently freeze the moment
+    // the last listener unsubscribes.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+    const off = cache.on('set', () => {});
+    off();
+    cache.off(); // the cache is now listener-free, but still persistent
+
+    cache.set('k', 1);
+    cache.touch('k', { ttlMs: 60_000 });
+    await cache.flush();
+
+    assert.equal(adapter.rows.get('k')?.value, 1, 'the write still landed');
+    assert.ok(
+      adapter.rows.get('k')?.ttlMs > 59_000,
+      '…including the renewed deadline (the touch write-back regression)',
+    );
+    await cache.dispose();
+  });
+
+  it('disposes cleanly with the drop log switched on', async () => {
+    // Catches: the bus's change hook reaching into the freed wasm instance — `dispose`
+    // clears the listeners, which fires the hook, which must notice it is already gone.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter }, capacity: 1 });
+    const evicted = [];
+    cache.on('evict', (event) => evicted.push(event)); // drop log on for the whole test
+
+    cache.set('a', 1);
+    cache.set('b', 2); // evicts 'a'
+    cache.set('c', 3); // evicts 'b'
+    assert.deepEqual(evicted.map((event) => event.key), ['a', 'b'], 'both drops observed');
+
+    await cache.dispose(); // flush → clear listeners (hook!) → free wasm, in that order
+    assert.deepEqual([...adapter.rows.keys()], ['c'], 'the final state was persisted first');
+
+    // Subscribing after teardown must not reach into the freed wasm either.
+    const late = cache.on('evict', () => {});
+    late();
+    cache.off();
+  });
+
+  it('supports a restore-on-evict listener without corrupting storage', async () => {
+    // The pattern listeners are actually written for — pull a hot entry back in when the
+    // cache drops it — and the sharpest edge in the design: a mutation issued from *inside*
+    // event delivery, which re-enters `set` while the outer `set` is still draining drops.
+    const adapter = memoryAdapter();
+    const cache = await createCache({ wasm: wasmBytes, persistence: { adapter }, capacity: 2 });
+    const evicted = [];
+    const restored = new Set();
+    cache.on('evict', (event) => {
+      evicted.push(event.key);
+      if (event.key === 'a' && !restored.has('a')) {
+        restored.add('a');
+        cache.set('a', event.value); // re-entrant write from inside the listener
+      }
+    });
+
+    cache.set('a', 'A');
+    cache.set('b', 'B');
+    await cache.flush();
+    assert.deepEqual([...adapter.rows.keys()].sort(), ['a', 'b'], 'both rows start out persisted');
+
+    cache.set('c', 'C'); // evicts 'a' → the listener writes 'a' back → which evicts 'b'
+    assert.deepEqual(evicted, ['a', 'b'], 'both drops delivered, no re-entrancy lost');
+    assert.equal(cache.get('a'), 'A', 'the restored entry is live again');
+
+    await cache.flush();
+    assert.deepEqual(
+      [...adapter.rows.keys()].sort(),
+      ['a', 'c'],
+      'storage matches memory: the restored row survives, the re-evicted one is reconciled away',
+    );
     await cache.dispose();
   });
 });
