@@ -73,7 +73,7 @@ jobs:
       - name: build wasm
         run: pnpm build:wasm
 
-      # core 36, axios 26, react-query 14, fetch 43 — plus the live files, skipped here.
+      # core 54, axios 26, react-query 14, fetch 43 — plus the live files, skipped here.
       - name: package tests
         run: pnpm -r test
 
