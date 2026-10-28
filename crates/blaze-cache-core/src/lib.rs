@@ -50,7 +50,7 @@ mod node;
 mod stats;
 mod tags;
 
-pub use cache::{Cache, EntryMeta, EntryView};
+pub use cache::{Cache, DropReason, Dropped, EntryMeta, EntryView};
 pub use entry::EntryOptions;
 pub use stats::CacheStats;
 

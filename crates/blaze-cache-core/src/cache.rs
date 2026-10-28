@@ -31,6 +31,29 @@ pub struct EntryView<'a, K, V> {
     pub meta: EntryMeta,
 }
 
+/// Why the cache dropped an entry **on its own** — never the result of an explicit
+/// [`remove`](Cache::remove), [`invalidate_tags`](Cache::invalidate_tags) or
+/// [`clear`](Cache::clear), which the caller already knows about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// The cache was over [`capacity`](Cache::capacity) and SIEVE picked this entry.
+    Evicted,
+    /// The entry's TTL elapsed and something touched it (a read, or a capacity sweep
+    /// that happened to reach it first).
+    Expired,
+}
+
+/// An entry the cache reclaimed by itself, as handed back by [`Cache::drain_drops`].
+///
+/// The pair is returned by value — the same owned key/value the slab held — so no `Clone`
+/// bound is needed anywhere on the host side.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Dropped<K, V> {
+    pub key: K,
+    pub value: V,
+    pub reason: DropReason,
+}
+
 /// An in-memory cache with per-entry TTLs, tag invalidation and SIEVE eviction.
 ///
 /// `K` must be cheaply cloneable: every key is stored once in the hash index and once inside
@@ -80,6 +103,14 @@ pub struct Cache<K, V> {
     /// import, i.e. a boundary crossing per operation. Maintained exclusively through
     /// [`shift_ttl`](Self::shift_ttl) so every deadline change flows through one place.
     ttl_count: usize,
+    /// Opt-in log of self-initiated drops (evictions and expirations).
+    ///
+    /// Empty — and never pushed to — unless [`set_drop_tracking`](Self::set_drop_tracking)
+    /// turned it on, so the default hot path pays only a predictable `bool` branch at the
+    /// moment an entry dies (never per read/write).
+    drops: Vec<Dropped<K, V>>,
+    /// Whether `drops` is being collected. Off by default.
+    track_drops: bool,
 }
 
 impl<K, V> Cache<K, V>
@@ -103,6 +134,52 @@ where
             capacity,
             stats: CacheStats::default(),
             ttl_count: 0,
+            drops: Vec::new(),
+            track_drops: false,
+        }
+    }
+
+    /// Starts (or stops) recording self-initiated drops — see [`drain_drops`](Self::drain_drops).
+    ///
+    /// Turning it off also clears anything recorded so far. Costs one branch per dropped
+    /// entry while enabled and nothing observable while disabled.
+    pub fn set_drop_tracking(&mut self, enabled: bool) {
+        self.track_drops = enabled;
+        if !enabled {
+            self.drops.clear();
+        }
+    }
+
+    /// `true` while the drop log is being collected.
+    #[must_use]
+    pub fn drop_tracking(&self) -> bool {
+        self.track_drops
+    }
+
+    /// Takes everything recorded since the last drain: entries the cache reclaimed by
+    /// itself, with the reason.
+    ///
+    /// Only fills while [`set_drop_tracking`](Self::set_drop_tracking) is on. Explicit
+    /// [`remove`](Self::remove), [`invalidate_tags`](Self::invalidate_tags),
+    /// [`clear`](Self::clear) and [`prune`](Self::prune) never appear here — the caller
+    /// initiated those and already knows the outcome.
+    pub fn drain_drops(&mut self) -> Vec<Dropped<K, V>> {
+        std::mem::take(&mut self.drops)
+    }
+
+    /// Records a self-initiated drop when tracking is on.
+    ///
+    /// Explicit `remove` / `invalidate_tags` / `clear` / `prune` never call this — the
+    /// caller initiated those and already knows the outcome.
+    fn log_drop(&mut self, key: K, value: V, reason: DropReason) {
+        if self.track_drops {
+            // Soft cap: a listener that stops draining must not grow this forever.
+            // Older records are sacrificed first (FIFO semantics).
+            const MAX_DROPS: usize = 64 * 1024;
+            if self.drops.len() >= MAX_DROPS {
+                self.drops.remove(0);
+            }
+            self.drops.push(Dropped { key, value, reason });
         }
     }
 
@@ -142,7 +219,6 @@ where
         }
         count
     }
-
 
     /// Current counters.
     #[must_use]
@@ -187,7 +263,8 @@ where
             if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
                 self.stats.expirations += 1;
                 self.stats.misses += 1;
-                self.free(idx);
+                let (key, value) = self.free(idx);
+                self.log_drop(key, value, DropReason::Expired);
                 return None;
             }
         }
@@ -195,7 +272,6 @@ where
         self.stats.hits += 1;
         Some(&self.nodes[idx].as_ref().expect("live slot").value)
     }
-
 
     /// Fetches a value **without** recording a hit or a miss, and without marking the entry
     /// visited for SIEVE.
@@ -263,7 +339,6 @@ where
         Some(self.meta_for(node, Some(now)))
     }
 
-
     /// Time left on `key`'s deadline.
     pub fn ttl<Q>(&self, key: &Q) -> Option<Option<Duration>>
     where
@@ -281,7 +356,6 @@ where
         }
         Some(ttl_remaining(node, Some(now)))
     }
-
 
     /// Full view of one key — value, remaining TTL and tags — without touching statistics or
     /// the eviction state. Used by persistence layers to serialise a single entry.
@@ -486,15 +560,20 @@ where
         previous
     }
 
-
     /// Marks `key` as recently used and optionally renews its deadline.
     pub fn touch<Q>(&mut self, key: &Q, ttl: Option<Duration>) -> bool
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let Some(&idx) = self.index.get(key) else { return false };
-        let now = if self.ttl_count > 0 { Some(Instant::now()) } else { None };
+        let Some(&idx) = self.index.get(key) else {
+            return false;
+        };
+        let now = if self.ttl_count > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if now.is_some_and(|n| self.nodes[idx].as_ref().expect("live slot").is_expired(n)) {
             return false;
         }
@@ -522,7 +601,6 @@ where
         }
         true
     }
-
 
     /// Removes `key`, returning its value.
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
@@ -635,20 +713,26 @@ where
     }
 
     /// Applies SIEVE once and counts *why* the entry died.
-    fn evict_one(&mut self) -> Option<(K, V)> {
+    ///
+    /// The dropped pair goes to the drop log when tracking is on; otherwise it is released.
+    /// Neither caller needs the value back (both only care that *something* died), which is
+    /// what makes handing ownership to the log free.
+    fn evict_one(&mut self) -> Option<()> {
         // No deadline anywhere → nothing can be expired, so the sweep takes no clock (the
         // hand's visited-bit logic is time-independent). See `get` for the rationale.
         let now = (self.ttl_count > 0).then(Instant::now);
         let idx = self.queue.evict_candidate(&mut self.nodes, now)?;
         let was_expired =
             now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now));
-        let pair = self.release(idx); // `evict_candidate` already unlinked it
+        let (key, value) = self.release(idx); // `evict_candidate` already unlinked it
         if was_expired {
             self.stats.expirations += 1;
+            self.log_drop(key, value, DropReason::Expired);
         } else {
             self.stats.evictions += 1;
+            self.log_drop(key, value, DropReason::Evicted);
         }
-        Some(pair)
+        Some(())
     }
 }
 

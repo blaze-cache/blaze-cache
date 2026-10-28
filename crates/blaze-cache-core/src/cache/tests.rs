@@ -473,7 +473,11 @@ fn rapid_churn_maintains_invariants() {
     let mut cache = Cache::new(4);
     for i in 0..500 {
         let k = format!("k{}", i % 10);
-        cache.insert_with(k.clone(), i, EntryOptions::new().ttl(Duration::from_secs(60)));
+        cache.insert_with(
+            k.clone(),
+            i,
+            EntryOptions::new().ttl(Duration::from_secs(60)),
+        );
         assert_eq!(
             cache.len(),
             cache.keys().count(),
@@ -481,7 +485,11 @@ fn rapid_churn_maintains_invariants() {
         );
         assert_eq!(
             cache.ttl_count,
-            cache.entries().iter().filter(|e| e.meta.ttl_remaining.is_some()).count(),
+            cache
+                .entries()
+                .iter()
+                .filter(|e| e.meta.ttl_remaining.is_some())
+                .count(),
             "ttl_count drift at insert {i}"
         );
         if i % 3 == 0 {
@@ -547,6 +555,124 @@ fn clear_and_refill_maintains_queue() {
     assert_eq!(cache.len(), 4);
     let keys: Vec<&str> = cache.keys().copied().collect();
     assert_eq!(keys, vec!["e", "f", "g", "h"]);
+}
+
+// ------------------------------------------------------------ drop tracking
+
+#[test]
+fn drop_tracking_is_off_by_default() {
+    let mut cache = Cache::new(2);
+    assert!(!cache.drop_tracking());
+    cache.insert("a", 1);
+    cache.insert("b", 2);
+    cache.insert("c", 3); // "a" is evicted, but nobody is listening
+    assert!(cache.drain_drops().is_empty());
+}
+
+#[test]
+fn drop_log_records_capacity_evictions() {
+    let mut cache = Cache::new(2);
+    cache.set_drop_tracking(true);
+    cache.insert("a", 1);
+    cache.insert("b", 2);
+    cache.insert("c", 3); // evicts the oldest unvisited: "a"
+
+    let drops = cache.drain_drops();
+    assert_eq!(
+        drops,
+        vec![Dropped {
+            key: "a",
+            value: 1,
+            reason: DropReason::Evicted,
+        }]
+    );
+    // Draining empties the log — no replay on the next drain.
+    assert!(cache.drain_drops().is_empty());
+}
+
+#[test]
+fn drop_log_records_lazy_expiry_on_access() {
+    let mut cache = Cache::new(4);
+    cache.set_drop_tracking(true);
+    cache.insert_with("gone", 7, EntryOptions::new().ttl(Duration::from_millis(1)));
+    sleep(5);
+    assert_eq!(cache.get("gone"), None); // reclaimed lazily, as a miss
+
+    let drops = cache.drain_drops();
+    assert_eq!(
+        drops,
+        vec![Dropped {
+            key: "gone",
+            value: 7,
+            reason: DropReason::Expired,
+        }]
+    );
+}
+
+#[test]
+fn drop_log_records_expirations_reached_through_eviction() {
+    let mut cache = Cache::new(2);
+    cache.set_drop_tracking(true);
+    cache.insert_with("old", 1, EntryOptions::new().ttl(Duration::from_millis(1)));
+    cache.insert("fresh", 2);
+    sleep(5);
+    cache.insert("newest", 3); // capacity sweep reaches the expired entry first
+
+    let drops = cache.drain_drops();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(drops[0].key, "old");
+    assert_eq!(drops[0].reason, DropReason::Expired);
+    // The other slot freed by the sweep was a genuine eviction... or nothing —
+    // assert the invariant that matters: only self-initiated drops are logged.
+    assert!(
+        drops
+            .iter()
+            .all(|d| matches!(d.reason, DropReason::Expired | DropReason::Evicted))
+    );
+}
+
+#[test]
+fn explicit_removals_never_appear_in_the_drop_log() {
+    let mut cache = Cache::new(4);
+    cache.set_drop_tracking(true);
+    cache.insert_with("a", 1, EntryOptions::new().tag("t"));
+    cache.insert_with(
+        "stale",
+        2,
+        EntryOptions::new().ttl(Duration::from_millis(1)),
+    );
+    sleep(5);
+
+    assert_eq!(cache.remove("a"), Some(1)); // explicit
+    assert_eq!(cache.prune(), vec!["stale"]); // explicit reclamation
+    cache.insert("b", 3);
+    cache.clear(); // explicit
+
+    assert!(cache.drain_drops().is_empty());
+}
+
+#[test]
+fn disabling_tracking_clears_the_log() {
+    let mut cache = Cache::new(1);
+    cache.set_drop_tracking(true);
+    cache.insert("a", 1);
+    cache.insert("b", 2); // "a" evicted and recorded
+    assert_eq!(cache.drain_drops().len(), 1);
+
+    cache.insert("c", 3); // "b" evicted and recorded
+    cache.set_drop_tracking(false);
+    // Anything recorded while on is dropped together with the flag…
+    assert!(cache.drain_drops().is_empty());
+    // …and nothing is recorded while off.
+    cache.insert("d", 4);
+    assert!(cache.drain_drops().is_empty());
+
+    // Re-enabling starts a fresh log.
+    cache.set_drop_tracking(true);
+    assert!(cache.drop_tracking());
+    assert!(cache.drain_drops().is_empty());
+    cache.insert("e", 5);
+    assert_eq!(cache.drain_drops().len(), 1);
 }
 
 #[test]

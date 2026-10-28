@@ -369,3 +369,88 @@ fn a_sub_millisecond_ttl_expires_instead_of_becoming_immortal() {
     assert_eq!(cache.ttl("fleeting"), None);
     assert!(cache.has("immortal"), "…while the zero-TTL one did not");
 }
+
+// ------------------------------------------------------------ drop tracking
+
+#[wasm_bindgen_test]
+fn drop_tracking_is_off_by_default() {
+    let mut cache = BlazeCache::new(2.0);
+    assert!(!cache.drop_tracking());
+    cache.set("a", JsValue::NULL, None, vec![]);
+    cache.set("b", JsValue::NULL, None, vec![]);
+    cache.set("c", JsValue::NULL, None, vec![]); // "a" evicted while nobody listens
+    assert_eq!(cache.drain_drops().length(), 0);
+}
+
+/// The shape the TypeScript layer reads: `{ key, value, reason: "evict" }`.
+#[wasm_bindgen_test]
+fn drain_drops_reports_evictions_as_plain_objects() {
+    let mut cache = BlazeCache::new(2.0);
+    cache.set_drop_tracking(true);
+    assert!(cache.drop_tracking());
+    cache.set("a", JsValue::from_str("first"), None, vec![]);
+    cache.set("b", JsValue::from_str("second"), None, vec![]);
+    cache.set("c", JsValue::from_str("third"), None, vec![]); // evicts "a"
+
+    let drops = cache.drain_drops();
+    assert_eq!(drops.length(), 1);
+    let drop: JsValue = drops.get(0);
+    assert_eq!(field(&drop, "key").as_string().as_deref(), Some("a"));
+    assert_eq!(field(&drop, "value").as_string().as_deref(), Some("first"));
+    assert_eq!(field(&drop, "reason").as_string().as_deref(), Some("evict"));
+
+    assert_eq!(cache.drain_drops().length(), 0, "draining empties the log");
+}
+
+#[wasm_bindgen_test]
+fn drain_drops_reports_lazy_expirations() {
+    let mut cache = BlazeCache::new(4.0);
+    cache.set_drop_tracking(true);
+    cache.set("dying", JsValue::from_str("last words"), Some(30.0), vec![]);
+    wait_ms(60.0);
+
+    assert!(
+        cache.get("dying").is_none(),
+        "the read reclaims the expired entry"
+    );
+    let drops = cache.drain_drops();
+    assert_eq!(drops.length(), 1);
+    let drop: JsValue = drops.get(0);
+    assert_eq!(field(&drop, "key").as_string().as_deref(), Some("dying"));
+    assert_eq!(
+        field(&drop, "value").as_string().as_deref(),
+        Some("last words")
+    );
+    assert_eq!(
+        field(&drop, "reason").as_string().as_deref(),
+        Some("expire")
+    );
+}
+
+#[wasm_bindgen_test]
+fn explicit_deletes_are_never_reported_as_drops() {
+    let mut cache = BlazeCache::new(4.0);
+    cache.set_drop_tracking(true);
+    cache.set("gone", JsValue::NULL, None, vec!["tag".to_string()]);
+
+    assert!(cache.delete("gone"));
+    cache.set("bulk", JsValue::NULL, None, vec!["tag".to_string()]);
+    cache.invalidate_tags(vec!["tag".to_string()]);
+    cache.clear();
+
+    assert_eq!(
+        cache.drain_drops().length(),
+        0,
+        "host-initiated removals are not cache-initiated drops"
+    );
+
+    // Turning tracking off also discards anything left undrained.
+    let mut small = BlazeCache::new(1.0);
+    small.set_drop_tracking(true);
+    small.set("x", JsValue::NULL, None, vec![]);
+    small.set("y", JsValue::NULL, None, vec![]); // evicts "x"
+    assert_eq!(small.drain_drops().length(), 1);
+    small.set("z", JsValue::NULL, None, vec![]); // undrained drop…
+    small.set_drop_tracking(false);
+    assert_eq!(small.drain_drops().length(), 0, "…cleared with the flag");
+}

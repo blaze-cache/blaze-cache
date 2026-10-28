@@ -131,7 +131,10 @@ impl BlazeCache {
         tag_offsets: Vec<usize>,
     ) {
         let values_arr = Array::from(&values);
-        let len = keys.len().min(values_arr.length() as usize).min(ttl_ms.len());
+        let len = keys
+            .len()
+            .min(values_arr.length() as usize)
+            .min(ttl_ms.len());
         for i in 0..len {
             let start = tag_offsets.get(i).copied().unwrap_or(0);
             let end = tag_offsets.get(i + 1).copied().unwrap_or(start);
@@ -269,6 +272,51 @@ impl BlazeCache {
     #[wasm_bindgen(js_name = clear)]
     pub fn clear(&mut self) {
         self.inner.clear();
+    }
+
+    /// Starts (or stops) recording entries the cache drops **by itself** — capacity
+    /// evictions and TTL expirations — so the host can observe them via
+    /// [`drain_drops`](Self::drain_drops).
+    ///
+    /// Off by default: while off, the core pays nothing but a branch at the moment an
+    /// entry dies, and `drain_drops()` returns an empty array. Turning it off also clears
+    /// whatever has been recorded but not yet drained.
+    #[wasm_bindgen(js_name = setDropTracking)]
+    pub fn set_drop_tracking(&mut self, enabled: bool) {
+        self.inner.set_drop_tracking(enabled);
+    }
+
+    /// `true` while the drop log is being collected.
+    #[wasm_bindgen(js_name = dropTracking)]
+    pub fn drop_tracking(&self) -> bool {
+        self.inner.drop_tracking()
+    }
+
+    /// Takes every drop recorded since the last call as
+    /// `[{ key, value, reason: "evict" | "expire" }, …]`.
+    ///
+    /// Explicit `delete`, `deleteMany`, `invalidateTags`, `prune` and `clear` never show up
+    /// here — the host issued those and already knows the result. Call this after each
+    /// operation that could have reclaimed memory (any write, any read when TTLs exist)
+    /// while drop listeners are installed.
+    #[wasm_bindgen(js_name = drainDrops)]
+    pub fn drain_drops(&mut self) -> Array {
+        let out = Array::new();
+        for dropped in self.inner.drain_drops() {
+            let obj = js_sys::Object::new();
+            set_field(&obj, "key", &JsValue::from_str(&dropped.key));
+            set_field(&obj, "value", &dropped.value);
+            set_field(
+                &obj,
+                "reason",
+                &JsValue::from_str(match dropped.reason {
+                    blaze_cache_core::DropReason::Evicted => "evict",
+                    blaze_cache_core::DropReason::Expired => "expire",
+                }),
+            );
+            out.push(&obj);
+        }
+        out
     }
 
     /// Counters: `{ hits, misses, evictions, expirations, invalidations, size, capacity }`.
