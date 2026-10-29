@@ -4,9 +4,9 @@ import type { QueryCacheNotifyEvent, QueryFilters } from '@tanstack/react-query'
 import type { BlazeQueryClientOptions, BlazeQuerySyncOptions } from './types.js';
 
 /** Mirrored data survives this long in the Blaze Cache (TanStack owns in-session freshness). */
-const DEFAULT_TTL_MS = 86_400_000;
+export const DEFAULT_TTL_MS = 86_400_000;
 /** Default tag, so `cache.invalidateTags('react-query')` purges the whole mirror. */
-const DEFAULT_TAGS: readonly string[] = ['react-query'];
+export const DEFAULT_TAGS: readonly string[] = ['react-query'];
 
 /**
  * Mirrors TanStack Query's cache into a Blaze Cache.
@@ -128,7 +128,33 @@ export function syncBlazeQueryCache(
     if (data === undefined && !options.includeEmpty) return;
     if (options.skip?.(query.queryKey, hash)) return;
 
-    cache.set(hash, { data, dataUpdatedAt: query.state.dataUpdatedAt }, { ttlMs, tags });
+    // An identical record is already in the mirror — the imperative helpers
+    // (`setBlazeQueryData`, `prefetchBlazeQuery`, `hydrateBlazeQueryClient`) write theirs
+    // synchronously, ahead of this batched flush. Skip so *their* `ttlMs`/`tags` survive:
+    // re-writing here would re-stamp the entry with the sync's defaults and silently strip
+    // a per-query tag. Same data reference and same timestamp means nothing actually
+    // changed, so skipping loses nothing but the redundant write.
+    const existing = cache.peek ? cache.peek(hash) : undefined;
+    if (
+      existing &&
+      existing.data === data &&
+      existing.dataUpdatedAt === query.state.dataUpdatedAt
+    ) {
+      return;
+    }
+
+    // `queryKey` (and `queryType` for infinite queries) make the record self-describing:
+    // dehydrate needs them to rebuild a TanStack query from the mirror alone.
+    cache.set(
+      hash,
+      {
+        data,
+        dataUpdatedAt: query.state.dataUpdatedAt,
+        queryKey: query.queryKey,
+        ...(query.queryType === 'infinite' ? ({ queryType: 'infinite' } as const) : null),
+      },
+      { ttlMs, tags },
+    );
   });
 
   return () => {

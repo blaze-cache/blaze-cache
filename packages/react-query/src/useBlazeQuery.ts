@@ -8,7 +8,7 @@ import type {
 } from '@tanstack/react-query';
 
 import { resolveQueryHash } from './hash.js';
-import type { BlazeQueryCacheLike } from './types.js';
+import type { BlazeQueryCacheLike, BlazeQueryRecord } from './types.js';
 
 /**
  * The options {@link useBlazeQuery} hands to `useQuery`: the caller's options with the Blaze
@@ -43,16 +43,7 @@ export function seedBlazeQueryOptions<
     return options;
   }
 
-  // Sync writes under `query.queryHash`, which honors a configured `queryKeyHashFn`; resolve
-  // the hash the same way TanStack does, or a custom hasher points the lookup at a key the
-  // mirror never used.
-  const hash = resolveQueryHash(client, options.queryKey, options);
-
-  // `peek` first: `get` marks the entry used for SIEVE and counts a hit/miss, so a render
-  // would mutate global cache state — StrictMode double-renders and discarded concurrent
-  // renders included — and skew the stats panel. `get` stays the fallback for caches that
-  // predate `peek` (it is optional on `BlazeQueryCacheLike` for their sake).
-  const record = cache.peek ? cache.peek(hash) : cache.get(hash);
+  const record = readBlazeRecord(cache, client, options);
   if (record === undefined) return options;
 
   // `initialData` is declared against `TData` in one overload and `TQueryFnData` in another;
@@ -62,6 +53,38 @@ export function seedBlazeQueryOptions<
     initialData: record.data as TQueryFnData,
     initialDataUpdatedAt: record.dataUpdatedAt,
   } as UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>;
+}
+
+/**
+ * The mirror lookup every seed function shares: resolve the query's hash the way TanStack
+ * will file it, then read the record back **without** touching cache statistics.
+ *
+ * Kept separate from the seeding rules so {@link seedBlazeQueryOptions},
+ * {@link seedBlazeInfiniteQueryOptions} and {@link seedBlazeQueriesOptions} cannot drift
+ * from each other — a custom `queryKeyHashFn` or a `peek`-less cache behaves identically
+ * in all three.
+ */
+export function readBlazeRecord(
+  cache: BlazeQueryCacheLike,
+  client: QueryClient,
+  // Deliberately `any`-typed generics: callers pass options generic in `TQueryKey`, and a
+  // `readonly unknown[]`-constrained pick rejects `QueryKeyHashFunction<TQueryKey>` under
+  // contravariance even though every concrete instantiation fits.
+  options: Pick<
+    UseQueryOptions<any, any, any, any>,
+    'queryKey' | 'queryHash' | 'queryKeyHashFn'
+  >,
+): BlazeQueryRecord | undefined {
+  // Sync writes under `query.queryHash`, which honors a configured `queryKeyHashFn`; resolve
+  // the hash the same way TanStack does, or a custom hasher points the lookup at a key the
+  // mirror never used.
+  const hash = resolveQueryHash(client, options.queryKey, options);
+
+  // `peek` first: `get` marks the entry used for SIEVE and counts a hit/miss, so a render
+  // would mutate global cache state — StrictMode double-renders and discarded concurrent
+  // renders included — and skew the stats panel. `get` stays the fallback for caches that
+  // predate `peek` (it is optional on `BlazeQueryCacheLike` for their sake).
+  return cache.peek ? cache.peek(hash) : cache.get(hash);
 }
 
 /**
