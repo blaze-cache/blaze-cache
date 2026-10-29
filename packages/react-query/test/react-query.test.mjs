@@ -21,10 +21,22 @@ import { QueryClient, hashKey } from '@tanstack/react-query';
 import { createCache } from '@blaze-cache/core';
 import {
   createBlazeQueryClient,
+  dehydrateBlazeQueryClient,
   hashQueryKey,
+  hydrateBlazeQueryClient,
+  invalidateBlazeQueries,
+  prefetchBlazeQuery,
+  readBlazeRecord,
+  removeBlazeQueries,
   resolveQueryHash,
+  seedBlazeInfiniteQueryOptions,
+  seedBlazeQueriesOptions,
   seedBlazeQueryOptions,
+  setBlazeQueryData,
   syncBlazeQueryCache,
+  useBlazeInfiniteQuery,
+  useBlazeMutation,
+  useBlazeQueries,
   useBlazeQuery,
 } from '@blaze-cache/react-query';
 
@@ -43,6 +55,18 @@ describe('module surface', () => {
     assert.equal(typeof resolveQueryHash, 'function');
     assert.equal(typeof seedBlazeQueryOptions, 'function');
     assert.equal(typeof useBlazeQuery, 'function');
+    assert.equal(typeof readBlazeRecord, 'function');
+    assert.equal(typeof seedBlazeInfiniteQueryOptions, 'function');
+    assert.equal(typeof useBlazeInfiniteQuery, 'function');
+    assert.equal(typeof seedBlazeQueriesOptions, 'function');
+    assert.equal(typeof useBlazeQueries, 'function');
+    assert.equal(typeof setBlazeQueryData, 'function');
+    assert.equal(typeof prefetchBlazeQuery, 'function');
+    assert.equal(typeof invalidateBlazeQueries, 'function');
+    assert.equal(typeof removeBlazeQueries, 'function');
+    assert.equal(typeof useBlazeMutation, 'function');
+    assert.equal(typeof dehydrateBlazeQueryClient, 'function');
+    assert.equal(typeof hydrateBlazeQueryClient, 'function');
   });
 });
 
@@ -387,5 +411,290 @@ describe('hashQueryKey', () => {
   it('delegates to TanStack, so it can never drift', () => {
     assert.equal(hashQueryKey(['todos', { page: 1 }]), hashKey(['todos', { page: 1 }]));
     assert.equal(hashQueryKey([]), hashKey([]));
+  });
+});
+
+describe('prefetchBlazeQuery', () => {
+  it('mirrors a successful prefetch under the resolved hash', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    await prefetchBlazeQuery(cache, client, {
+      queryKey: ['todos', 'u1'],
+      queryFn: async () => [{ id: 1 }],
+    });
+
+    const hash = hashQueryKey(['todos', 'u1']);
+    assert.equal(cache.has(hash), true, 'the fetched result is mirrored');
+    assert.deepEqual(cache.get(hash).data, [{ id: 1 }]);
+    assert.ok(cache.get(hash).dataUpdatedAt > 0, 'with the fetch timestamp');
+
+    await client.clear();
+  });
+
+  it('seeds initialData from the mirror instead of fetching inside staleTime', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    // An entry the caller wants served without a network round trip…
+    cache.set(hashQueryKey(['todos', 'u1']), {
+      data: [{ id: 1 }],
+      dataUpdatedAt: Date.now() - 1_000,
+      queryKey: ['todos', 'u1'],
+    });
+
+    await prefetchBlazeQuery(cache, client, {
+      queryKey: ['todos', 'u1'],
+      queryFn: async () => [{ id: 2 }],
+      staleTime: 60_000,
+    });
+
+    // `initialData` + `staleTime` means TanStack resolves inside the window without a fetch,
+    // so the query it built carries the mirror's data — not the fetch fn's.
+    const query = client.getQueryCache().get(hashQueryKey(['todos', 'u1']));
+    assert.ok(query, 'prefetch seeded the query');
+    assert.deepEqual(query.state.data, [{ id: 1 }], 'the mirror data won over the fetch fn');
+    assert.equal(query.isStale(), false, 'the staleTime window was respected');
+    assert.deepEqual(cache.get(hashQueryKey(['todos', 'u1'])).data, [{ id: 1 }]);
+    await client.clear();
+  });
+
+  it('swallows fetch errors without mirroring the failure', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    await prefetchBlazeQuery(cache, client, {
+      queryKey: ['todos'],
+      queryFn: async () => {
+        throw new Error('network down');
+      },
+    });
+
+    assert.equal(cache.size(), 0, 'a failed prefetch leaves no mirror entry');
+    const query = client.getQueryCache().get(hashQueryKey(['todos']));
+    assert.ok(query, 'TanStack records its own error state');
+    assert.equal(query.state.status, 'error');
+  });
+});
+
+describe('setBlazeQueryData', () => {
+  it("writes through to the mirror with the caller's ttl and tags", async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    const stored = setBlazeQueryData(cache, client, ['todos'], [1, 2, 3], {
+      ttlMs: 60_000,
+      tags: ['todos', 'session-1'],
+    });
+
+    assert.deepEqual(stored, [1, 2, 3]);
+    const hash = hashQueryKey(['todos']);
+    assert.equal(cache.has(hash), true, 'the mirror write landed');
+    const entry = cache.entry(hash);
+    assert.deepEqual(entry.value.data, [1, 2, 3]);
+    assert.ok(entry.ttlMs > 59_000 && entry.ttlMs <= 60_000, 'the caller\'s ttl won');
+    assert.deepEqual(entry.tags, ['todos', 'session-1'], 'the caller\'s tags won');
+
+    await client.clear();
+  });
+
+  it('ignores undefined data instead of persisting it', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    assert.equal(setBlazeQueryData(cache, client, ['todos'], undefined), undefined);
+    assert.equal(cache.size(), 0, 'nothing mirrored for undefined data');
+  });
+});
+
+describe('invalidateBlazeQueries / removeBlazeQueries', () => {
+  it('invalidates by queryKey in both caches and purges the mirror', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient({ defaultOptions: { queries: { gcTime: 60_000 } } });
+    client.setQueryData(['todos', 'u1'], [{ id: 1 }]);
+    const hash = hashQueryKey(['todos', 'u1']);
+
+    await invalidateBlazeQueries(cache, client, { queryKey: ['todos', 'u1'] });
+
+    assert.equal(cache.has(hash), false, 'the persisted entry was purged');
+    const query = client.getQueryCache().find({ queryKey: ['todos', 'u1'] });
+    assert.ok(query, 'the TanStack query survives to be refetched');
+    assert.equal(query.isStale(), true, '…and is now stale');
+
+    await client.clear();
+  });
+
+  it('invalidates by tags — the cross-session purge path', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    setBlazeQueryData(cache, client, ['todos'], [1], { tags: ['todos'] });
+
+    await invalidateBlazeQueries(cache, client, { tags: ['todos'] });
+
+    assert.equal(cache.size(), 0, 'tagged entries are purged');
+    const query = client.getQueryCache().find({ queryKey: ['todos'] });
+    assert.ok(query, 'the TanStack side was marked stale, not dropped');
+    assert.equal(query.isStale(), true);
+
+    await client.clear();
+  });
+
+  it('intersects a queryKey filter with a tag filter', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    setBlazeQueryData(cache, client, ['todos', 'u1'], [1], { tags: ['todos', 'user:u1'] });
+    setBlazeQueryData(cache, client, ['todos', 'u2'], [2], { tags: ['todos', 'user:u2'] });
+
+    await invalidateBlazeQueries(cache, client, {
+      queryKey: ['todos', 'u1'],
+      tags: ['todos', 'user:u1'],
+    });
+
+    // The key narrowed the tag purge: u1 (tags `todos`+`user:u1`) went, u2 (tag `todos` only)
+    // is a different user’s list and stays — the intersection must not union.
+    assert.equal(cache.size(), 1, 'only the key/tag-matching entry was purged');
+    assert.equal(
+      cache.has(hashQueryKey(['todos', 'u1'])),
+      false,
+      'the matching entry is gone',
+    );
+    assert.equal(cache.has(hashQueryKey(['todos', 'u2'])), true, 'the other user’s entry stays');
+    await client.clear();
+  });
+
+  it('removes by tag in both caches', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    setBlazeQueryData(cache, client, ['todos'], [1], { tags: ['todos'] });
+    const hash = hashQueryKey(['todos']);
+
+    removeBlazeQueries(cache, client, { tags: ['todos'] });
+
+    assert.equal(cache.has(hash), false, 'the mirror entry is gone');
+    assert.equal(client.getQueryCache().find({ queryKey: ['todos'] }), undefined);
+  });
+
+  it('removes every mirrored entry when no filter is given', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    setBlazeQueryData(cache, client, ['todos'], [1]);
+    setBlazeQueryData(cache, client, ['posts'], [2]);
+
+    removeBlazeQueries(cache, client);
+
+    assert.equal(cache.size(), 0, 'the whole mirror is gone');
+    assert.equal(client.getQueryCache().getAll().length, 0, 'and the whole TanStack cache too');
+  });
+});
+
+describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
+  it('dehydrates every live record into a TanStack DehydratedState', async () => {
+    const cache = await makeCache();
+    const client = createBlazeQueryClient({ cache, ttlMs: 60_000 });
+    client.setQueryData(['todos', 'u1'], [{ id: 1 }]);
+    client.setQueryData(['settings'], { theme: 'dark' });
+
+    const state = dehydrateBlazeQueryClient(cache);
+
+    assert.equal(state.mutations.length, 0);
+    assert.equal(state.queries.length, 2);
+
+    const todos = state.queries.find((q) => hashQueryKey(q.queryKey) === hashQueryKey(['todos', 'u1']));
+    assert.ok(todos, 'the todos entry made it into the snapshot');
+    assert.equal(todos.queryHash, hashQueryKey(['todos', 'u1']));
+    assert.deepEqual(todos.queryKey, ['todos', 'u1']);
+    assert.equal(todos.state.status, 'success');
+    assert.deepEqual(todos.state.data, [{ id: 1 }]);
+    assert.ok(todos.state.dataUpdatedAt > 0);
+    assert.equal(typeof todos.dehydratedAt, 'number');
+
+    const settings = state.queries.find((q) => hashQueryKey(q.queryKey) === hashQueryKey(['settings']));
+    assert.ok(settings, 'the settings entry made it into the snapshot');
+    assert.deepEqual(settings.state.data, { theme: 'dark' });
+
+    await client.clear();
+  });
+
+  it('skips records written before queryKey existed and honours the predicate', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    client.setQueryData(['todos'], [1]);
+
+    const state = dehydrateBlazeQueryClient(cache, {
+      predicate: (record) => record.dataUpdatedAt > Date.now() - 60_000,
+    });
+    assert.equal(state.queries.length, 0, 'the freshly written record is outside the window');
+
+    // A legacy record — no `queryKey`, as written by older versions — cannot be rebuilt.
+    cache.set(hashQueryKey(['legacy']), { data: 'old', dataUpdatedAt: 123 });
+    const legacy = dehydrateBlazeQueryClient(cache);
+    assert.equal(legacy.queries.length, 0, 'records without a queryKey cannot be dehydrated');
+
+    // A record inside the window dehydrates.
+    cache.set(hashQueryKey(['fresh']), { data: 'new', dataUpdatedAt: Date.now(), queryKey: ['fresh'] });
+    const fresh = dehydrateBlazeQueryClient(cache, { predicate: () => true });
+    assert.equal(fresh.queries.length, 1, 'the predicate picked the fresh entry');
+
+    await client.clear();
+  });
+
+  it('throws when the cache cannot enumerate the mirror', () => {
+    const bare = {
+      get: () => undefined,
+      set: () => {},
+      delete: () => false,
+      has: () => false,
+    };
+    assert.throws(() => dehydrateBlazeQueryClient(bare), /entries\(\)/);
+  });
+
+  it('round trips through hydrateBlazeQueryClient into a fresh client', async () => {
+    const cache = await makeCache();
+    const source = createBlazeQueryClient({ cache, ttlMs: 60_000 });
+    source.setQueryData(['todos', 'u1'], [{ id: 1 }]);
+
+    const state = dehydrateBlazeQueryClient(cache);
+    const target = new QueryClient();
+    hydrateBlazeQueryClient(cache, target, state, { ttlMs: 60_000, tags: ['ssr'] });
+
+    const restored = target.getQueryCache().find({ queryKey: ['todos', 'u1'] });
+    assert.ok(restored, 'the hydrated client knows the query');
+    assert.equal(restored.state.status, 'success');
+    assert.deepEqual(restored.state.data, [{ id: 1 }]);
+
+    const hash = hashQueryKey(['todos', 'u1']);
+    assert.equal(cache.has(hash), true, 'hydration persists the mirror entry back');
+    const entry = cache.entry(hash);
+    assert.deepEqual(entry.value.data, [{ id: 1 }]);
+    assert.deepEqual(entry.value.queryKey, ['todos', 'u1'], 'the restored entry is self-describing');
+    assert.ok(entry.ttlMs > 59_000 && entry.ttlMs <= 60_000, 'the hydrate-time ttl was used');
+    assert.deepEqual(entry.tags, ['ssr'], 'the hydrate-time tags were used');
+  });
+
+  it('restores infinite queries with their whole payload', async () => {
+    const cache = await makeCache();
+    cache.set(hashQueryKey(['feed']), {
+      data: { pages: [[1], [2]], pageParams: [null, 1] },
+      dataUpdatedAt: 1_700_000_000_000,
+      queryKey: ['feed'],
+      queryType: 'infinite',
+    });
+
+    const state = dehydrateBlazeQueryClient(cache);
+    const restored = state.queries[0];
+    assert.equal(restored.queryType, 'infinite');
+    assert.deepEqual(restored.state.data, { pages: [[1], [2]], pageParams: [null, 1] });
+
+    const target = new QueryClient();
+    hydrateBlazeQueryClient(cache, target, state);
+    const query = target.getQueryCache().find({ queryKey: ['feed'] });
+    assert.ok(query);
+    assert.equal(query.queryType, 'infinite', 'the rebuilt query is an infinite query');
+
+    await target.clear();
   });
 });
