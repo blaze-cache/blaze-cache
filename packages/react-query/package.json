@@ -1,6 +1,6 @@
 {
   "name": "@blaze-cache/react-query",
-  "version": "0.2.3-beta",
+  "version": "0.2.4-beta",
   "description": "Persist TanStack Query v5 in WebAssembly — instant first paint after reload while stale-while-revalidate still works",
   "keywords": [
     "react-query",
