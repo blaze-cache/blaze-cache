@@ -571,6 +571,31 @@ data so stale-while-revalidate still has something to paint. Ordinary garbage co
 mirror survives it: that copy is what paints the next session. Error states stay in
 TanStack.
 
+### Full API
+
+* `useBlazeQuery(cache, options)` — `useQuery` seeded from the mirror; `useBlazeInfiniteQuery`
+  does the same for infinite queries (the whole `InfiniteData`, pages included, seeds back
+  as `initialData`), `useBlazeQueries` does it for parallel queries.
+* `useBlazeMutation(cache, options)` — `useMutation` that runs the given
+  `invalidate` filters through the two-sided helpers after success.
+* `prefetchBlazeQuery(cache, client, options)` — prefetch; seeds from the mirror first,
+  mirrors the fetched result.
+* `setBlazeQueryData(cache, client, queryKey, data, options?)` — write through to the
+  mirror (TanStack first, then Blaze, with the caller's TTL/tags).
+* `invalidateBlazeQueries(cache, client, filters)` / `removeBlazeQueries(cache, client, filters)`
+  — invalidate (mark stale + purge persisted data) / remove, query-key, tag or predicate
+  based, on both caches at once.
+
+### Round trip
+
+```ts
+// Server: whatever the mirror holds for this session, as a TanStack DehydratedState.
+const dehydratedState = dehydrateBlazeQueryClient(cache);
+
+// Client: restore into the synced client, then keep persisting afterwards.
+hydrateBlazeQueryClient(cache, queryClient, dehydratedState, { tags: ['ssr', `user:${userId}`] });
+```
+
 ## Bundler setup
 
 The wasm binary ships inside `@blaze-cache/core`. Point at it explicitly with your

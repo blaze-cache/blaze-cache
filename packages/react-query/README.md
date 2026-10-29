@@ -63,6 +63,125 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 * Error states stay in TanStack — only data crosses into the cache.
 * TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
 
+## API
+
+The integration is one cache + a set of hooks, helpers and hydration functions. All of
+them take `(cache, client?, options?)` — the cache first, then the `QueryClient` (from
+context when omitted by a hook), then the options.
+
+| Export | What it does |
+| --- | --- |
+| `createBlazeQueryClient` / `syncBlazeQueryCache` | Mirror TanStack cache writes into the Blaze Cache (see [Behaviour](#behaviour)). |
+| `useBlazeQuery` | `useQuery` seeded from the mirror. |
+| `useBlazeInfiniteQuery` | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData`. |
+| `useBlazeQueries` | `useQueries` over several keys, each seeded independently. |
+| `useBlazeMutation` | `useMutation` that invalidates queries after success. |
+| `prefetchBlazeQuery` | Imperatively seed + prefetch, mirroring the fetched result. |
+| `setBlazeQueryData` | Write data through to the mirror (TanStack first, then Blaze). |
+| `invalidateBlazeQueries` | Invalidate in TanStack **and** purge the mirror. |
+| `removeBlazeQueries` | Remove from TanStack **and** purge the mirror. |
+| `dehydrateBlazeQueryClient` / `hydrateBlazeQueryClient` | Serialize / restore the mirror as a TanStack `DehydratedState`. |
+
+## Example usage
+
+### `useBlazeQuery` — instant first paint
+
+```tsx
+import { useBlazeQuery } from '@blaze-cache/react-query';
+
+function Todos({ userId }: { userId: string }) {
+  const todos = useBlazeQuery(cache, {
+    queryKey: ['todos', userId],
+    queryFn: () => api.get('/todos', { userId }).then((r) => r.data),
+  });
+  // renders cached data immediately; refetches stale data in the background
+}
+```
+
+### `useBlazeInfiniteQuery` — instant first paint for infinite lists
+
+```tsx
+const feed = useBlazeInfiniteQuery(cache, {
+  queryKey: ['feed', userId],
+  queryFn: ({ pageParam }) => api.get('/feed', { userId, pageParam }),
+  initialPageParam: 0,
+  getNextPageParam: (lastPage) => lastPage.nextCursor,
+});
+// feed.data?.pages — every page cached before the reload, immediately
+```
+
+The whole `InfiniteData` payload (pages + page params) is mirrored as one entry and seeded
+back as `initialData`, with the original `dataUpdatedAt`, so the first paint after a reload
+shows all previously loaded pages while TanStack still refetches.
+
+### `useBlazeQueries` — parallel instant first paint
+
+```tsx
+const [profile, settings, notifications] = useBlazeQueries(cache, {
+  queries: [
+    { queryKey: ['profile', userId], queryFn: () => api.profile(userId) },
+    { queryKey: ['settings'], queryFn: () => api.settings },
+    { queryKey: ['notifications', userId], queryFn: () => api.notifications(userId) },
+  ],
+});
+```
+
+### `useBlazeMutation` — keep the mirror in sync after writes
+
+```tsx
+const addTodo = useBlazeMutation(cache, {
+  mutationFn: (text: string) => api.post('/todos', { userId, text }),
+  invalidate: { queryKey: ['todos', userId] }, // or { tags: ['todos', `user:${userId}`] }
+  onSuccess: (data) => toast('Todo added'),
+});
+```
+
+On success the mutation invalidates the given queries — TanStack marks them stale (active
+ones refetch) and the matching persisted records are purged, so a reload cannot paint
+pre-write data. Your own `onSuccess` still runs first, and invalidation is skipped if it
+throws.
+
+### `prefetchBlazeQuery` — warm the mirror before navigation
+
+```ts
+await prefetchBlazeQuery(cache, queryClient, {
+  queryKey: ['todos', userId],
+  queryFn: () => api.get('/todos', { userId }).then((r) => r.data),
+  staleTime: 5 * 60_000, // serve within the window from the mirror
+});
+```
+
+### `setBlazeQueryData` — write through to the mirror
+
+```ts
+setBlazeQueryData(cache, queryClient, ['settings', userId], settings, {
+  tags: ['settings', `user:${userId}`],
+});
+```
+
+### `invalidateBlazeQueries` / `removeBlazeQueries` — purge persisted data on writes
+
+```ts
+// After a mutation that changes a list:
+await invalidateBlazeQueries(cache, queryClient, { queryKey: ['todos', userId] });
+// …or by tag, which also covers queries from earlier sessions:
+invalidateBlazeQueries(cache, queryClient, { tags: ['todos', `user:${userId}`] });
+
+removeBlazeQueries(cache, queryClient, { tags: ['todos', `user:${userId}`] }); // after logout
+```
+
+### `dehydrateBlazeQueryClient` / `hydrateBlazeQueryClient` — server-side persistence
+
+```ts
+// Server: serialize whatever the mirror holds for this request.
+const dehydratedState = dehydrateBlazeQueryClient(cache);
+
+// Client: restore into the (synced) client, then keep it persisted again.
+hydrateBlazeQueryClient(cache, queryClient, dehydratedState, {
+  tags: ['ssr', `user:${userId}`],
+});
+```
+
 ## Documentation
 
 Setup and the full integration reference live in the
