@@ -39,6 +39,7 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 | [`@blaze-cache/axios`](packages/axios) | An axios adapter that caches HTTP responses (honouring `Cache-Control`) |
 | [`@blaze-cache/fetch`](packages/fetch) | A drop-in `fetch()` replacement with automatic HTTP caching |
 | [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache |
+| [`@blaze-cache/swr`](packages/swr) | SWR middleware + `useSWR` that paints instantly from cache and persists fetches |
 
 ## Installation
 
@@ -49,6 +50,7 @@ npm install @blaze-cache/core@beta         # prerelease — 0.2.3-beta
 npm install @blaze-cache/axios@beta         # prerelease — 0.2.3-beta
 npm install @blaze-cache/fetch@beta         # prerelease — 0.2.3-beta
 npm install @blaze-cache/react-query@beta   # prerelease — 0.2.3-beta
+npm install @blaze-cache/swr@beta           # prerelease — 0.2.3-beta
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
@@ -61,6 +63,7 @@ the last stable release instead.
 | `@blaze-cache/axios` | `axios` ≥ 1.7 |
 | `@blaze-cache/fetch` | — (any `fetch`-shaped function) |
 | `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5 |
+| `@blaze-cache/swr` | `swr` ≥ 2 |
 
 npm 7+ and pnpm install peers automatically; yarn classic users need them explicitly.
 
@@ -596,6 +599,50 @@ const dehydratedState = dehydrateBlazeQueryClient(cache);
 hydrateBlazeQueryClient(cache, queryClient, dehydratedState, { tags: ['ssr', `user:${userId}`] });
 ```
 
+## Sharing one cache
+
+Every integration takes the same `cache` — one instance per app is the intended setup:
+
+```ts
+const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app' } });
+
+installBlazeCache(api, { cache });                     // @blaze-cache/axios
+const fetch = createBlazeFetch(cache);                 // @blaze-cache/fetch
+const queryClient = createBlazeQueryClient({ cache }); // @blaze-cache/react-query
+// useBlazeSWR(cache, key, fetcher, { ttlMs, tags })   // @blaze-cache/swr
+```
+
+Key formats are disjoint by default — axios/fetch file `get <url>?<fnv1a>`, TanStack
+files its own `queryHash`, SWR its own serialization — so entries from different
+integrations never overwrite each other. What *is* shared:
+
+* **Tags are one namespace at the core.** Default tags (`axios`, `fetch`, `react-query`,
+  `swr`) keep `cache.invalidateTags('<integration>')` scoped to a single package, and
+  every integration's purge helpers select *their own records* by shape before they read
+  tags — so `invalidateBlazeQueries(cache, client, { tags: ['todos'] })` purges mirror
+  records tagged `'todos'` and leaves an axios/SWR entry tagged `'todos'` in place. A
+  direct `cache.invalidateTags('todos')` is the one call that spans everything tagged —
+  useful when one purge *should* cover the whole domain.
+* **Purge helpers without a filter stay on their own records.**
+  `removeBlazeQueries(cache, client)` (and the unfiltered `invalidateBlazeQueries`)
+  removes every entry that *looks like* a react-query record (`dataUpdatedAt`), leaving
+  axios/fetch/SWR entries on a shared store untouched. `{ queryKey }` and `{ tags }`
+  narrow it further.
+* **Every integration shape-checks values it did not write.** axios treats a foreign
+  value as a miss — it neither serves nor deletes it; react-query seeds only records
+  carrying its own `dataUpdatedAt` stamp; SWR seeds only its `{ kind: 'swr' }` envelope.
+  With default keys collisions cannot happen at all, and with custom keys a foreign
+  value reads as a clean miss instead of being shown as data.
+* **Capacity, stats, events and the persistence flush are one pool.** Size `capacity` for
+  the combined write volume — a busy integration evicts other entries. Reads differ too:
+  react-query/SWR render with `peek` (never moving hit rate or eviction), axios/fetch
+  read with `get` (counting, as request-driven reads should).
+
+The cross-integration suite in [`packages/integration-tests`](packages/integration-tests)
+pins all of the above. It found six conflicts along the way — cross-purging purges,
+shape-blind reads and deletes, an unscoped resource tag — each since fixed in its package
+and now asserted positively here.
+
 ## Bundler setup
 
 The wasm binary ships inside `@blaze-cache/core`. Point at it explicitly with your
@@ -628,6 +675,8 @@ packages/
   axios/                 @blaze-cache/axios (HTTP adapter)
   fetch/                 @blaze-cache/fetch (drop-in fetch() replacement)
   react-query/           @blaze-cache/react-query (v5 mirror + hook)
+  swr/                   @blaze-cache/swr (SWR persist + hook)
+  integration-tests/     cross-integration tests: several packages, one shared cache
   <name>/test/           that package's Node test suite
 examples/
   browser/               Vite + React demo with a mock API and a latency counter
