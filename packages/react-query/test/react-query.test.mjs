@@ -25,6 +25,7 @@ import {
   hashQueryKey,
   hydrateBlazeQueryClient,
   invalidateBlazeQueries,
+  isMirrorRecord,
   prefetchBlazeQuery,
   readBlazeRecord,
   removeBlazeQueries,
@@ -67,6 +68,21 @@ describe('module surface', () => {
     assert.equal(typeof useBlazeMutation, 'function');
     assert.equal(typeof dehydrateBlazeQueryClient, 'function');
     assert.equal(typeof hydrateBlazeQueryClient, 'function');
+    assert.equal(typeof isMirrorRecord, 'function');
+  });
+
+  it('isMirrorRecord accepts only the shape TanStack writes', () => {
+    assert.equal(isMirrorRecord({ data: [1], dataUpdatedAt: 1_000 }), true);
+    assert.equal(isMirrorRecord({ data: [1], dataUpdatedAt: 1_000, queryKey: ['todos'] }), true);
+    // Foreign shapes on a shared cache: axios/fetch records, raw SWR values, plain data.
+    assert.equal(
+      isMirrorRecord({ status: 200, data: {}, storedAt: 1, freshUntil: 2 }),
+      false,
+      'axios/fetch records carry no `dataUpdatedAt`',
+    );
+    assert.equal(isMirrorRecord({ kind: 'swr', data: 'v', storedAt: 1 }), false, 'SWR envelope');
+    assert.equal(isMirrorRecord({ title: 'raw value' }), false, 'raw value');
+    assert.equal(isMirrorRecord(null), false);
   });
 });
 
@@ -299,6 +315,32 @@ describe('seedBlazeQueryOptions', () => {
     assert.equal(cold.initialDataUpdatedAt, undefined);
 
     stop();
+  });
+
+  it('never seeds a foreign value parked under this query’s hash (shared cache)', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    // A forced key collision: an axios record under TanStack's own hash. Seeding it would
+    // hand an HTTP body to TanStack as `initialData` with no timestamp to date it — a
+    // configured `staleTime` would be ignored too.
+    const hash = hashQueryKey(['todos']);
+    cache.set(hash, {
+      status: 200,
+      data: { source: 'axios' },
+      storedAt: Date.now(),
+      freshUntil: Date.now() + 60_000,
+    });
+
+    const seeded = seedBlazeQueryOptions(cache, client, { queryKey: ['todos'] });
+    assert.equal(seeded.initialData, undefined, 'the foreign body is not query data');
+    assert.equal(seeded.initialDataUpdatedAt, undefined, '…and carries no timestamp');
+
+    // Our own record under the same hash still seeds — the gate is shape, not origin.
+    cache.set(hash, { data: [1], dataUpdatedAt: 1_000, queryKey: ['todos'] });
+    const ours = seedBlazeQueryOptions(cache, client, { queryKey: ['todos'] });
+    assert.deepEqual(ours.initialData, [1]);
+    assert.equal(ours.initialDataUpdatedAt, 1_000);
   });
 
   it('reads what sync wrote when a custom queryKeyHashFn is configured', async () => {
@@ -540,6 +582,28 @@ describe('invalidateBlazeQueries / removeBlazeQueries', () => {
     await client.clear();
   });
 
+  it('a tag purge reaches only mirror records — foreign entries with the same tag stay', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    // Caller domain tags are one namespace across integrations, so an axios entry on a
+    // shared cache can carry the very tag TanStack purges with. The purge must still
+    // leave it: the selection is "mirror record AND tagged", not "tagged".
+    cache.set(
+      'get https://api.example.com/todos?a3f9k',
+      { status: 200, data: { source: 'axios' }, storedAt: 1, freshUntil: 2 },
+      { tags: ['todos'] },
+    );
+    cache.set('https://api.example.com/profile', { name: 'Ada' }, { tags: ['todos'] });
+    setBlazeQueryData(cache, client, ['todos'], [1], { tags: ['todos'] });
+
+    await invalidateBlazeQueries(cache, client, { tags: ['todos'] });
+
+    assert.equal(cache.has(hashQueryKey(['todos'])), false, 'the mirror record is gone');
+    assert.equal(cache.size(), 2, 'the two foreign entries kept their tags and their data');
+    assert.deepEqual(cache.tagsOf('https://api.example.com/profile'), ['todos']);
+  });
+
   it('intersects a queryKey filter with a tag filter', async () => {
     const cache = await makeCache();
     const client = new QueryClient();
@@ -588,6 +652,29 @@ describe('invalidateBlazeQueries / removeBlazeQueries', () => {
 
     assert.equal(cache.size(), 0, 'the whole mirror is gone');
     assert.equal(client.getQueryCache().getAll().length, 0, 'and the whole TanStack cache too');
+  });
+
+  it('leaves foreign entries alone when no filter is given (shared cache)', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    // What another integration would hold on the same store: an axios-shaped record and
+    // a raw SWR value — neither carries the mirror's `dataUpdatedAt` stamp.
+    cache.set('get https://api.example.com/users?a3f9k', {
+      status: 200,
+      data: { source: 'axios' },
+      storedAt: 1,
+      freshUntil: 2,
+    });
+    cache.set('https://api.example.com/profile', { name: 'Ada' });
+    setBlazeQueryData(cache, client, ['todos'], [1]);
+
+    removeBlazeQueries(cache, client);
+
+    assert.equal(cache.has(hashQueryKey(['todos'])), false, 'the mirror record is gone');
+    assert.equal(cache.has('get https://api.example.com/users?a3f9k'), true, 'the axios entry stays');
+    assert.equal(cache.has('https://api.example.com/profile'), true, 'the SWR entry stays');
+    assert.equal(cache.size(), 2, 'the unfiltered purge removed only what TanStack could have written');
   });
 });
 

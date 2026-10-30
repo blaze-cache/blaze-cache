@@ -69,10 +69,11 @@ export interface BlazeQueryCacheLike {
   /**
    * Removes every entry carrying any of `tags`, returning the removed keys.
    *
-   * Optional, like {@link BlazeQueryCacheLike.peek}: a cache without tag support keeps
-   * typechecking, and the tag-aware helpers ({@link invalidateBlazeQueries},
-   * {@link removeBlazeQueries}) fall back to enumerating via {@link BlazeQueryCacheLike.entries}
-   * (or throw when neither exists) instead of silently ignoring the tag.
+   * Not called by this package: the purge helpers enumerate {@link BlazeQueryCacheLike.entries}
+   * instead (or throw when it is absent), so a purge on a cache shared with another
+   * integration stays on mirror records — `invalidateTags` reaches the whole tag namespace,
+   * all integrations included. It remains part of the cache contract for callers who want
+   * exactly that.
    */
   invalidateTags?(...tags: string[]): string[];
   /**

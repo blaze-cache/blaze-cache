@@ -31,6 +31,7 @@
  */
 
 export { createBlazeQueryClient, syncBlazeQueryCache } from './sync.js';
+export { isMirrorRecord } from './record.js';
 export { hashQueryKey, resolveQueryHash } from './hash.js';
 export { readBlazeRecord, seedBlazeQueryOptions, useBlazeQuery } from './useBlazeQuery.js';
 export {

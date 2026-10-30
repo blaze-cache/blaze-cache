@@ -1,6 +1,7 @@
 import { hydrate } from '@tanstack/react-query';
 import type { DehydratedState, HydrateOptions, QueryClient } from '@tanstack/react-query';
 
+import { isMirrorRecord } from './record.js';
 import { DEFAULT_TAGS, DEFAULT_TTL_MS } from './sync.js';
 import type {
   BlazeMirrorOptions,
@@ -76,8 +77,12 @@ export function dehydrateBlazeQueryClient(
 
   const queries: Array<DehydratedQuery> = [];
   for (const entry of cache.entries()) {
+    // Shape gate first: a cache shared with another integration can hold foreign values,
+    // and only a mirror record carries the `data`/`dataUpdatedAt` pair a dehydrated query
+    // needs — an axios body would dehydrate as data dated `undefined`. Pre-`queryKey`
+    // records still skip, as before: they cannot be rebuilt into a TanStack query.
+    if (!isMirrorRecord(entry.value)) continue;
     const record = entry.value;
-    // Pre-`queryKey` records cannot be rebuilt into a TanStack query — see the doc above.
     if (record.queryKey === undefined) continue;
     if (options.predicate && !options.predicate(record, entry.key)) continue;
 

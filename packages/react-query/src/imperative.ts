@@ -8,6 +8,7 @@ import type {
   UseQueryOptions,
 } from '@tanstack/react-query';
 
+import { isMirrorRecord } from './record.js';
 import { resolveQueryHash } from './hash.js';
 import { DEFAULT_TAGS, DEFAULT_TTL_MS } from './sync.js';
 import { seedBlazeQueryOptions } from './useBlazeQuery.js';
@@ -64,25 +65,22 @@ function hasAnyTag(entry: BlazeMirrorEntry, tags: readonly string[]): boolean {
 }
 
 /**
- * Purges every mirror entry carrying any of `tags`, returning the removed keys.
+ * Purges every **mirror record** carrying any of `tags`, returning the removed keys.
  *
- * Uses `cache.invalidateTags` — one wasm call for the whole tag — when available, falls
- * back to per-entry filtering via `entries()`, and throws when the cache offers neither:
- * a `tags` selector that quietly matched nothing is exactly the bug this package refuses
- * to ship.
+ * Deliberately *not* `cache.invalidateTags`: the core's tag index is one global namespace
+ * with no per-integration scoping, so on a cache shared with `@blaze-cache/axios`,
+ * `@blaze-cache/fetch` or `@blaze-cache/swr` that call would silently purge other
+ * integrations' entries too. Enumerating `entries()` lets the selection be narrowed to
+ * this package's own records (see {@link isMirrorRecord}) plus tag membership — a
+ * `tags` purge here removes what *this* integration tagged and nothing else.
+ *
+ * Throws when the cache cannot enumerate: a `tags` selector that quietly matched nothing
+ * is exactly the bug this package refuses to ship.
  */
 function purgeMirrorByTags(cache: BlazeQueryCacheLike, tags: readonly string[]): string[] {
-  if (cache.invalidateTags) return cache.invalidateTags(...tags);
-  if (cache.entries) {
-    return cache
-      .entries()
-      .filter((entry) => hasAnyTag(entry, tags))
-      .map((entry) => entry.key);
-  }
-  throw new Error(
-    '[blaze-cache/react-query] A `tags` filter needs a cache with `invalidateTags` or ' +
-      '`entries` to select tagged entries. Refusing to ignore the tag.',
-  );
+  return entriesOf(cache)
+    .filter((entry) => isMirrorRecord(entry.value) && hasAnyTag(entry, tags))
+    .map((entry) => entry.key);
 }
 
 /**
@@ -153,8 +151,12 @@ function purgeMirrorAndBuildFilters(
   } else if (tags) {
     removed = purgeMirrorByTags(cache, tags);
   } else {
-    // No filters at all: everything persisted for queries goes.
-    removed = entriesOf(cache).map((entry) => entry.key);
+    // No filters at all: every *mirror record* goes — and nothing else. On a shared
+    // cache the store holds other integrations' entries too (see `isMirrorRecord`), so
+    // "everything persisted for queries" must not read as "everything in the cache".
+    removed = entriesOf(cache)
+      .filter((entry) => isMirrorRecord(entry.value))
+      .map((entry) => entry.key);
   }
 
   for (const key of removed) cache.delete(key);
@@ -278,9 +280,12 @@ export function setBlazeQueryData<TData = unknown, TQueryKey extends QueryKey = 
  * mirror entries (see {@link syncBlazeQueryCache}).
  *
  * Filters work on both sides; see {@link BlazeQueryFilters} for how `tags`, keys and
- * query-state selectors combine. Purging by tag needs `cache.invalidateTags` or
- * `cache.entries`; purging by non-exact key needs `cache.entries` — both **throw** when
- * absent rather than under-delivering.
+ * query-state selectors combine. Purging by tag or by non-exact key needs
+ * `cache.entries` — both **throw** when it is absent rather than under-delivering.
+ * (Tag purges deliberately enumerate rather than call `cache.invalidateTags`: the core's
+ * tag index is one global namespace, so that call would reach other integrations' entries
+ * on a shared cache. Enumeration keeps the purge on mirror records — see
+ * {@link isMirrorRecord}.)
  *
  * ```ts
  * await invalidateBlazeQueries(cache, client, { queryKey: ['todos', userId] });
@@ -310,7 +315,7 @@ export function invalidateBlazeQueries(
  * ```ts
  * // After a logout — including queries from earlier sessions TanStack never loaded:
  * removeBlazeQueries(cache, client, { tags: [`user:${userId}`] });
- * // Everything persisted for queries, mirror included:
+ * // Every mirror record — and only those, so foreign entries on a shared cache stay:
  * removeBlazeQueries(cache, client);
  * ```
  */

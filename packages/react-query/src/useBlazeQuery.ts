@@ -8,6 +8,7 @@ import type {
 } from '@tanstack/react-query';
 
 import { resolveQueryHash } from './hash.js';
+import { isMirrorRecord } from './record.js';
 import type { BlazeQueryCacheLike, BlazeQueryRecord } from './types.js';
 
 /**
@@ -84,7 +85,15 @@ export function readBlazeRecord(
   // would mutate global cache state — StrictMode double-renders and discarded concurrent
   // renders included — and skew the stats panel. `get` stays the fallback for caches that
   // predate `peek` (it is optional on `BlazeQueryCacheLike` for their sake).
-  return cache.peek ? cache.peek(hash) : cache.get(hash);
+  const record = cache.peek ? cache.peek(hash) : cache.get(hash);
+
+  // Shape gate: on a cache shared with `@blaze-cache/axios`, `@blaze-cache/fetch` or
+  // `@blaze-cache/swr`, a forced key collision can park a foreign value under this query's
+  // hash. Seeding it would hand an HTTP body (or a raw fetcher result) to TanStack as
+  // `initialData` — with no `dataUpdatedAt` to date it, so a configured `staleTime` would
+  // be ignored too. Only a record this package could have written is mirror data; anything
+  // else reads as the miss it is. See {@link isMirrorRecord}.
+  return isMirrorRecord(record) ? record : undefined;
 }
 
 /**
