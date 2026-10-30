@@ -8,7 +8,7 @@ import type {
 } from 'axios';
 
 import { parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey } from './key.js';
+import { defaultCacheKey, resolveRequestUrl } from './key.js';
 import { readHeader, toAxiosHeaders, toPlainHeaders } from './headers.js';
 import type {
   AxiosCacheRecord,
@@ -25,6 +25,19 @@ const DEFAULT_VARY_HEADERS: readonly string[] = ['authorization'];
 
 const HIT = 'HIT';
 const MISS = 'MISS';
+
+/**
+ * Shape check: is this value one **this adapter** wrote?
+ *
+ * `freshUntil` is the deadline the adapter stamps on every record, and `data` the body it
+ * always stores — a value missing either belongs to something else sharing the cache (a
+ * `FetchCacheRecord` carries `freshUntil` but no `data`; raw SWR values and react-query
+ * mirrors carry neither), and a read must neither serve nor destroy it. On a
+ * single-integration cache this is always true; the check exists for the shared one.
+ */
+function isAxiosRecord(value: AxiosCacheRecord): value is AxiosCacheRecord {
+  return typeof value.freshUntil === 'number' && 'data' in value;
+}
 
 /**
  * Wraps an axios adapter with a Blaze Cache layer.
@@ -62,13 +75,17 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
       let cached: CachedAxiosResponse | undefined;
       try {
         const record = cache.get(key);
-        if (record && Date.now() <= record.freshUntil) {
-          cached = cachedResponse(record, config, markerHeader);
-        } else if (record) {
-          // Past its own deadline — the store itself may never expire anything (the types
-          // bless a plain `Map` shim, which drops nothing), so the record is dropped here.
-          // Left alone it would linger as dead weight that nothing is allowed to serve.
-          cache.delete?.(key);
+        if (record && isAxiosRecord(record)) {
+          if (Date.now() <= record.freshUntil) {
+            cached = cachedResponse(record, config, markerHeader);
+          } else {
+            // Past its own deadline — the store itself may never expire anything (the types
+            // bless a plain `Map` shim, which drops nothing), so *our* record is dropped
+            // here. Left alone it would linger as dead weight that nothing is allowed to
+            // serve. A value that is not ours (see `isAxiosRecord`) is never deleted: a
+            // read must not destroy an entry another integration wrote to a colliding key.
+            cache.delete?.(key);
+          }
         }
       } catch (error) {
         // A cache that throws must cost one extra request — never a failed response.
@@ -117,7 +134,7 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
               freshUntil: storedAt + ttlMs,
             };
             const tags =
-              options.tags?.(response, config) ?? ['axios', `${method} ${config.url ?? ''}`];
+              options.tags?.(response, config) ?? ['axios', `${method} ${resolveRequestUrl(config)}`];
             cache.set(key, record, { ttlMs, tags });
           }
         }

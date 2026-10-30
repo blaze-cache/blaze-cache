@@ -73,7 +73,7 @@ export interface BlazeAxiosCacheOptions {
    */
   shouldCache?: (response: AxiosResponse, config: InternalAxiosRequestConfig) => boolean;
 
-  /** Tags attached to stored responses. Default: `['axios', '<METHOD> <url>']`. */
+  /** Tags attached to stored responses. Default: `['axios', '<METHOD> <resolved url>']` — the resolved URL, so it matches the equivalent `@blaze-cache/fetch` tag for the same resource. */
   tags?: (response: AxiosResponse, config: InternalAxiosRequestConfig) => string[];
 
   /**

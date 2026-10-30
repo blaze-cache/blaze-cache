@@ -38,7 +38,7 @@ const ABSOLUTE_URL = /^([a-z][a-z\d+\-.]*:)?\/\//i;
  * which is still precisely the string axios would request; only the no-base case reduces
  * to the raw url itself.
  */
-function resolveRequestUrl(config: InternalAxiosRequestConfig): string {
+export function resolveRequestUrl(config: InternalAxiosRequestConfig): string {
   const baseURL = config.baseURL;
   const url = config.url ?? '';
   const joined =

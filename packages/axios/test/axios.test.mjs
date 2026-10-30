@@ -399,6 +399,65 @@ describe('adapter', () => {
     assert.equal(store.size, 0, 'and the expired record was deleted, not left to linger');
   });
 
+  it('treats a foreign value under a colliding key as a miss — and never deletes it', async () => {
+    const cache = await makeCache();
+    // What another integration would hold under a forced shared key: a raw SWR-ish value,
+    // with no `freshUntil` and no `data`. A read must neither serve nor destroy it.
+    const foreign = { title: "another integration's value" };
+    cache.set('shared-key', foreign);
+
+    const { adapter, calls } = stubNetwork({ '/foreign': { status: 200, data: { n: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter, key: () => 'shared-key', shouldCache: () => false });
+
+    const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 1, 'the foreign value is not served — it goes to the network');
+    assert.equal(miss.fromBlazeCache, undefined);
+    assert.deepEqual(cache.get('shared-key'), foreign, 'and the read left it untouched');
+  });
+
+  it('does not serve another integration’s record even when its deadline says fresh', async () => {
+    const cache = await makeCache();
+    // A `FetchCacheRecord`-shaped value: it *has* a future `freshUntil`, but no `data`
+    // body — replaying it would answer axios callers with bytes that were never an
+    // AxiosResponse. The shape check rejects it before the freshness check ever runs.
+    const foreign = {
+      status: 200,
+      statusText: 'OK',
+      body: new ArrayBuffer(8),
+      url: 'https://api.example.com/orders',
+      storedAt: Date.now(),
+      freshUntil: Date.now() + 60_000,
+      staleUntil: Date.now() + 120_000,
+    };
+    cache.set('shared-key', foreign);
+
+    const { adapter, calls } = stubNetwork({ '/foreign': { status: 200, data: { n: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter, key: () => 'shared-key', shouldCache: () => false });
+
+    const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 1, 'not served despite a fresh-looking deadline');
+    assert.equal(miss.fromBlazeCache, undefined);
+    assert.deepEqual(cache.get('shared-key'), foreign, 'and not deleted either');
+  });
+
+  it('tags the resolved URL, so the tag names the resource axios really requested', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({ '/users': { status: 200, data: { id: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({
+      method: 'get',
+      url: '/users',
+      baseURL: 'https://api.example.com/v1',
+      headers: new AxiosHeaders(),
+    });
+
+    const [key] = cache.keys();
+    // Same resolved URL the key uses — and the same string `@blaze-cache/fetch` tags for
+    // this resource, so one `invalidateTags` can serve both adapters.
+    assert.deepEqual(cache.tagsOf(key), ['axios', 'get https://api.example.com/v1/users']);
+  });
+
   it('lets a request Cache-Control: max-age=0 bypass the read', async () => {
     const cache = await makeCache();
     const { adapter, calls } = stubNetwork({
