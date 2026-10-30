@@ -30,7 +30,13 @@ export type {
   BlazeCacheLike,
   CacheChange,
   CacheEntry,
+  CacheEvent,
+  CacheEventListener,
+  CacheEventMap,
+  CacheEventType,
   CacheListener,
   CacheStats,
+  SetManyEntry,
   SetOptions,
+  TouchOptions,
 } from './types.js';

@@ -18,7 +18,7 @@
 export { blazeAdapter, installBlazeCache } from './adapter.js';
 export type { InstallBlazeCacheOptions } from './adapter.js';
 
-export { parseCacheControl } from './cache-control.js';
+export { parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
 export type { CacheControl } from './cache-control.js';
 
 export { defaultCacheKey, fnv1a } from './key.js';

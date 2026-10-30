@@ -1,7 +1,7 @@
 {
   "name": "blaze-cache-monorepo",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.5",
   "type": "module",
   "packageManager": "pnpm@11.0.4",
   "engines": {
@@ -15,14 +15,14 @@
     "dev": "pnpm build && pnpm --filter blaze-cache-example dev",
     "typecheck": "pnpm -r typecheck",
     "test": "cargo test --workspace",
-    "test:js": "pnpm build && node --test scripts/smoke.mjs",
+    "test:js": "pnpm build:wasm && pnpm -r test",
+    "test:live": "pnpm build:wasm && pnpm -r test:live",
     "test:wasm": "wasm-pack test --node crates/blaze-cache-wasm",
+    "bench": "pnpm build:wasm && pnpm --filter @blaze-cache/core build && pnpm --filter blaze-cache-bench bench",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm typecheck",
     "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target"
   },
   "devDependencies": {
-    "@tanstack/react-query": "^5.104.5",
-    "axios": "^1.20.0",
     "typescript": "^5.9.3"
   }
 }

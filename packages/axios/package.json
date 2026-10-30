@@ -1,6 +1,6 @@
 {
   "name": "@blaze-cache/axios",
-  "version": "0.1.1",
+  "version": "0.2.5",
   "description": "Cache HTTP responses in axios via a WebAssembly cache — TTLs, tags, Cache-Control support and IndexedDB persistence",
   "keywords": [
     "axios",
@@ -20,6 +20,7 @@
     "url": "git+https://github.com/blaze-cache/blaze-cache.git",
     "directory": "packages/axios"
   },
+  "homepage": "https://blaze-cache.github.io/docs/",
   "publishConfig": {
     "access": "public"
   },
@@ -36,6 +37,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test",
+    "test:live": "pnpm run build && BLAZE_CACHE_LIVE=1 node --test test/live.test.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "prepublishOnly": "pnpm run build"
   },

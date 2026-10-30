@@ -31,6 +31,29 @@ pub struct EntryView<'a, K, V> {
     pub meta: EntryMeta,
 }
 
+/// Why the cache dropped an entry **on its own** — never the result of an explicit
+/// [`remove`](Cache::remove), [`invalidate_tags`](Cache::invalidate_tags) or
+/// [`clear`](Cache::clear), which the caller already knows about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// The cache was over [`capacity`](Cache::capacity) and SIEVE picked this entry.
+    Evicted,
+    /// The entry's TTL elapsed and something touched it (a read, or a capacity sweep
+    /// that happened to reach it first).
+    Expired,
+}
+
+/// An entry the cache reclaimed by itself, as handed back by [`Cache::drain_drops`].
+///
+/// The pair is returned by value — the same owned key/value the slab held — so no `Clone`
+/// bound is needed anywhere on the host side.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Dropped<K, V> {
+    pub key: K,
+    pub value: V,
+    pub reason: DropReason,
+}
+
 /// An in-memory cache with per-entry TTLs, tag invalidation and SIEVE eviction.
 ///
 /// `K` must be cheaply cloneable: every key is stored once in the hash index and once inside
@@ -80,6 +103,14 @@ pub struct Cache<K, V> {
     /// import, i.e. a boundary crossing per operation. Maintained exclusively through
     /// [`shift_ttl`](Self::shift_ttl) so every deadline change flows through one place.
     ttl_count: usize,
+    /// Opt-in log of self-initiated drops (evictions and expirations).
+    ///
+    /// Empty — and never pushed to — unless [`set_drop_tracking`](Self::set_drop_tracking)
+    /// turned it on, so the default hot path pays only a predictable `bool` branch at the
+    /// moment an entry dies (never per read/write).
+    drops: Vec<Dropped<K, V>>,
+    /// Whether `drops` is being collected. Off by default.
+    track_drops: bool,
 }
 
 impl<K, V> Cache<K, V>
@@ -103,6 +134,52 @@ where
             capacity,
             stats: CacheStats::default(),
             ttl_count: 0,
+            drops: Vec::new(),
+            track_drops: false,
+        }
+    }
+
+    /// Starts (or stops) recording self-initiated drops — see [`drain_drops`](Self::drain_drops).
+    ///
+    /// Turning it off also clears anything recorded so far. Costs one branch per dropped
+    /// entry while enabled and nothing observable while disabled.
+    pub fn set_drop_tracking(&mut self, enabled: bool) {
+        self.track_drops = enabled;
+        if !enabled {
+            self.drops.clear();
+        }
+    }
+
+    /// `true` while the drop log is being collected.
+    #[must_use]
+    pub fn drop_tracking(&self) -> bool {
+        self.track_drops
+    }
+
+    /// Takes everything recorded since the last drain: entries the cache reclaimed by
+    /// itself, with the reason.
+    ///
+    /// Only fills while [`set_drop_tracking`](Self::set_drop_tracking) is on. Explicit
+    /// [`remove`](Self::remove), [`invalidate_tags`](Self::invalidate_tags),
+    /// [`clear`](Self::clear) and [`prune`](Self::prune) never appear here — the caller
+    /// initiated those and already knows the outcome.
+    pub fn drain_drops(&mut self) -> Vec<Dropped<K, V>> {
+        std::mem::take(&mut self.drops)
+    }
+
+    /// Records a self-initiated drop when tracking is on.
+    ///
+    /// Explicit `remove` / `invalidate_tags` / `clear` / `prune` never call this — the
+    /// caller initiated those and already knows the outcome.
+    fn log_drop(&mut self, key: K, value: V, reason: DropReason) {
+        if self.track_drops {
+            // Soft cap: a listener that stops draining must not grow this forever.
+            // Older records are sacrificed first (FIFO semantics).
+            const MAX_DROPS: usize = 64 * 1024;
+            if self.drops.len() >= MAX_DROPS {
+                self.drops.remove(0);
+            }
+            self.drops.push(Dropped { key, value, reason });
         }
     }
 
@@ -122,6 +199,25 @@ where
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
+    }
+
+    /// Number of stored entries that are present **and** not expired.
+    #[must_use]
+    pub fn live_len(&self) -> usize {
+        if self.ttl_count == 0 {
+            return self.index.len();
+        }
+        let now = Instant::now();
+        let mut count = 0;
+        let mut cursor = self.queue_head();
+        while let Some(idx) = cursor {
+            let node = self.nodes[idx].as_ref().expect("live slot");
+            cursor = node.next;
+            if !node.is_expired(now) {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Current counters.
@@ -167,13 +263,32 @@ where
             if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
                 self.stats.expirations += 1;
                 self.stats.misses += 1;
-                self.free(idx);
+                let (key, value) = self.free(idx);
+                self.log_drop(key, value, DropReason::Expired);
                 return None;
             }
         }
         self.nodes[idx].as_mut().expect("live slot").visited = true;
         self.stats.hits += 1;
         Some(&self.nodes[idx].as_ref().expect("live slot").value)
+    }
+
+    /// Fetches a value **without** recording a hit or a miss, and without marking the entry
+    /// visited for SIEVE.
+    pub fn peek<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let idx = *self.index.get(key)?;
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count == 0 {
+            return Some(&node.value);
+        }
+        if node.expires_at.is_some() && node.is_expired(Instant::now()) {
+            return None;
+        }
+        Some(&node.value)
     }
 
     /// [`get`](Self::get) followed by a clone — convenient across API boundaries.
@@ -222,6 +337,24 @@ where
             return None;
         }
         Some(self.meta_for(node, Some(now)))
+    }
+
+    /// Time left on `key`'s deadline.
+    pub fn ttl<Q>(&self, key: &Q) -> Option<Option<Duration>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let idx = *self.index.get(key)?;
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count == 0 {
+            return Some(ttl_remaining(node, None));
+        }
+        let now = Instant::now();
+        if node.is_expired(now) {
+            return None;
+        }
+        Some(ttl_remaining(node, Some(now)))
     }
 
     /// Full view of one key — value, remaining TTL and tags — without touching statistics or
@@ -363,7 +496,7 @@ where
         let expires_at = options
             .ttl_opt()
             .filter(|ttl| !ttl.is_zero())
-            .map(|ttl| Instant::now() + ttl);
+            .and_then(|ttl| Instant::now().checked_add(ttl));
         let new_tag_ids = self
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
@@ -425,6 +558,48 @@ where
 
         debug_assert_eq!(self.queue.len(), self.index.len(), "queue/index desync");
         previous
+    }
+
+    /// Marks `key` as recently used and optionally renews its deadline.
+    pub fn touch<Q>(&mut self, key: &Q, ttl: Option<Duration>) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let Some(&idx) = self.index.get(key) else {
+            return false;
+        };
+        let now = if self.ttl_count > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        if now.is_some_and(|n| self.nodes[idx].as_ref().expect("live slot").is_expired(n)) {
+            return false;
+        }
+        if let Some(ttl) = ttl {
+            let new = if ttl.is_zero() {
+                None
+            } else {
+                // The clock fast-path above is `None` exactly when *no* entry carries a
+                // deadline — which is the ordinary state when a first renewal happens —
+                // and a `None` here would be stored as "no deadline at all". Take the
+                // reading on demand instead of skipping it; `checked_add` overflow falls
+                // back to "never expires", the same reading `insert_with` gives an absurd
+                // TTL.
+                now.unwrap_or_else(Instant::now).checked_add(ttl)
+            };
+            let old = {
+                let n = self.nodes[idx].as_mut().expect("live slot");
+                std::mem::replace(&mut n.expires_at, new)
+            };
+            self.shift_ttl(old, new);
+        }
+        {
+            let n = self.nodes[idx].as_mut().expect("live slot");
+            n.visited = true;
+        }
+        true
     }
 
     /// Removes `key`, returning its value.
@@ -538,21 +713,33 @@ where
     }
 
     /// Applies SIEVE once and counts *why* the entry died.
-    fn evict_one(&mut self) -> Option<(K, V)> {
+    ///
+    /// The dropped pair goes to the drop log when tracking is on; otherwise it is released.
+    /// Neither caller needs the value back (both only care that *something* died), which is
+    /// what makes handing ownership to the log free.
+    fn evict_one(&mut self) -> Option<()> {
         // No deadline anywhere → nothing can be expired, so the sweep takes no clock (the
         // hand's visited-bit logic is time-independent). See `get` for the rationale.
         let now = (self.ttl_count > 0).then(Instant::now);
         let idx = self.queue.evict_candidate(&mut self.nodes, now)?;
         let was_expired =
             now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now));
-        let pair = self.release(idx); // `evict_candidate` already unlinked it
+        let (key, value) = self.release(idx); // `evict_candidate` already unlinked it
         if was_expired {
             self.stats.expirations += 1;
+            self.log_drop(key, value, DropReason::Expired);
         } else {
             self.stats.evictions += 1;
+            self.log_drop(key, value, DropReason::Evicted);
         }
-        Some(pair)
+        Some(())
     }
+}
+
+fn ttl_remaining<K, V>(node: &Node<K, V>, now: Option<Instant>) -> Option<Duration> {
+    node.expires_at
+        .zip(now)
+        .map(|(at, now)| at.saturating_duration_since(now))
 }
 
 impl<K, V> Default for Cache<K, V>
@@ -565,467 +752,4 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::thread;
-
-    fn sleep(ms: u64) {
-        thread::sleep(Duration::from_millis(ms));
-    }
-
-    fn keys_of<K, V>(cache: &Cache<K, V>) -> Vec<K>
-    where
-        K: Clone + Hash + Eq + std::fmt::Debug,
-    {
-        cache.keys().cloned().collect()
-    }
-
-    /// Owned copy of the keys carrying `tag`, so assertions read naturally.
-    fn tagged_keys<K, V>(cache: &Cache<K, V>, tag: &str) -> Vec<K>
-    where
-        K: Clone + Hash + Eq,
-    {
-        cache.keys_with_tag(tag).into_iter().cloned().collect()
-    }
-
-    #[test]
-    fn round_trips_values() {
-        let mut cache = Cache::new(4);
-        cache.insert("greeting", "hello");
-        assert_eq!(cache.get("greeting"), Some(&"hello"));
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.stats().hits, 1);
-        assert!(cache.contains_key("greeting"));
-    }
-
-    #[test]
-    fn counts_misses_and_handles_replacement() {
-        let mut cache = Cache::new(4);
-        cache.insert("k", 1);
-        assert_eq!(cache.insert_with("k", 2, EntryOptions::new()), Some(1));
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get("k"), Some(&2));
-
-        assert_eq!(cache.get("absent"), None);
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 1);
-        assert_eq!(stats.misses, 1);
-        assert!((stats.hit_rate() - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn evicts_the_oldest_unvisited_entry() {
-        let mut cache = Cache::new(3);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        cache.insert("c", 3);
-        assert_eq!(cache.get("a"), Some(&1)); // "a" becomes protected
-
-        cache.insert("d", 4); // over capacity -> "b" is the oldest unvisited
-        assert_eq!(cache.len(), 3);
-        assert_eq!(cache.get("a"), Some(&1));
-        assert_eq!(cache.get("b"), None);
-        assert_eq!(cache.get("c"), Some(&3));
-        assert_eq!(cache.get("d"), Some(&4));
-        assert_eq!(cache.stats().evictions, 1);
-    }
-
-    #[test]
-    fn second_sweep_reclaims_protected_entries() {
-        let mut cache = Cache::new(3);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        cache.insert("c", 3);
-        for (key, value) in [("a", 1), ("b", 2), ("c", 3)] {
-            assert_eq!(
-                cache.get(key),
-                Some(&value),
-                "every entry becomes protected"
-            );
-        }
-        // Everything is visited: the hand clears the bits on its first pass and takes the
-        // oldest one on the wrap-around.
-        cache.insert("d", 4);
-        assert_eq!(cache.get("a"), None);
-        assert_eq!(keys_of(&cache), vec!["b", "c", "d"]);
-        assert_eq!(cache.stats().evictions, 1);
-    }
-
-    #[test]
-    fn zero_capacity_is_clamped_to_one() {
-        let mut cache: Cache<&str, i32> = Cache::new(0);
-        assert_eq!(cache.capacity(), 1);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get("b"), Some(&2));
-        assert_eq!(cache.get("a"), None);
-    }
-
-    #[test]
-    fn shrinking_capacity_evicts_immediately() {
-        let mut cache = Cache::new(4);
-        for (k, v) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
-            cache.insert(k, v);
-        }
-        cache.set_capacity(1);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(keys_of(&cache), vec!["d"]);
-    }
-
-    #[test]
-    fn expires_lazily_on_access() {
-        let mut cache = Cache::new(4);
-        cache.insert_with(
-            "short",
-            1,
-            EntryOptions::new().ttl(Duration::from_millis(5)),
-        );
-        cache.insert_with("long", 2, EntryOptions::new().ttl(Duration::from_secs(60)));
-
-        assert!(cache.contains_key("short"));
-        sleep(30);
-        assert!(!cache.contains_key("short"), "contains_key never mutates");
-        assert_eq!(cache.get("short"), None);
-        assert_eq!(cache.len(), 1, "the expired entry was dropped eagerly");
-        assert_eq!(cache.get("long"), Some(&2));
-
-        let stats = cache.stats();
-        assert_eq!(stats.expirations, 1);
-        assert_eq!(stats.misses, 1);
-    }
-
-    #[test]
-    fn keys_skip_expired_entries() {
-        let mut cache = Cache::new(4);
-        cache.insert_with(
-            "stale",
-            1,
-            EntryOptions::new().ttl(Duration::from_millis(5)),
-        );
-        cache.insert("fresh", 2);
-        sleep(30);
-
-        assert_eq!(keys_of(&cache), vec!["fresh"]);
-        assert_eq!(cache.entries().len(), 1);
-        assert!(cache.meta("stale").is_none());
-        assert!(cache.meta("fresh").is_some());
-        assert!(
-            cache.entry("stale").is_none(),
-            "entry() sees the same expiry"
-        );
-        assert_eq!(*cache.entry("fresh").expect("alive").value, 2);
-    }
-
-    #[test]
-    fn prune_reclaims_every_expired_entry() {
-        let mut cache = Cache::new(8);
-        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_millis(5)));
-        cache.insert_with("b", 2, EntryOptions::new().ttl(Duration::from_millis(5)));
-        cache.insert("c", 3);
-        sleep(30);
-
-        let mut removed = cache.prune();
-        removed.sort_unstable();
-        assert_eq!(removed, vec!["a", "b"]);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.stats().expirations, 2);
-    }
-
-    #[test]
-    fn zero_ttl_means_no_expiry() {
-        let mut cache = Cache::new(4);
-        cache.insert_with("permanent", 1, EntryOptions::new().ttl(Duration::ZERO));
-        assert_eq!(cache.len(), 1);
-        assert!(cache.contains_key("permanent"));
-        assert_eq!(cache.meta("permanent").unwrap().ttl_remaining, None);
-    }
-
-    #[test]
-    fn tags_invalidate_only_the_matching_entries() {
-        let mut cache = Cache::new(8);
-        cache.insert_with("u1", 1, EntryOptions::new().tag("user:1"));
-        cache.insert_with("u2", 2, EntryOptions::new().tags(["user:2", "vip"]));
-        cache.insert_with("page", 3, EntryOptions::new().tag("public"));
-
-        assert_eq!(tagged_keys(&cache, "vip"), vec!["u2"]);
-        assert!(cache.has_tag("u2", "vip"));
-        assert!(!cache.has_tag("u1", "vip"));
-
-        assert_eq!(cache.invalidate_tags(["user:1"]), vec!["u1"]);
-        assert_eq!(cache.len(), 2);
-
-        let mut removed = cache.invalidate_tags(["vip", "public"]);
-        removed.sort_unstable();
-        assert_eq!(removed, vec!["page", "u2"]);
-        assert!(cache.is_empty());
-        assert_eq!(cache.stats().invalidations, 3);
-        // Forgotten tags must not leak.
-        assert!(cache.keys_with_tag("vip").is_empty());
-        assert!(!cache.has_tag("u2", "vip"));
-    }
-
-    #[test]
-    fn rewriting_an_entry_replaces_its_tags() {
-        let mut cache = Cache::new(4);
-        cache.insert_with("k", 1, EntryOptions::new().tag("old"));
-        assert_eq!(cache.tags_of("k"), Some(vec!["old".to_owned()]));
-
-        cache.insert_with("k", 2, EntryOptions::new().tag("new"));
-        assert_eq!(cache.tags_of("k"), Some(vec!["new".to_owned()]));
-        assert!(cache.keys_with_tag("old").is_empty());
-        assert_eq!(tagged_keys(&cache, "new"), vec!["k"]);
-
-        // The retagged entry is still findable under the old key with the new value.
-        assert_eq!(cache.get("k"), Some(&2));
-        assert_eq!(cache.invalidate_tags(["old"]), Vec::<&str>::new());
-        assert!(cache.contains_key("k"));
-    }
-
-    #[test]
-    fn entries_expose_ttl_and_tags_for_persistence() {
-        let mut cache = Cache::new(4);
-        cache.insert_with(
-            "user:7",
-            "payload",
-            EntryOptions::new()
-                .ttl(Duration::from_secs(30))
-                .tags(["user:7", "profile"]),
-        );
-        let entries = cache.entries();
-        assert_eq!(entries.len(), 1);
-        let entry = &entries[0];
-        assert_eq!(*entry.key, "user:7");
-        assert_eq!(*entry.value, "payload");
-        let ttl = entry.meta.ttl_remaining.expect("has a ttl");
-        assert!(ttl <= Duration::from_secs(30) && !ttl.is_zero());
-        assert_eq!(entry.meta.tags, vec!["user:7", "profile"]);
-    }
-
-    #[test]
-    fn clear_resets_storage_and_tags() {
-        let mut cache = Cache::new(4);
-        cache.insert_with("a", 1, EntryOptions::new().tag("t"));
-        cache.insert("b", 2);
-        cache.clear();
-
-        assert!(cache.is_empty());
-        assert!(cache.keys_with_tag("t").is_empty());
-        assert_eq!(cache.stats().invalidations, 2);
-        // Still usable afterwards.
-        cache.insert("c", 3);
-        assert_eq!(cache.get("c"), Some(&3));
-    }
-
-    #[test]
-    fn remove_returns_the_value_and_counts_an_invalidation() {
-        let mut cache = Cache::new(4);
-        cache.insert("k", 42);
-        assert_eq!(cache.remove("k"), Some(42));
-        assert_eq!(cache.remove("k"), None);
-        assert_eq!(cache.len(), 0);
-        assert_eq!(cache.stats().invalidations, 1);
-    }
-
-    #[test]
-    fn removing_middle_entries_keeps_the_queue_linked() {
-        let mut cache = Cache::new(4);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        cache.insert("c", 3);
-        cache.insert("d", 4);
-
-        // "b" and "c" are middle nodes: linked, but neither end. `is_linked` used to answer
-        // `false` for exactly those, so their slots were freed while the neighbours still
-        // pointed at them — freeing "c" then panicked in `unlink` on `live prev`.
-        assert_eq!(cache.remove("b"), Some(2));
-        assert_eq!(cache.remove("c"), Some(3));
-        assert_eq!(cache.len(), 2);
-
-        cache.insert("e", 5);
-        cache.insert("f", 6);
-        assert_eq!(
-            cache.keys().copied().collect::<Vec<_>>(),
-            vec!["a", "d", "e", "f"],
-            "the survivors keep their queue order"
-        );
-
-        // A full eviction sweep over every node proves the repaired links actually walk.
-        cache.insert("g", 7);
-        assert_eq!(cache.stats().evictions, 1);
-        assert_eq!(
-            cache.keys().copied().collect::<Vec<_>>(),
-            vec!["d", "e", "f", "g"]
-        );
-    }
-
-    #[test]
-    fn reinserting_a_key_keeps_slot_count_stable() {
-        let mut cache = Cache::new(4);
-        for i in 0..100 {
-            cache.insert_with("hot", i, EntryOptions::new().tag("t"));
-        }
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get("hot"), Some(&99));
-        assert_eq!(tagged_keys(&cache, "t"), vec!["hot"]);
-        assert_eq!(cache.stats().evictions, 0);
-    }
-
-    // ------------------------------------------------------- ttl_count bookkeeping
-    //
-    // `ttl_count` is what lets the read paths skip `Instant::now()` (a wasm→JS boundary
-    // crossing) when no entry can be expired. Every test here guards the invariant the fast
-    // path will rely on: **the counter equals the number of nodes holding a deadline.**
-    // They run before the fast path exists, so a failure here can only be bookkeeping.
-
-    #[test]
-    fn ttl_count_tracks_new_entries_with_and_without_deadlines() {
-        let mut cache = Cache::new(8);
-        assert_eq!(cache.ttl_count, 0);
-
-        cache.insert("permanent", 1); // no TTL
-        assert_eq!(cache.ttl_count, 0);
-
-        cache.insert_with(
-            "expiring",
-            2,
-            EntryOptions::new().ttl(Duration::from_secs(60)),
-        );
-        assert_eq!(cache.ttl_count, 1);
-
-        // Zero/absent TTL means "no deadline" — must not be counted.
-        cache.insert_with("zero", 3, EntryOptions::new().ttl(Duration::ZERO));
-        assert_eq!(
-            cache.ttl_count, 1,
-            "only the 60s entry holds a deadline; a zero TTL is permanent"
-        );
-    }
-
-    #[test]
-    fn ttl_count_follows_deadline_changes_on_rewrite() {
-        let mut cache = Cache::new(8);
-        cache.insert_with("k", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
-        assert_eq!(cache.ttl_count, 1);
-
-        // Same key, now permanent: the deadline is dropped, so the count falls.
-        cache.insert_with("k", 2, EntryOptions::new());
-        assert_eq!(cache.ttl_count, 0, "rewrite removed the deadline");
-
-        // Permanent → expiring again: back up.
-        cache.insert_with("k", 3, EntryOptions::new().ttl(Duration::from_secs(5)));
-        assert_eq!(cache.ttl_count, 1);
-
-        // Expiring → expiring: still exactly one deadline, never two.
-        cache.insert_with("k", 4, EntryOptions::new().ttl(Duration::from_secs(5)));
-        assert_eq!(cache.ttl_count, 1);
-        assert_eq!(cache.get("k"), Some(&4));
-    }
-
-    #[test]
-    fn ttl_count_drops_when_entries_are_removed() {
-        let mut cache = Cache::new(8);
-        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
-        cache.insert_with("b", 2, EntryOptions::new()); // permanent
-        assert_eq!(cache.ttl_count, 1);
-
-        // `remove` frees `a`, whose deadline dies with it.
-        cache.remove("a");
-        assert_eq!(cache.ttl_count, 0, "release() decrements the counter");
-
-        // A permanent entry being removed must leave the counter untouched (it is 0).
-        cache.remove("b");
-        assert_eq!(cache.ttl_count, 0);
-    }
-
-    #[test]
-    fn ttl_count_survives_eviction_and_expiration() {
-        let mut cache = Cache::new(2);
-        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
-        cache.insert_with("b", 2, EntryOptions::new().ttl(Duration::from_secs(60)));
-        assert_eq!(cache.ttl_count, 2);
-
-        // Capacity pressure: `a` (oldest, unvisited) is evicted through `evict_one`.
-        cache.insert_with("c", 3, EntryOptions::new().ttl(Duration::from_secs(60)));
-        assert_eq!(cache.ttl_count, 2, "evicted a, added c");
-        assert_eq!(cache.get("a"), None);
-
-        // Lazy expiry on read: `b`'s TTL elapses and `get` reclaims it eagerly.
-        let mut expiring = Cache::new(4);
-        expiring.insert_with("s", 1, EntryOptions::new().ttl(Duration::from_millis(5)));
-        assert_eq!(expiring.ttl_count, 1);
-        sleep(30);
-        assert_eq!(expiring.get("s"), None, "expired and freed");
-        assert_eq!(
-            expiring.ttl_count, 0,
-            "the expired node decremented on release"
-        );
-    }
-
-    #[test]
-    fn ttl_count_resets_on_clear_and_survives_prune() {
-        let mut cache = Cache::new(8);
-        cache.insert_with("a", 1, EntryOptions::new().ttl(Duration::from_secs(60)));
-        cache.insert_with("b", 2, EntryOptions::new());
-        assert_eq!(cache.ttl_count, 1);
-
-        // `clear()` bypasses `release()` entirely, so it must reset the counter itself.
-        cache.clear();
-        assert_eq!(cache.ttl_count, 0, "clear() resets the counter");
-
-        // Prune reclaims expired nodes through `free()` → `release()`.
-        cache.insert_with("x", 1, EntryOptions::new().ttl(Duration::from_millis(5)));
-        assert_eq!(cache.ttl_count, 1);
-        sleep(30);
-        cache.prune();
-        assert_eq!(
-            cache.ttl_count, 0,
-            "prune() ran the nodes through release()"
-        );
-        assert_eq!(cache.len(), 0);
-    }
-
-    #[test]
-    fn ttl_count_never_drifts_under_mixed_churn() {
-        // Hammer rewrite, capacity eviction and explicit removal at once with a capacity
-        // smaller than the key pool, so insertions evict too. Hand-tracked arithmetic can't
-        // model evictions, so compare directly against ground truth after every step: the
-        // number of live nodes that actually hold a deadline.
-        let live_deadlines = |cache: &Cache<String, usize>| {
-            cache
-                .entries()
-                .iter()
-                .filter(|e| e.meta.ttl_remaining.is_some())
-                .count()
-        };
-
-        let mut cache = Cache::new(4);
-        for i in 0..60 {
-            let with_ttl = i % 2 == 0;
-            let key = format!("k{}", i % 6);
-            let options = if with_ttl {
-                EntryOptions::new().ttl(Duration::from_secs(60))
-            } else {
-                EntryOptions::new()
-            };
-            cache.insert_with(key.clone(), i, options);
-            assert_eq!(
-                cache.ttl_count,
-                live_deadlines(&cache),
-                "drift after insert at iteration {i} (with_ttl={with_ttl})"
-            );
-
-            if i % 5 == 0 {
-                cache.remove(&key);
-                assert_eq!(
-                    cache.ttl_count,
-                    live_deadlines(&cache),
-                    "drift after remove at iteration {i} (with_ttl={with_ttl})"
-                );
-            }
-        }
-        assert!(
-            !cache.is_empty(),
-            "sanity: the churn must leave entries behind"
-        );
-    }
-}
+mod tests;

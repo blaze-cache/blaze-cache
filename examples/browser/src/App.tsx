@@ -35,6 +35,11 @@ export default function App() {
       .then((response) => response.json() as Promise<{ serverHits: number }>)
       .then((body) => {
         if (!cancelled) setServerHits(body.serverHits);
+      })
+      .catch(() => {
+        // The stats strip is cosmetic — a non-JSON 500 or a dropped connection just
+        // leaves it empty rather than surfacing as an unhandled rejection.
+        if (!cancelled) setServerHits(null);
       });
     return () => {
       cancelled = true;
@@ -70,8 +75,10 @@ export default function App() {
         {todos.data && (
           <>
             <ul>
-              {todos.data.items.map((item) => (
-                <li key={item}>{item}</li>
+              {todos.data.items.map((item, index) => (
+                // The payload carries no ids, so position + text keeps keys unique even when
+                // the same todo is added twice — plain `key={item}` would collide.
+                <li key={`${index}:${item}`}>{item}</li>
               ))}
             </ul>
             <p className="muted">

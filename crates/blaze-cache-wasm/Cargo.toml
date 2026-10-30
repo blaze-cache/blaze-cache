@@ -26,6 +26,7 @@ wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }

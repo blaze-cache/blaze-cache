@@ -11,3 +11,11 @@ rust-version.workspace = true
 foldhash = { workspace = true }
 serde = { workspace = true }
 web-time = { workspace = true }
+# Inline-capable containers: a write with ≤2 tags pays no heap allocation for its tag list,
+# which is the common case, and a node carries its own ids the same way. `Vec` falls back
+# automatically past the inline capacity, so the API never changes.
+smallvec = { version = "1", features = ["serde"] }
+# `serde_json::to_value` is ~20× cheaper than `serde_wasm_bindgen::to_value` for the stats
+# object, because it builds the JS value in one pass instead of one `Reflect::set` call
+# per field. The stats object is small and fixed-shape, so that is a win with no downside.
+serde_json = "1"

@@ -1,0 +1,15 @@
+{
+  "name": "blaze-cache-bench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Benchmarks @blaze-cache/core against quick-lru and the native Map",
+  "type": "module",
+  "scripts": {
+    "bench": "node --expose-gc bench.mjs",
+    "test": "pnpm --filter @blaze-cache/core build && node --test"
+  },
+  "dependencies": {
+    "@blaze-cache/core": "workspace:*",
+    "quick-lru": "^7.3.0"
+  }
+}

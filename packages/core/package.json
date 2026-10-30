@@ -1,6 +1,6 @@
 {
   "name": "@blaze-cache/core",
-  "version": "0.1.1",
+  "version": "0.2.5",
   "description": "WebAssembly client-side cache for the browser: SIEVE eviction, per-entry TTLs, tag invalidation and optional IndexedDB persistence",
   "keywords": [
     "cache",
@@ -21,6 +21,7 @@
     "url": "git+https://github.com/blaze-cache/blaze-cache.git",
     "directory": "packages/core"
   },
+  "homepage": "https://blaze-cache.github.io/docs/",
   "publishConfig": {
     "access": "public"
   },
@@ -42,6 +43,7 @@
   "sideEffects": ["./dist/wasm.js"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build && node -e \"require('fs').accessSync('pkg/blaze_cache_wasm_bg.wasm')\""
   },

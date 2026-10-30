@@ -12,10 +12,15 @@
 //!   exactly which keys disappeared — that is what keeps IndexedDB in sync.
 #![allow(clippy::unused_unit)]
 
+use js_sys::Array;
 use std::time::Duration;
 
 use blaze_cache_core::{Cache, EntryOptions};
 use wasm_bindgen::prelude::*;
+
+/// Hard ceiling for a JS-supplied capacity: enough for any realistic workload, and small
+/// enough that the eager hash-map reservation in `Cache::new` can never approach wasm memory.
+pub const MAX_CAPACITY: usize = 1_000_000;
 
 /// A JavaScript-visible Blaze Cache.
 #[wasm_bindgen]
@@ -25,9 +30,31 @@ pub struct BlazeCache {
 
 #[wasm_bindgen]
 impl BlazeCache {
-    /// Creates a cache that holds at most `capacity` entries (clamped to `>= 1`).
+    /// Creates a cache that holds at most `capacity` entries.
+    ///
+    /// `capacity` arrives as a JS `Number`, so it is validated before anything else sees it:
+    ///
+    /// * non-finite (`NaN`, `Infinity`) — meaningless as a size, falls back to the default;
+    /// * below `1` — clamped up to `1`, exactly as the core clamps `0`; note this also
+    ///   covers negatives, which JS→integer conversion would otherwise deliver as ~4.29e9;
+    /// * above [`MAX_CAPACITY`] — clamped down, because `capacity()` reports it back and
+    ///   nobody builds a browser cache meant to hold a billion entries.
+    ///
+    /// The core also caps its own index reservation, so even an unvalidated number could no
+    /// longer abort the instance with a huge up-front allocation.
     #[wasm_bindgen(constructor)]
-    pub fn new(capacity: usize) -> BlazeCache {
+    pub fn new(capacity: f64) -> BlazeCache {
+        let capacity = if !capacity.is_finite() {
+            blaze_cache_core::DEFAULT_CAPACITY
+        } else if capacity < 1.0 {
+            1
+        } else if capacity > MAX_CAPACITY as f64 {
+            MAX_CAPACITY
+        } else {
+            // Both bounds checked against the f64: `as usize` on wasm32 truncates modulo
+            // 2³² rather than saturating, so narrowing first would wrap instead of clamp.
+            capacity as usize
+        };
         BlazeCache {
             inner: Cache::new(capacity),
         }
@@ -39,6 +66,26 @@ impl BlazeCache {
     #[wasm_bindgen(js_name = get)]
     pub fn get(&mut self, key: &str) -> Option<JsValue> {
         self.inner.get(key).cloned()
+    }
+
+    /// Same lookup as [`get`](Self::get) — **without** recording a hit or a miss, and without
+    /// marking the entry visited for SIEVE.
+    ///
+    /// The read for "is this here?" questions: it leaves the hit rate and the eviction order
+    /// exactly as it found them, and it never reclaims an expired entry.
+    #[wasm_bindgen(js_name = peek)]
+    pub fn peek(&self, key: &str) -> Option<JsValue> {
+        self.inner.peek(key).cloned()
+    }
+
+    /// Milliseconds until `key` expires, or `undefined` when it carries no TTL or the key is
+    /// missing/expired. Purely observational: statistics and eviction state are untouched.
+    #[wasm_bindgen(js_name = ttl)]
+    pub fn ttl(&self, key: &str) -> Option<f64> {
+        self.inner
+            .ttl(key)
+            .flatten()
+            .map(|ttl| ttl.as_millis() as f64)
     }
 
     /// Stores `value` under `key`.
@@ -55,10 +102,87 @@ impl BlazeCache {
         let mut options = EntryOptions::new().tags(tags);
         if let Some(ms) = ttl_ms {
             if ms.is_finite() && ms > 0.0 {
-                options = options.ttl(Duration::from_millis(ms as u64));
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
         }
         self.inner.insert_with(key.to_owned(), value, options);
+    }
+
+    /// Batch get: looks up every key in one boundary crossing. Returns `JsValue::UNDEFINED`
+    /// for missing or expired entries. Each hit marks the entry visited for SIEVE.
+    #[wasm_bindgen(js_name = getMany)]
+    pub fn get_many(&mut self, keys: Vec<String>) -> Vec<JsValue> {
+        keys.iter()
+            .map(|k| self.inner.get(k).cloned().unwrap_or(JsValue::UNDEFINED))
+            .collect()
+    }
+
+    /// Batch set: stores every key/value pair in one boundary crossing.
+    ///
+    /// `ttl_ms[i] < 0` means no expiry. `tag_offsets[i]`..`tag_offsets[i+1]` index into
+    /// `tags_flat` for the tags of entry `i`.
+    #[wasm_bindgen(js_name = setMany)]
+    pub fn set_many(
+        &mut self,
+        keys: Vec<String>,
+        values: JsValue,
+        ttl_ms: Vec<f64>,
+        tags_flat: Vec<String>,
+        tag_offsets: Vec<usize>,
+    ) {
+        let values_arr = Array::from(&values);
+        let len = keys
+            .len()
+            .min(values_arr.length() as usize)
+            .min(ttl_ms.len());
+        for i in 0..len {
+            let start = tag_offsets.get(i).copied().unwrap_or(0);
+            let end = tag_offsets.get(i + 1).copied().unwrap_or(start);
+            let entry_tags = &tags_flat[start..end];
+
+            let mut options = EntryOptions::new().tags(entry_tags.iter().map(|s| s.as_str()));
+            let ms = ttl_ms[i];
+            if ms.is_finite() && ms > 0.0 {
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+            }
+            let value = values_arr.get(i as u32);
+            self.inner.insert_with(keys[i].clone(), value, options);
+        }
+    }
+
+    /// Batch has: returns `1` for each key that is present and not expired, `0` otherwise.
+    #[wasm_bindgen(js_name = hasMany)]
+    pub fn has_many(&self, keys: Vec<String>) -> Vec<u8> {
+        keys.iter()
+            .map(|k| if self.inner.contains_key(k) { 1 } else { 0 })
+            .collect()
+    }
+
+    /// Batch delete: returns `1` for each key that was present, `0` otherwise.
+    #[wasm_bindgen(js_name = deleteMany)]
+    pub fn delete_many(&mut self, keys: Vec<String>) -> Vec<u8> {
+        keys.iter()
+            .map(|k| if self.inner.remove(k).is_some() { 1 } else { 0 })
+            .collect()
+    }
+    /// Marks `key` as recently used for eviction and optionally renews its TTL — the stored
+    /// value is never changed. Returns `false` when the key is missing or expired.
+    ///
+    /// * `ttlMs` — `undefined`/`null` leaves the current deadline alone; a positive finite
+    ///   number replaces it with "now + ttlMs"; `0`, negatives and `NaN` drop the deadline
+    ///   (never expires), the same reading [`set`](Self::set) gives them.
+    #[wasm_bindgen(js_name = touch)]
+    pub fn touch(&mut self, key: &str, ttl_ms: Option<f64>) -> bool {
+        let ttl = ttl_ms.map(|ms| {
+            if ms.is_finite() && ms > 0.0 {
+                // Same rounding-up rule as `set`: a positive TTL must never truncate to
+                // zero, which the core would read as "drop the deadline".
+                Duration::from_millis((ms as u64).max(1))
+            } else {
+                Duration::ZERO
+            }
+        });
+        self.inner.touch(key, ttl)
     }
 
     /// `true` when `key` is present and not expired. Does not affect eviction state.
@@ -150,6 +274,51 @@ impl BlazeCache {
         self.inner.clear();
     }
 
+    /// Starts (or stops) recording entries the cache drops **by itself** — capacity
+    /// evictions and TTL expirations — so the host can observe them via
+    /// [`drain_drops`](Self::drain_drops).
+    ///
+    /// Off by default: while off, the core pays nothing but a branch at the moment an
+    /// entry dies, and `drain_drops()` returns an empty array. Turning it off also clears
+    /// whatever has been recorded but not yet drained.
+    #[wasm_bindgen(js_name = setDropTracking)]
+    pub fn set_drop_tracking(&mut self, enabled: bool) {
+        self.inner.set_drop_tracking(enabled);
+    }
+
+    /// `true` while the drop log is being collected.
+    #[wasm_bindgen(js_name = dropTracking)]
+    pub fn drop_tracking(&self) -> bool {
+        self.inner.drop_tracking()
+    }
+
+    /// Takes every drop recorded since the last call as
+    /// `[{ key, value, reason: "evict" | "expire" }, …]`.
+    ///
+    /// Explicit `delete`, `deleteMany`, `invalidateTags`, `prune` and `clear` never show up
+    /// here — the host issued those and already knows the result. Call this after each
+    /// operation that could have reclaimed memory (any write, any read when TTLs exist)
+    /// while drop listeners are installed.
+    #[wasm_bindgen(js_name = drainDrops)]
+    pub fn drain_drops(&mut self) -> Array {
+        let out = Array::new();
+        for dropped in self.inner.drain_drops() {
+            let obj = js_sys::Object::new();
+            set_field(&obj, "key", &JsValue::from_str(&dropped.key));
+            set_field(&obj, "value", &dropped.value);
+            set_field(
+                &obj,
+                "reason",
+                &JsValue::from_str(match dropped.reason {
+                    blaze_cache_core::DropReason::Evicted => "evict",
+                    blaze_cache_core::DropReason::Expired => "expire",
+                }),
+            );
+            out.push(&obj);
+        }
+        out
+    }
+
     /// Counters: `{ hits, misses, evictions, expirations, invalidations, size, capacity }`.
     #[wasm_bindgen(js_name = stats)]
     pub fn stats(&self) -> Result<JsValue, JsValue> {
@@ -164,14 +333,17 @@ impl BlazeCache {
         self.inner.reset_stats();
     }
 
-    /// Current number of stored entries (may include not-yet-pruned expired ones).
-    #[wasm_bindgen(getter)]
+    /// Number of stored entries that are present **and** not expired — expired-but-unpruned
+    /// slots are not counted, so this always matches what `keys()`/`entries()` return.
+    ///
+    /// `O(1)` when no entry carries a TTL, otherwise a single oldest-first walk.
+    #[wasm_bindgen(js_name = size)]
     pub fn size(&self) -> usize {
-        self.inner.len()
+        self.inner.live_len()
     }
 
-    /// Maximum number of entries.
-    #[wasm_bindgen(getter)]
+    /// Maximum number of entries — the `capacity` passed to `createCache`.
+    #[wasm_bindgen(js_name = capacity)]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
     }
