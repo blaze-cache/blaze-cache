@@ -168,7 +168,15 @@ await invalidateBlazeQueries(cache, queryClient, { queryKey: ['todos', userId] }
 invalidateBlazeQueries(cache, queryClient, { tags: ['todos', `user:${userId}`] });
 
 removeBlazeQueries(cache, queryClient, { tags: ['todos', `user:${userId}`] }); // after logout
+removeBlazeQueries(cache, queryClient); // every mirror record — and only those
 ```
+
+Purges are scoped to **mirror records** (the `dataUpdatedAt` shape TanStack writes), so on
+a cache shared with `@blaze-cache/axios`, `@blaze-cache/fetch` or `@blaze-cache/swr` they
+leave other integrations' entries alone — including unfiltered calls and tag purges, even
+when a caller domain tag (`'todos'`) is one the other integrations also use. The selection
+enumerates `entries()`, so the concrete `BlazeCache` (or anything with `entries`) is
+required for tag and non-exact-key filters.
 
 ### `dehydrateBlazeQueryClient` / `hydrateBlazeQueryClient` — server-side persistence
 
