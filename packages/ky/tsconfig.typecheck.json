@@ -1,0 +1,16 @@
+{
+  // Type-checks against workspace *sources* (via `paths` in the base config), so it works on
+  // a clean checkout without building `@blaze-cache/core` first.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // Widen it to cover `packages/core/src` as well; nothing is emitted anyway.
+    "rootDir": "../..",
+    "paths": {
+      "@blaze-cache/core": ["../../packages/core/src/index.ts"]
+    }
+  }
+}
