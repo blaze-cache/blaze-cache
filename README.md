@@ -38,6 +38,7 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 | [`@blaze-cache/core`](packages/core) | The cache itself: SIEVE eviction, TTLs, tags, stats, IndexedDB persistence |
 | [`@blaze-cache/axios`](packages/axios) | An axios adapter that caches HTTP responses (honouring `Cache-Control`) |
 | [`@blaze-cache/fetch`](packages/fetch) | A drop-in `fetch()` replacement with automatic HTTP caching |
+| [`@blaze-cache/ky`](packages/ky) | A `ky.extend` hook (`beforeRequest`/`afterResponse`) that caches HTTP responses |
 | [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache |
 | [`@blaze-cache/swr`](packages/swr) | SWR middleware + `useSWR` that paints instantly from cache and persists fetches |
 
@@ -46,11 +47,12 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta         # prerelease — 0.2.3-beta
-npm install @blaze-cache/axios@beta         # prerelease — 0.2.3-beta
-npm install @blaze-cache/fetch@beta         # prerelease — 0.2.3-beta
-npm install @blaze-cache/react-query@beta   # prerelease — 0.2.3-beta
-npm install @blaze-cache/swr@beta           # prerelease — 0.2.3-beta
+npm install @blaze-cache/core@beta         # prerelease — 0.3.0-beta
+npm install @blaze-cache/axios@beta         # prerelease — 0.3.0-beta
+npm install @blaze-cache/fetch@beta         # prerelease — 0.3.0-beta
+npm install @blaze-cache/ky@beta            # prerelease — 0.3.0-beta
+npm install @blaze-cache/react-query@beta   # prerelease — 0.3.0-beta
+npm install @blaze-cache/swr@beta           # prerelease — 0.3.0-beta
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
@@ -62,6 +64,7 @@ the last stable release instead.
 | `@blaze-cache/core` | — |
 | `@blaze-cache/axios` | `axios` ≥ 1.7 |
 | `@blaze-cache/fetch` | — (any `fetch`-shaped function) |
+| `@blaze-cache/ky` | `ky` ≥ 1.14 (v1 or v2 — one hook supports both) |
 | `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5 |
 | `@blaze-cache/swr` | `swr` ≥ 2 |
 
@@ -242,7 +245,7 @@ polling a key can never turn it into an eviction-proof resident.
 
 Five reads answer "what is in there, and for how long?" — none of them counts a hit or
 a miss. All are available in the Rust core (`blaze-cache-core`) and exposed through the
-wasm bindings as of `0.2.3-beta`:
+wasm bindings as of `0.3.0-beta`:
 
 ```ts
 const cache = await createCache({ capacity: 1000 });
@@ -543,6 +546,54 @@ Behaviour worth knowing:
 
 Full option reference: [`packages/fetch`](packages/fetch).
 
+## ky
+
+Same shape, one hook instead of a `fetch` wrapper. Pass `blazeKyHook(cache)` into
+`ky.extend` — every successful `GET` is stored in the same `Cache` and replayed from it:
+
+```ts
+import ky from 'ky';
+import { BlazeCache } from '@blaze-cache/core';
+import { blazeKyHook, createBlazeKy } from '@blaze-cache/ky';
+
+const cache = await BlazeCache.create({ wasmSource });
+
+// hook style — any ky you already have
+const api = ky.extend({
+  prefixUrl: 'https://api.example.com/v1',
+  headers: { authorization: 'Bearer k' },
+  hooks: blazeKyHook(cache, { varyHeaders: ['authorization'], tags: ['v1'] }),
+});
+
+// helper style — one call, cache options folded into the same options object
+const api2 = createBlazeKy(cache, {
+  prefixUrl: 'https://api.example.com/v1',
+  headers: { authorization: 'Bearer k' },
+  ttlMs: 30_000,
+  tags: ['v1'],
+  varyHeaders: ['authorization'],
+});
+
+await api('users/42'); // MISS — network, stored in the background
+await api('users/42'); // HIT  — replayed from cache, x-blaze-cache: HIT
+```
+
+What you get:
+
+* `cache.get('users/42')` works — plain URLs, no request objects. Custom keys are
+  `key: (request) => string`, tags `tags` (string or `(request, response) => …`), TTL
+  `ttlMs` (number or `(request, response) => …`), plus `markerHeader`, `varyHeaders`,
+  `shouldCache` and `respectCacheControl` exactly as in `fetch`.
+* Cache hits keep ky semantics: a non-2xx response replayed from cache still throws
+  `ky.HTTPError`, because the hook hands ky a real `Response` rather than swallowing it.
+* Both hook shapes are supported at runtime — ky v1 passes four positional arguments,
+  ky v2 passes a single state object. The hook detects which, so the same build works
+  with `ky@^1.14` and `ky@^2`.
+* No stale-while-revalidate here — `stale-while-revalidate` responses are served once and
+  then miss. For SWR (with an `STALE` marker) use [`@blaze-cache/fetch`](#fetch).
+
+Full option reference: [`packages/ky`](packages/ky).
+
 ## TanStack Query
 
 ```tsx
@@ -608,16 +659,18 @@ const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app
 
 installBlazeCache(api, { cache });                     // @blaze-cache/axios
 const fetch = createBlazeFetch(cache);                 // @blaze-cache/fetch
+const api2 = createBlazeKy(cache, { ttlMs: 30_000 });  // @blaze-cache/ky
 const queryClient = createBlazeQueryClient({ cache }); // @blaze-cache/react-query
 // useBlazeSWR(cache, key, fetcher, { ttlMs, tags })   // @blaze-cache/swr
 ```
 
-Key formats are disjoint by default — axios/fetch file `get <url>?<fnv1a>`, TanStack
+Key formats are disjoint by default — axios/fetch/ky file `get <url>?<fnv1a>`, TanStack
 files its own `queryHash`, SWR its own serialization — so entries from different
 integrations never overwrite each other. What *is* shared:
 
-* **Tags are one namespace at the core.** Default tags (`axios`, `fetch`, `react-query`,
-  `swr`) keep `cache.invalidateTags('<integration>')` scoped to a single package, and
+* **Tags are one namespace at the core.** Default tags (`axios`, `fetch`, `ky`,
+  `react-query`, `swr`) keep `cache.invalidateTags('<integration>')` scoped to a single
+  package, and
   every integration's purge helpers select *their own records* by shape before they read
   tags — so `invalidateBlazeQueries(cache, client, { tags: ['todos'] })` purges mirror
   records tagged `'todos'` and leaves an axios/SWR entry tagged `'todos'` in place. A
@@ -626,16 +679,17 @@ integrations never overwrite each other. What *is* shared:
 * **Purge helpers without a filter stay on their own records.**
   `removeBlazeQueries(cache, client)` (and the unfiltered `invalidateBlazeQueries`)
   removes every entry that *looks like* a react-query record (`dataUpdatedAt`), leaving
-  axios/fetch/SWR entries on a shared store untouched. `{ queryKey }` and `{ tags }`
+  axios/fetch/ky/SWR entries on a shared store untouched. `{ queryKey }` and `{ tags }`
   narrow it further.
 * **Every integration shape-checks values it did not write.** axios treats a foreign
-  value as a miss — it neither serves nor deletes it; react-query seeds only records
+  value as a miss — it neither serves nor deletes it; ky likewise (its records carry a
+  numeric `freshUntil` and an `ArrayBuffer` body); react-query seeds only records
   carrying its own `dataUpdatedAt` stamp; SWR seeds only its `{ kind: 'swr' }` envelope.
   With default keys collisions cannot happen at all, and with custom keys a foreign
   value reads as a clean miss instead of being shown as data.
 * **Capacity, stats, events and the persistence flush are one pool.** Size `capacity` for
   the combined write volume — a busy integration evicts other entries. Reads differ too:
-  react-query/SWR render with `peek` (never moving hit rate or eviction), axios/fetch
+  react-query/SWR render with `peek` (never moving hit rate or eviction), axios/fetch/ky
   read with `get` (counting, as request-driven reads should).
 
 The cross-integration suite in [`packages/integration-tests`](packages/integration-tests)
@@ -674,6 +728,7 @@ packages/
   core/                  @blaze-cache/core  (wasm loader, persistence, createCache)
   axios/                 @blaze-cache/axios (HTTP adapter)
   fetch/                 @blaze-cache/fetch (drop-in fetch() replacement)
+  ky/                    @blaze-cache/ky (ky.extend hook, ky v1 + v2)
   react-query/           @blaze-cache/react-query (v5 mirror + hook)
   swr/                   @blaze-cache/swr (SWR persist + hook)
   integration-tests/     cross-integration tests: several packages, one shared cache
