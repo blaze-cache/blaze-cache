@@ -1,10 +1,10 @@
 /**
- * Cross-integration tests: **four integrations, one shared cache instance**.
+ * Cross-integration tests: **five integrations, one shared cache instance**.
  *
  * Every `@blaze-cache/*` package advertises the same story — create one cache, pass it
  * to whichever integrations you use — but each package's own suite can only ever prove
- * its own behaviour. This file is the only place that runs axios + fetch + react-query +
- * SWR against the *same* store, and it pins both halves of that contract:
+ * its own behaviour. This file is the only place that runs axios + fetch + ky +
+ * react-query + SWR against the *same* store, and it pins both halves of that contract:
  *
  * * **Isolation that must hold** — default keys are disjoint, each integration reads
  *   back its own value shape, default tags purge only their own integration, and no
@@ -30,6 +30,7 @@ import { AxiosHeaders } from 'axios';
 import { createCache } from '@blaze-cache/core';
 import { blazeAdapter, defaultCacheKey as axiosCacheKey } from '@blaze-cache/axios';
 import { createBlazeFetch, defaultCacheKey as fetchCacheKey } from '@blaze-cache/fetch';
+import { createBlazeKy, defaultCacheKey as kyCacheKey } from '@blaze-cache/ky';
 import {
   createBlazeQueryClient,
   hashQueryKey,
@@ -133,6 +134,19 @@ async function populateAll(cache, options = {}) {
   const fetchMiss = await blazeFetch(RESOURCE_URL, { headers: { authorization: 'Bearer t' } });
   const fetchHit = await blazeFetch(RESOURCE_URL, { headers: { authorization: 'Bearer t' } });
 
+  // ky — MISS then HIT, same resource. Its own token keeps ky's entry distinct from
+  // fetch's here, but note the two deliberately share a key *format*: for identical
+  // request identity (same URL, same headers) they would share one entry, which is the
+  // point — both store the same wire bytes as a compatible `ArrayBuffer` record.
+  const kyStub = stubFetchNetwork({ source: 'ky' });
+  const blazeKy = createBlazeKy(cache, {
+    fetch: kyStub.net,
+    headers: { authorization: 'Bearer k' },
+    ...(options.kyTags ? { tags: () => options.kyTags } : null),
+  });
+  const kyMiss = await blazeKy.get(RESOURCE_URL);
+  const kyHit = await blazeKy.get(RESOURCE_URL);
+
   // react-query — one mirrored query (TanStack state + mirror record, synchronously).
   const client = createBlazeQueryClient({ cache });
   setBlazeQueryData(cache, client, ['users'], [1, 2, 3], options.rqTags ? { tags: options.rqTags } : {});
@@ -151,12 +165,13 @@ async function populateAll(cache, options = {}) {
     keys: {
       axios: axiosCacheKey({ method: 'get', url: RESOURCE_URL, headers: {} }, ['authorization']),
       fetch: fetchCacheKey(RESOURCE_URL, { method: 'GET', headers: { authorization: 'Bearer t' } }, ['authorization']),
+      ky: kyCacheKey(new Request(`${RESOURCE_URL}`, { headers: { authorization: 'Bearer k' } }), ['authorization']),
       reactQuery: hashQueryKey(['users']),
       swr: resolveBlazeKey(RESOURCE_URL),
     },
     client,
-    stubs: { axStub, fStub },
-    responses: { axMiss, axHit, fetchMiss, fetchHit },
+    stubs: { axStub, fStub, kyStub },
+    responses: { axMiss, axHit, fetchMiss, fetchHit, kyMiss, kyHit },
     swr,
   };
 }
@@ -180,14 +195,17 @@ describe('key isolation', () => {
 
     assert.equal(
       new Set(Object.values(keys)).size,
-      4,
-      `four integrations, four distinct keys — got ${JSON.stringify(keys)}`,
+      5,
+      `five integrations, five distinct keys — got ${JSON.stringify(keys)}`,
     );
 
     // The formats themselves: HTTP keys are method-prefixed, SWR strings pass through
-    // raw, TanStack keys are JSON — nothing overlaps structurally.
+    // raw, TanStack keys are JSON — nothing overlaps structurally. ky and fetch share a
+    // format on purpose (same wire identity → same entry); here their hashed
+    // `authorization` inputs differ, so the suffixes keep them apart.
     assert.ok(keys.axios.startsWith('get '));
     assert.ok(keys.fetch.startsWith('get '));
+    assert.ok(keys.ky.startsWith('get '));
     assert.equal(keys.swr, RESOURCE_URL);
     assert.equal(keys.reactQuery, '["users"]');
     assert.notEqual(resolveBlazeKey(['users']), hashQueryKey(['users']), 'SWR array hashes vs TanStack JSON');
@@ -197,11 +215,11 @@ describe('key isolation', () => {
 // ================================================================ round trip
 
 describe('round trip on one cache', () => {
-  it('all four integrations coexist, and each reads back its own value shape', async () => {
+  it('all five integrations coexist, and each reads back its own value shape', async () => {
     const cache = await makeCache();
     const { keys, client, stubs, swr, responses } = await populateAll(cache);
 
-    assert.equal(cache.size(), 4, 'one entry per integration, none overwritten');
+    assert.equal(cache.size(), 5, 'one entry per integration, none overwritten');
 
     // axios: second request served from its own record.
     assert.equal(stubs.axStub.calls.length, 1, 'axios hit the network exactly once');
@@ -218,6 +236,15 @@ describe('round trip on one cache', () => {
     assert.equal(ftRecord.url, RESOURCE_URL, 'fetch sees a FetchCacheRecord');
     assert.ok(ftRecord.body instanceof ArrayBuffer, 'with a byte body');
 
+    // ky: second request served from its own record.
+    assert.equal(stubs.kyStub.calls.length, 1, 'ky hit the network exactly once');
+    assert.equal(responses.kyMiss.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(responses.kyHit.headers.get('x-blaze-cache'), 'HIT');
+    const kyRecord = cache.get(keys.ky);
+    assert.equal(kyRecord.url, RESOURCE_URL, 'ky sees a KyCacheRecord');
+    assert.ok(kyRecord.body instanceof ArrayBuffer, 'with a byte body');
+    assert.equal(typeof kyRecord.freshUntil, 'number', 'and its own freshness deadline');
+
     // react-query: the mirror seeds query data, not a foreign shape.
     const seeded = seedBlazeQueryOptions(cache, client, { queryKey: ['users'] });
     assert.deepEqual(seeded.initialData, [1, 2, 3]);
@@ -228,8 +255,8 @@ describe('round trip on one cache', () => {
     assert.deepEqual(seededSwr.config.fallbackData, { source: 'swr' });
     assert.equal(cache.get(keys.swr).kind, 'swr', 'persisted as its own envelope shape');
 
-    // And nobody else's key moved: re-running every reader still sees four entries.
-    assert.equal(cache.size(), 4);
+    // And nobody else's key moved: re-running every reader still sees five entries.
+    assert.equal(cache.size(), 5);
   });
 });
 
@@ -242,30 +269,32 @@ describe('shared tag index', () => {
 
     assert.equal(cache.keysWithTag('axios').length, 1);
     assert.equal(cache.keysWithTag('fetch').length, 1);
+    assert.equal(cache.keysWithTag('ky').length, 1);
     assert.equal(cache.keysWithTag('react-query').length, 1);
     assert.equal(cache.keysWithTag('swr').length, 1);
 
     cache.invalidateTags('axios');
-    assert.equal(cache.size(), 3, 'purging axios leaves the other three');
+    assert.equal(cache.size(), 4, 'purging axios leaves the other four');
     assert.equal(cache.has(keys.axios), false);
     assert.equal(cache.has(keys.fetch), true);
+    assert.equal(cache.has(keys.ky), true);
     assert.equal(cache.has(keys.reactQuery), true);
     assert.equal(cache.has(keys.swr), true);
 
     cache.invalidateTags('react-query');
     assert.equal(cache.has(keys.reactQuery), false);
-    assert.equal(cache.size(), 2, 'each namespace tag only ever removes its own');
+    assert.equal(cache.size(), 3, 'each namespace tag only ever removes its own');
   });
 
-  it('a per-resource tag spans axios and fetch for the same URL', async () => {
+  it('a per-resource tag spans axios, fetch and ky for the same URL', async () => {
     const cache = await makeCache();
     await populateAll(cache);
 
-    // Both adapters tag their entry `<method> <url>`; for the same absolute URL the
-    // strings match, so one purge serves both — desirable for a shared resource, but it
-    // is coupling, not isolation.
+    // All three adapters tag their entry `<method> <url>`; for the same absolute URL the
+    // strings match, so one purge serves all three — desirable for a shared resource, but
+    // it is coupling, not isolation.
     const removed = cache.invalidateTags(`get ${RESOURCE_URL}`);
-    assert.equal(removed.length, 2, 'axios and fetch entries share the resource tag');
+    assert.equal(removed.length, 3, 'axios, fetch and ky entries share the resource tag');
     assert.equal(cache.size(), 2, 'react-query and SWR entries are untouched');
   });
 
@@ -274,13 +303,14 @@ describe('shared tag index', () => {
     await populateAll(cache, {
       axiosTags: ['todos'],
       fetchTags: ['todos'],
+      kyTags: ['todos'],
       rqTags: ['todos'],
       swrTags: ['todos'],
     });
 
-    assert.equal(cache.size(), 4);
+    assert.equal(cache.size(), 5);
     const removed = cache.invalidateTags('todos');
-    assert.equal(removed.length, 4, "a single 'todos' purge clears all four integrations");
+    assert.equal(removed.length, 5, "a single 'todos' purge clears all five integrations");
     assert.equal(cache.size(), 0);
   });
 
@@ -300,7 +330,8 @@ describe('shared tag index', () => {
     assert.equal(cache.has(keys.reactQuery), false, 'the react-query entry is purged, as asked');
     assert.equal(cache.has(keys.axios), true, 'the axios entry survives');
     assert.equal(cache.has(keys.swr), true, 'the SWR entry survives');
-    assert.equal(cache.has(keys.fetch), true, 'the untagged entry survives');
+    assert.equal(cache.has(keys.fetch), true, 'the untagged fetch entry survives');
+    assert.equal(cache.has(keys.ky), true, 'the untagged ky entry survives');
     assert.deepEqual(cache.tagsOf(keys.axios), ['todos'], 'its tag is intact too');
   });
 });
@@ -320,8 +351,9 @@ describe('purge scoping', () => {
     assert.equal(cache.has(keys.reactQuery), false, 'the mirror record is gone');
     assert.equal(cache.has(keys.axios), true, 'axios survives');
     assert.equal(cache.has(keys.fetch), true, 'fetch survives');
+    assert.equal(cache.has(keys.ky), true, 'ky survives');
     assert.equal(cache.has(keys.swr), true, 'SWR survives');
-    assert.equal(cache.size(), 3);
+    assert.equal(cache.size(), 4);
   });
 
   it('invalidateBlazeQueries() with no filters purges only mirror records', async () => {
@@ -331,7 +363,7 @@ describe('purge scoping', () => {
     await invalidateBlazeQueries(cache, client);
 
     assert.equal(cache.has(keys.reactQuery), false, 'the mirror record is gone');
-    assert.equal(cache.size(), 3, 'the three foreign entries were left in place');
+    assert.equal(cache.size(), 4, 'the four foreign entries were left in place');
   });
 
   it('scoped purges leave foreign entries alone', async () => {
@@ -343,8 +375,9 @@ describe('purge scoping', () => {
     assert.equal(cache.has(keys.reactQuery), false, 'the matching mirror entry is gone');
     assert.equal(cache.has(keys.axios), true, 'axios untouched');
     assert.equal(cache.has(keys.fetch), true, 'fetch untouched');
+    assert.equal(cache.has(keys.ky), true, 'ky untouched');
     assert.equal(cache.has(keys.swr), true, 'SWR untouched');
-    assert.equal(cache.size(), 3);
+    assert.equal(cache.size(), 4);
   });
 });
 
@@ -365,6 +398,27 @@ describe('forced key collisions (custom keys)', () => {
 
     assert.equal(calls.length, 1, 'the foreign value is not served');
     assert.equal(miss.fromBlazeCache, undefined);
+    assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
+  });
+
+  it('a foreign-shaped value under a colliding key is a miss for ky, never deleted', async () => {
+    const cache = await makeCache();
+    const foreign = { title: 'an SWR-ish value' };
+    cache.set('shared-key', foreign);
+
+    const { net, calls } = stubFetchNetwork({ source: 'ky' });
+    // Nothing is written back, so anything still in the store after this request was
+    // *left alone* by ky's read path — the shape gate fired instead of a serve or a delete.
+    const api = createBlazeKy(cache, {
+      fetch: net,
+      key: () => 'shared-key',
+      shouldCache: () => false,
+    });
+
+    const miss = await api.get(RESOURCE_URL);
+
+    assert.equal(calls.length, 1, 'the foreign value is not served');
+    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
     assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
   });
 
@@ -413,7 +467,7 @@ describe('forced key collisions (custom keys)', () => {
 
 describe('shared capacity and stats', () => {
   it('one eviction pool: one integration’s write flood evicts another’s entries', async () => {
-    const cache = await makeCache({ capacity: 4 });
+    const cache = await makeCache({ capacity: 5 });
     const { keys, client } = await populateAll(cache);
     assert.equal(cache.has(keys.reactQuery), true, 'the mirror starts in the cache');
 
@@ -426,7 +480,7 @@ describe('shared capacity and stats', () => {
       writes++;
     }
     assert.equal(cache.has(keys.reactQuery), false, 'the mirror was evicted by foreign writes');
-    assert.ok(cache.size() <= 4, `size stayed within capacity (${cache.size()})`);
+    assert.ok(cache.size() <= 5, `size stayed within capacity (${cache.size()})`);
     assert.ok(client, 'the client itself is fine — only the persisted copy went');
   });
 
