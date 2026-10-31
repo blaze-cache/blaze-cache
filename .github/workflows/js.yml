@@ -1,4 +1,4 @@
-# CI for the JavaScript side: the four packages under `packages/`.
+# CI for the JavaScript side: the packages under `packages/`.
 #
 # Two jobs, kept apart on purpose:
 #
@@ -73,7 +73,8 @@ jobs:
       - name: build wasm
         run: pnpm build:wasm
 
-      # core 54, axios 26, react-query 14, fetch 43 — plus the live files, skipped here.
+      # core 54, axios 29, ky 57, react-query 33, swr 27, fetch 43, integration-tests 16 —
+      # plus the live files, skipped here.
       - name: package tests
         run: pnpm -r test
 
