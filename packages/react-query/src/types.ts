@@ -59,6 +59,25 @@ export interface BlazeQueryCacheLike {
    * discarded concurrent renders).
    */
   peek?(key: string): BlazeQueryRecord | undefined;
+  /**
+   * The tags currently attached to `key` (empty when the key is unknown).
+   *
+   * Optional, like {@link BlazeQueryCacheLike.peek}: the concrete `BlazeCache` has it as
+   * `tagsOf()`. When present, the sync layer reads the existing entry's tags before
+   * re-writing it (a refetch of a query whose helper set per-query tags) so the re-write
+   * preserves them instead of stamping the sync defaults over them. When absent, the
+   * re-write falls back to the sync defaults — the same behaviour as before this reader
+   * existed.
+   */
+  tagsOf?(key: string): readonly string[];
+  /**
+   * Milliseconds until `key` expires, or `undefined` when it has no TTL or is unknown.
+   *
+   * Optional for the same reason as {@link BlazeQueryCacheLike.tagsOf}: with it, a refetch
+   * re-write can keep the entry's *remaining* freshness window (a helper's short TTL is a
+   * deliberate choice) rather than resetting it to a fresh full TTL.
+   */
+  ttl?(key: string): number | undefined;
   set(
     key: string,
     value: BlazeQueryRecord,
