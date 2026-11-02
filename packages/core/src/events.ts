@@ -44,10 +44,11 @@ interface OnceWrapped {
  *   wildcard). It mirrors the wasm drop-tracking flag: the Rust core only records dropped
  *   entries while somebody is actually waiting for them.
  *
- * Iterating a `Set` while a listener runs is safe: a listener that unsubscribes prevents
- * the removed entries from being visited, and one that subscribes during delivery may be
- * visited in the same pass. Delivery order is deterministic — typed listeners for the event
- * first, wildcards last — and a throwing listener is isolated (logged, never propagated).
+ * Delivery iterates a snapshot of each set and re-checks membership per listener, so a
+ * listener removed during delivery — by its own unsub, by `off(type, fn)`, or wholesale by
+ * `off(type)`/`off()` — is never visited, while a listener added mid-delivery is only heard
+ * by later events. Delivery order is deterministic — typed listeners for the event first,
+ * wildcards last — and a throwing listener is isolated (logged, never propagated).
  *
  * The optional `onChange` callback fires after every registration change — including the
  * implicit removal a fired `once` performs — so the owner can re-derive any state that
@@ -174,6 +175,10 @@ export class CacheEventBus<V = any> {
         if (set !== undefined) {
           this.#size -= set.size;
           if (DROP_TYPES.has(type)) this.#dropSubscribers -= set.size;
+          // Empty the set as well as un-mapping it: an `emit` in flight holds a reference
+          // to this set and checks membership before each delivery, so clearing it is what
+          // makes `off(type)` stop the remaining listeners mid-event.
+          set.clear();
           this.#typed.delete(type);
           this.#onChange?.();
         }
@@ -192,6 +197,9 @@ export class CacheEventBus<V = any> {
 
   /** Removes every listener of every type (used by `dispose`). */
   clear(): void {
+    // Clear each set, not just the map: in-flight `emit` loops hold set references and
+    // check membership per listener, so this is what makes a mid-emit `off()` stop the rest.
+    for (const set of this.#typed.values()) set.clear();
     this.#typed.clear();
     this.#wildcard.clear();
     this.#size = 0;
@@ -215,11 +223,20 @@ export class CacheEventBus<V = any> {
     const event = (typeof typeOrEvent === 'string' ? maybeEvent : typeOrEvent) as unknown;
 
     const typed = this.#typed.get(type);
-    if (typed !== undefined) {
-      for (const listener of typed) invoke(listener, event);
+    if (typed !== undefined && typed.size > 0) {
+      // Snapshot + membership check: an un-`on`-ed listener that removes others mid-emit
+      // (even wholesale via `off(type)`/`off()`) stops them from firing, and a listener
+      // added mid-emit is not called for the in-flight event. Same `Set`-visit semantics
+      // as live iteration for the common `off(type, fn)` case, but consistent for the
+      // whole-set removals too — a live loop over a deleted set would still visit it.
+      for (const listener of [...typed]) {
+        if (typed.has(listener)) invoke(listener, event);
+      }
     }
     if (this.#wildcard.size > 0) {
-      for (const listener of this.#wildcard) invoke(listener, event);
+      for (const listener of [...this.#wildcard]) {
+        if (this.#wildcard.has(listener)) invoke(listener, event);
+      }
     }
   }
 
