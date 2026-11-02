@@ -68,11 +68,57 @@ export function resolveRequestUrl(config: InternalAxiosRequestConfig): string {
  * through `toJSON`, circular structures still throw, and a throw still degrades into
  * "no params in the key" instead of a failed request.
  */
+/**
+ * A canonical stand-in for a container `JSON.stringify` cannot see into — or `undefined`
+ * when `value` is not one of them.
+ *
+ * `URLSearchParams`, `FormData` and `Map` carry their entries in internal slots, not own
+ * enumerable properties: `JSON.stringify` renders each of them as `'{}'`. Keying on that
+ * result collided every pair of requests that used them — `params: new URLSearchParams('q=a')`
+ * and `params: new URLSearchParams('q=b')` hashed to one key and replayed one response for
+ * the other. Each container is therefore flattened into a stable string describing its
+ * actual contents.
+ */
+function canonicalContainer(value: unknown): string | undefined {
+  if (typeof URLSearchParams !== 'undefined' && value instanceof URLSearchParams) {
+    // Order-preserving: axios sends `.toString()` verbatim, so two differently-ordered
+    // search strings are genuinely different requests on the wire and must key apart.
+    return `URLSearchParams(${value.toString()})`;
+  }
+  if (typeof FormData !== 'undefined' && value instanceof FormData) {
+    // Multipart part order carries no semantics, so entries are sorted — same fields in a
+    // different order are the same request. Files are described by identity attributes;
+    // their bytes are not read (they may be huge or not yet loaded).
+    const parts: string[] = [];
+    for (const [key, item] of value.entries()) {
+      parts.push(
+        typeof item === 'string'
+          ? `${JSON.stringify(key)}=${JSON.stringify(item)}`
+          : `${JSON.stringify(key)}#file(${item.name},${item.size},${item.type})`,
+      );
+    }
+    return `FormData(${parts.sort().join('&')})`;
+  }
+  if (typeof Map !== 'undefined' && value instanceof Map) {
+    // Like a plain-object literal: sorted keys, values recursively canonicalised.
+    const entries = [...value.entries()]
+      .map(
+        ([key, item]) =>
+          [typeof key === 'string' ? JSON.stringify(key) : (stringifyParams(key) ?? 'null'), item] as const,
+      )
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return `Map({${entries.map(([key, item]) => `${key}:${stringifyParams(item) ?? 'null'}`).join(',')}})`;
+  }
+  return undefined;
+}
+
 function stringifyParams(value: unknown): string | undefined {
   if (value === undefined) return 'undefined';
 
   try {
     const json = JSON.stringify(value, (_key, raw: unknown) => {
+      const container = canonicalContainer(raw);
+      if (container !== undefined) return container;
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
       const source = raw as Record<string, unknown>;
       const sorted: Record<string, unknown> = {};
