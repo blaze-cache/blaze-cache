@@ -29,9 +29,16 @@ export function parseCacheControl(value: string | undefined | null): CacheContro
       // uncacheable here as a bare `no-cache`.
       result.noCache = true;
     } else if (directive.startsWith('max-age=')) {
-      const seconds = Number(directive.slice('max-age='.length));
+      const raw = directive.slice('max-age='.length).trim();
+      // A directive is only meaningful with a value: `max-age=` (empty) or `max-age="abc"`
+      // is malformed and per RFC 9111 §5.2.3 must be *ignored*, not read as zero —
+      // `Number('')` is `0`, and treating a malformed header as "instantly stale" would
+      // send every response back to the network.
+      const seconds = raw === '' ? Number.NaN : Number(raw);
       if (Number.isFinite(seconds) && seconds >= 0) {
-        result.maxAgeMs = seconds * 1000;
+        // First occurrence wins: a duplicated directive where the first is valid and a later
+        // one is not must keep the valid value (RFC 9111 §5.2.3).
+        if (result.maxAgeMs === undefined) result.maxAgeMs = seconds * 1000;
       }
     }
   }
