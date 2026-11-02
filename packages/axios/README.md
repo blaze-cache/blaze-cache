@@ -38,7 +38,9 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
   response's `Age`* (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
   `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
   — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
-  request skip the read.
+  request skip the read. Malformed directives are ignored rather than guessed at: an
+  empty `max-age=` reads as *no directive*, not as zero (that would send every response
+  back to the network), and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
 * **Freshness is enforced by the adapter, not by the store** — each record carries the
   deadline it was written with, so even a store that never expires anything (a plain `Map`
   shim satisfies the interface) still cannot replay a response past its freshness lifetime.
@@ -53,7 +55,19 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
   That is the safe default working as intended — list them to opt in.
 * **A hit behaves like a network response** — the raw body is stored, so
   `transformResponse` runs on it exactly as it would on a miss, and it is replayed
-  through the *current* request's `validateStatus` (a stored `404` still rejects).
+  through the *current* request's `validateStatus` (a stored `404` still rejects), with
+  the same `error.code` the network path produces: `4xx` is `ERR_BAD_REQUEST`, a
+  sub-400 that failed a custom `validateStatus` (and any `5xx`) is `ERR_BAD_RESPONSE` —
+  exactly axios' own `settle` partition.
+* **Streams are never stored** — `responseType: 'stream'` leaves `response.data` as a
+  live Node stream the caller is about to consume, so there is nothing complete to
+  replay. The `x-blaze-cache` marker is stripped from the stored headers too: it
+  describes *this* exchange, not the stored representation.
+* **Params containers key by content** — `URLSearchParams`, `FormData` and `Map` render
+  as `'{}'` to `JSON.stringify`, so requests differing only in them used to collide on
+  one key. Each is now flattened into a stable string of its actual entries: order
+  preserved for `URLSearchParams` (axios sends it verbatim), order ignored for
+  `FormData` parts and `Map` keys.
 * **Replayed headers describe the stored body, not the wire** — axios decodes the body
   for you (and drops `content-encoding`), so `transfer-encoding` goes too and
   `content-length` is corrected to the payload's real size. A live request answered with
@@ -84,7 +98,7 @@ pnpm --filter @blaze-cache/axios test        # offline — canned adapter, no ne
 pnpm --filter @blaze-cache/axios test:live   # live — real public APIs, needs the network
 ```
 
-The offline suite (26 tests) stubs the network so it can assert exact call counts and look
+The offline suite (35 tests) stubs the network so it can assert exact call counts and look
 inside the store: payload, status, stored headers, TTL window, tags and key shape. The
 live suite (4 tests) runs against `api.github.com` and a real PNG, proving that the
 server's own `Cache-Control` is parsed, that a rejected `401` never overwrites a good
@@ -102,7 +116,9 @@ Setup, core concepts and the complete axios reference live in the
 
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
 * [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
 * [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
+* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 
