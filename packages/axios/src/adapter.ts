@@ -284,7 +284,12 @@ function settle(
   return Promise.reject(
     new AxiosError(
       `Request failed with status code ${response.status}`,
-      response.status >= 500 ? AxiosError.ERR_BAD_RESPONSE : AxiosError.ERR_BAD_REQUEST,
+      // Same partition axios' own `settle` uses: 4xx is the caller's bad request, while a
+      // sub-400 failing a custom `validateStatus` (or any 5xx) is a bad *response*.
+      // Anything else would make `error.code` on a replay diverge from the network path.
+      response.status >= 400 && response.status < 500
+        ? AxiosError.ERR_BAD_REQUEST
+        : AxiosError.ERR_BAD_RESPONSE,
       config,
       undefined,
       response,
