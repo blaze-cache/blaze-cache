@@ -182,6 +182,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #chain: Promise<void> = Promise.resolve();
   #disposed = false;
+  /** The single in-flight teardown — overlapping {@link BlazeCache.dispose} calls share it. */
+  #disposePromise: Promise<void> | null = null;
 
   private constructor(wasm: WasmCache) {
     this.#wasm = wasm;
@@ -605,6 +607,18 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   async dispose(): Promise<void> {
     if (this.#disposed) return;
+    // Memoised, not guarded: the `#disposed` flag only lands after the awaited flush settles,
+    // so two overlapping `dispose()` calls (a `pagehide` handler plus application code, or
+    // simply two un-awaited calls) would both pass a flag check and both run teardown —
+    // the second `#wasm.free()` a null-pointer call into the Rust core. Everyone now awaits
+    // the one teardown that exists; a rejection is shared by every caller, exactly like the
+    // single failing flush it wraps.
+    if (this.#disposePromise === null) this.#disposePromise = this.#teardown();
+    await this.#disposePromise;
+  }
+
+  /** The one teardown pass: flush, unbind, close storage, free wasm. See {@link BlazeCache.dispose}. */
+  async #teardown(): Promise<void> {
     try {
       await this.flush();
     } finally {
