@@ -129,10 +129,18 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
           if (!(control.noStore || control.noCache) && ttlMs > 0) {
             const method = (config.method ?? 'get').toLowerCase();
             const storedAt = Date.now();
+            const headers = storedHeaders(response.headers, response.data);
+            // The hit/miss marker describes *this* exchange — a MISS on the response that
+            // just came off the network — not the stored representation. Baked into the
+            // record it would read as a stale cache-state claim: `cachedResponse` overwrites
+            // it with HIT on replay, but anyone inspecting the record itself (debugging,
+            // a shared store, a re-stamp hook) would see the marker as if the origin sent it.
+            // `AxiosHeaders.set` normalized the name, so the plain copy has it lowercase.
+            if (markerHeader) delete headers[markerHeader.toLowerCase()];
             const record: AxiosCacheRecord = {
               status: response.status,
               statusText: response.statusText,
-              headers: storedHeaders(response.headers, response.data),
+              headers,
               // Raw on purpose: axios runs `transformResponse` on replay, exactly as it would
               // for a fresh network response.
               data: response.data,
