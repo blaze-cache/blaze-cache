@@ -99,6 +99,16 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       try {
         body(tx.objectStore(store));
       } catch (error) {
+        // Abort, don't just reject: `body` may have already queued requests before throwing
+        // (e.g. the second `put` of a batch), and an abandoned transaction *completes* those
+        // requests when their turn comes — the caller would see a rejection and still get a
+        // partial write. `abort()` rolls the whole transaction back and fires `onabort`;
+        // the rejection stays the caller's error (the abort handler's is ignored below).
+        try {
+          tx.abort();
+        } catch {
+          // Already finished or already aborting — nothing to roll back.
+        }
         reject(error);
         return;
       }
