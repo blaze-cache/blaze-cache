@@ -18,6 +18,19 @@ type AnyListener = (event: any) => void;
 const DROP_TYPES: ReadonlySet<CacheEventType> = new Set<CacheEventType>(['evict', 'expire']);
 
 /**
+ * A listener as `once` registers it: the wrapper that detaches-then-invokes, tagged with the
+ * caller's original function.
+ *
+ * The tag follows Node's `EventEmitter` convention (`.listener`): `off(rawFn)` compares by
+ * identity and would never find the wrapper, so without the tag a `once(type, fn)` could not
+ * be cancelled before it fires — only fired, or removed wholesale by type.
+ */
+interface OnceWrapped {
+  (event: any): void;
+  listener: AnyListener;
+}
+
+/**
  * The internal event bus behind {@link BlazeCache.on} / `once` / `off`.
  *
  * Layout is one `Set` per event type plus one `Set` for wildcard listeners, so delivering
@@ -126,12 +139,15 @@ export class CacheEventBus<V = any> {
     const raw = (type === undefined ? typeOrListener : maybeListener) as AnyListener;
 
     let unsubscribe!: () => void;
-    const wrapped: AnyListener = (event) => {
+    const wrapped = ((event: unknown) => {
       // Detach *before* invoking: a re-entrant emit from inside the listener must not fire
       // this one a second time, mirroring Node's `EventEmitter.once`.
       unsubscribe();
       raw(event);
-    };
+    }) as OnceWrapped;
+    // Tag the wrapper with the caller's function so `off(raw)` can cancel it before it fires
+    // (see {@link OnceWrapped}).
+    Object.defineProperty(wrapped, 'listener', { value: raw, configurable: true });
     unsubscribe = type === undefined ? this.on(wrapped) : this.on(type, wrapped);
     return unsubscribe;
   }
@@ -221,15 +237,34 @@ export class CacheEventBus<V = any> {
   /**
    * Removes one listener of `type` (`undefined` = the wildcard set), keeping both counters
    * honest. Always re-resolves the set, so calling an unsubscribe twice — or after the set
-   * was replaced — can never under-count.
+   * was replaced — can never under-count. A `once` wrapper registered under `raw` is found
+   * by its `.listener` tag too, so `off(raw)` cancels a pending one-shot listener.
    */
   #detach(type: CacheEventType | undefined, listener: AnyListener): void {
     const set = type === undefined ? this.#wildcard : this.#typed.get(type);
-    if (set === undefined || !set.delete(listener)) return;
+    if (set === undefined) return;
+
+    let found = set.delete(listener);
+    if (!found) {
+      // `listener` may be the original of a `once(type, listener)` registration — the set
+      // stores the wrapper, not the original.
+      for (const candidate of set) {
+        if (isOnceWrapped(candidate) && candidate.listener === listener) {
+          found = set.delete(candidate);
+          break;
+        }
+      }
+    }
+    if (!found) return;
     this.#size -= 1;
     if (type === undefined || DROP_TYPES.has(type)) this.#dropSubscribers -= 1;
     if (type !== undefined && set.size === 0) this.#typed.delete(type);
   }
+}
+
+/** Narrowing a stored function to a `once` wrapper via its `.listener` tag. */
+function isOnceWrapped(listener: AnyListener): listener is OnceWrapped {
+  return typeof (listener as Partial<OnceWrapped>).listener === 'function';
 }
 
 /** Calls one listener, isolating its failure from every other listener. */
