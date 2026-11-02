@@ -85,8 +85,12 @@ listener interested in them switches it on through the wasm binding, and with no
 listener the hot path pays a single predictable branch. Listeners run synchronously in
 registration order (typed first, wildcards last), a throwing listener is logged and
 skipped — never able to undo a mutation — and reads that record nothing (`peek`, `has`,
-`ttl`, `size`, `keys`, `entry`) emit nothing. `dispose()` clears every listener along with
-the wasm memory. The full design notes live in the
+`ttl`, `size`, `keys`, `entry`) emit nothing. A listener removed *during* delivery — by
+its own unsubscribe, by `off(type, fn)`, or wholesale by `off(type)`/`off()` — is never
+visited for that event, and a pending `once` can be cancelled before it fires through
+`off(type, fn)` (Node's `.listener` convention). `dispose()` clears every listener along
+with the wasm memory — and overlapping `dispose()` calls share one teardown, so the wasm
+is freed exactly once. The full design notes live in the
 [repository README](https://github.com/blaze-cache/blaze-cache#events).
 
 ## Good to know
@@ -109,7 +113,12 @@ the wasm memory. The full design notes live in the
 * **Persistence is optional** and off by default; a blocked IndexedDB (private mode)
   degrades to memory-only instead of breaking the app. A flush that fails later — a quota
   error, a transient IndexedDB problem — is logged and its records go straight back on
-  the queue for the next flush, rather than being dropped.
+  the queue for the next flush, rather than being dropped; the exception is a record that
+  fails *on its own* three times running, which is dropped from the queue with a console
+  warning (still in memory) so one poison row cannot block every later flush, and any
+  successful pass resets the count. `flushDelayMs` and `maxRecords` are validated when
+  persistence is attached and throw a `RangeError` from `create` rather than misbehave
+  later (`maxRecords: 0` would persist everything — `slice(-0)` is the whole array).
 * **`capacity` is normalised** — below `1` clamps up, above `1_000_000` clamps down, and
   a non-finite value falls back to the wasm default — so `capacity()` reports a real
   number back.
