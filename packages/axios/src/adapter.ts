@@ -108,7 +108,13 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
         // response varying on a header outside `varyHeaders` would be replayed to callers
         // who differ in exactly that header — see `varyIsStorable` for why "unknown ⇒ do
         // not store" is the only safe answer.
+        //
+        // `responseType: 'stream'` is never storable either: `response.data` is a live Node
+        // stream that the caller is about to consume — the adapter would store an object
+        // that is empty (or half-read) by the time anyone replays it, handing the next
+        // caller a dead stream instead of the body.
         const storable =
+          config.responseType !== 'stream' &&
           shouldCache(response, config) &&
           varyIsStorable(readHeader(response.headers, 'Vary'), varyHeaders);
         if (storable) {
