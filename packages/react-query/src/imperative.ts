@@ -125,16 +125,28 @@ function purgeMirrorAndBuildFilters(
     const hashes = knownHashes();
     if (tags) {
       // Intersect: the entry must carry the tag *and* belong to a query TanStack matched.
+      // Shape-gated like every other mirror-side selection — a hash TanStack knows may
+      // point at another integration's entry on a shared cache, which this purge must not
+      // delete (see `purgeMirrorByTags`).
       removed = entriesOf(cache)
-        .filter((entry) => hasAnyTag(entry, tags) && hashes.has(entry.key))
+        .filter((entry) => isMirrorRecord(entry.value) && hasAnyTag(entry, tags) && hashes.has(entry.key))
         .map((entry) => entry.key);
     } else {
-      removed = [...hashes];
+      // TanStack's hashes alone cannot vouch for what sits under them in the mirror —
+      // enumerate and keep only mirror records, so a foreign entry at a colliding key
+      // survives the purge.
+      removed = entriesOf(cache)
+        .filter((entry) => isMirrorRecord(entry.value) && hashes.has(entry.key))
+        .map((entry) => entry.key);
     }
   } else if (queryKey) {
     const exactHash = exact ? resolveQueryHash(client, queryKey) : undefined;
     removed = entriesOf(cache)
       .filter((entry) => {
+        // One gate for every key-based branch: this package purges *mirror records* only.
+        // `exactHash` is computable, but the value under it is not — a shared cache may
+        // hold an axios/fetch/SWR entry (or an app value) under the same key string.
+        if (!isMirrorRecord(entry.value)) return false;
         if (tags && !hasAnyTag(entry, tags)) return false;
         if (exactHash !== undefined) {
           // An exact key is a single candidate hash — no enumeration needed for the
