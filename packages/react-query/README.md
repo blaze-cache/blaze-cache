@@ -44,11 +44,17 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 ## Behaviour
 
 * Successful fetches and `setQueryData` are written to the shared cache.
-* An **explicit** `removeQueries` or `clear` deletes from it. Ordinary garbage
+* An **explicit** `removeQueries` or `clear` deletes from it — and only when the value
+  under the key is a mirror record (carries `dataUpdatedAt`), so a foreign entry parked
+  at a colliding key on a shared cache survives the removal. Ordinary garbage
   collection — a query left unobserved past `gcTime` — deliberately does **not**: that
   is in-session housekeeping, and the persisted copy is what paints the next session.
 * Invalidation keeps the data too, so stale-while-revalidate always has something to
   paint.
+* A refetch rewrites the record with the *existing* entry's tags and TTL when it has
+  them: a helper that wrote `tags: ['todos']` under a short TTL keeps both across
+  refetches instead of being re-stamped with the sync defaults. No reader on the cache
+  (or no existing record) falls back to the defaults, exactly as before.
 * Renders never touch cache statistics: the pre-fetch lookup prefers `peek` over `get`,
   so StrictMode's double render cannot move the hit rate or influence eviction.
 * That holds for events too — `peek` emits nothing, so renders are silent; the writes the
@@ -73,7 +79,7 @@ context when omitted by a hook), then the options.
 | --- | --- |
 | `createBlazeQueryClient` / `syncBlazeQueryCache` | Mirror TanStack cache writes into the Blaze Cache (see [Behaviour](#behaviour)). |
 | `useBlazeQuery` | `useQuery` seeded from the mirror. |
-| `useBlazeInfiniteQuery` | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData`. |
+| `useBlazeInfiniteQuery` | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData` — only for `InfiniteData`-shaped records; a plain record under the key is left unseeded. |
 | `useBlazeQueries` | `useQueries` over several keys, each seeded independently. |
 | `useBlazeMutation` | `useMutation` that invalidates queries after success. |
 | `prefetchBlazeQuery` | Imperatively seed + prefetch, mirroring the fetched result. |
@@ -112,7 +118,10 @@ const feed = useBlazeInfiniteQuery(cache, {
 
 The whole `InfiniteData` payload (pages + page params) is mirrored as one entry and seeded
 back as `initialData`, with the original `dataUpdatedAt`, so the first paint after a reload
-shows all previously loaded pages while TanStack still refetches.
+shows all previously loaded pages while TanStack still refetches. Only a record that
+really holds `InfiniteData` (`pages` and `pageParams` arrays) seeds: a plain value under
+the key — a `setBlazeQueryData` write, or a query that changed shape — is left alone and
+the query fetches normally instead of crashing on `data.pages.map`.
 
 ### `useBlazeQueries` — parallel instant first paint
 
@@ -200,6 +209,8 @@ Setup and the full integration reference live in the
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
 * [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
 * [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
+* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 
