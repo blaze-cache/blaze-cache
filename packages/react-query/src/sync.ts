@@ -1,6 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import type { QueryCacheNotifyEvent, QueryFilters } from '@tanstack/react-query';
 
+import { isMirrorRecord } from './record.js';
 import type { BlazeQueryClientOptions, BlazeQuerySyncOptions } from './types.js';
 
 /** Mirrored data survives this long in the Blaze Cache (TanStack owns in-session freshness). */
@@ -116,7 +117,16 @@ export function syncBlazeQueryCache(
       // GC and explicit purges are indistinguishable in the event — the wrapper flag above
       // is the only difference. Keep the mirror through GC: the persisted copy exists for
       // the next session's first paint, not for this one's housekeeping.
-      if (explicitRemoval && !options.skip?.(query.queryKey, hash)) cache.delete(hash);
+      //
+      // Shape-gated: a key TanStack removes may hold another integration's entry on a
+      // shared cache (the axios/fetch/swr wrappers key by URL, and a hash can collide with
+      // one). Deleting on the strength of the TanStack event alone would destroy an entry
+      // this layer never wrote — when the cache cannot tell mirror records from foreign
+      // values (`peek` absent, or a non-mirror value), an unknown value is left alone.
+      if (explicitRemoval && !options.skip?.(query.queryKey, hash)) {
+        const record = cache.peek ? cache.peek(hash) : undefined;
+        if (record === undefined || isMirrorRecord(record)) cache.delete(hash);
+      }
       return;
     }
 
