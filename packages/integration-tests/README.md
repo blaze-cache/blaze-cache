@@ -7,21 +7,22 @@ const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app
 
 installBlazeCache(api, { cache });            // @blaze-cache/axios
 const fetch = createBlazeFetch(cache);        // @blaze-cache/fetch
+const kyApi = createBlazeKy(cache);           // @blaze-cache/ky
 const queryClient = createBlazeQueryClient({ cache });  // @blaze-cache/react-query
 const swr = (key, fn, opts) => useBlazeSWR(cache, key, fn, opts); // @blaze-cache/swr
 ```
 
-This suite is the only place that exercises **that** scenario: four integrations,
+This suite is the only place that exercises **that** scenario: five integrations,
 one store, checking where they stay out of each other's way and where they don't.
 
 | What | Expectation |
 | --- | --- |
 | Default cache keys | never collide across integrations (each format is disjoint) |
 | Writes | coexist — every integration reads back its own value shape |
-| Default tags (`axios` / `fetch` / `react-query` / `swr`) | isolate: purging one leaves the others |
+| Default tags (`axios` / `fetch` / `ky` / `react-query` / `swr`) | isolate: purging one leaves the others |
 | Caller domain tags (`'todos'`, …) on `cache.invalidateTags` | **shared** — the core's tag index is one namespace, so a direct purge reaches every integration's tagged entries (by design, documented) |
 | `invalidateBlazeQueries({ tags })` / `removeBlazeQueries()` | purged entries are selected by record *shape* + tag, so other integrations' entries survive even when they share the tag |
-| Forced key collision (custom keys) | every integration treats a foreign value as a miss: axios never serves nor deletes it; react-query and SWR never seed it to the UI |
+| Forced key collision (custom keys) | every integration treats a foreign value as a miss: axios and ky never serve nor delete it; react-query and SWR never seed it to the UI |
 | Capacity / stats / events | one shared pool by design — sizing and read discipline matter |
 
 This suite earned its keep: it found six cross-integration conflicts — the unfiltered and
