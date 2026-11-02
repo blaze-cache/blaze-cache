@@ -14,8 +14,8 @@ Blazingly fast client-side caching library powered by Rust → WebAssembly. Feat
 
 The hot path — storage, TTL bookkeeping, tag indexing and eviction — runs in Wasm.
 The TypeScript layer adds the browser glue: one-time module initialisation, optional
-IndexedDB persistence, an axios adapter, a drop-in `fetch()` replacement and a TanStack
-Query integration.
+IndexedDB persistence, an axios adapter, drop-in `fetch()` and `ky` wrappers, and TanStack
+Query and SWR integrations.
 
 ```ts
 import { createCache } from '@blaze-cache/core';
@@ -47,12 +47,12 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta         # prerelease — 0.3.0-beta
-npm install @blaze-cache/axios@beta         # prerelease — 0.3.0-beta
-npm install @blaze-cache/fetch@beta         # prerelease — 0.3.0-beta
-npm install @blaze-cache/ky@beta            # prerelease — 0.3.0-beta
-npm install @blaze-cache/react-query@beta   # prerelease — 0.3.0-beta
-npm install @blaze-cache/swr@beta           # prerelease — 0.3.0-beta
+npm install @blaze-cache/core@beta         # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/axios@beta         # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/fetch@beta         # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/ky@beta            # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/react-query@beta   # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/swr@beta           # prerelease — 0.3.0-beta.0
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
@@ -175,6 +175,9 @@ await cache.dispose(); // flushes pending writes, then frees the wasm memory
 ```
 
 The instance is unusable afterwards — call `createCache()` again for a fresh one.
+Overlapping calls are safe: the first `dispose()` owns the teardown and every later caller
+— a `pagehide` handler racing your own `await`, an un-awaited second call — awaits that
+same promise instead of flushing and freeing the wasm memory twice.
 Teardown happens even when that last flush fails: the timers, listeners and wasm memory
 are still released, and the storage error is rethrown to you afterwards, so a full disk
 cannot leak the instance. Every event listener is dropped with the rest — though it costs
@@ -245,7 +248,7 @@ polling a key can never turn it into an eviction-proof resident.
 
 Five reads answer "what is in there, and for how long?" — none of them counts a hit or
 a miss. All are available in the Rust core (`blaze-cache-core`) and exposed through the
-wasm bindings as of `0.3.0-beta`:
+wasm bindings as of `0.3.0-beta.0`:
 
 ```ts
 const cache = await createCache({ capacity: 1000 });
@@ -316,11 +319,12 @@ cache.on((event) => {
   if (event.type === 'hit') console.log('hit', event.key, event.value);
 });
 
-cache.once('clear', () => console.log('first clear, only once'));
+const offClear = cache.once('clear', () => console.log('first clear, only once'));
 
 cache.off('evict');   // every `evict` listener
 cache.off();          // every listener, period
 offEvict();           // …or just this one handle (idempotent)
+offClear();           // …and cancels the `once` if it has not fired yet
 ```
 
 | Event | Emitted when | Payload |
@@ -349,6 +353,12 @@ path pays a single predictable branch. Drains run after `get`, `getMany`, `set` 
 Listeners run synchronously and in registration order (typed listeners first, wildcards
 last), a throwing listener is logged and skipped — never able to undo or block a mutation —
 and reads that record nothing (`peek`, `has`, `ttl`, `size`, `keys`, `entry`) emit nothing.
+Delivery walks a snapshot of each listener set and re-checks membership per listener: a
+listener removed *during* an event — by its own unsubscribe, by `off(type, fn)`, or
+wholesale by `off(type)`/`off()` — is never visited for that event, while a listener added
+mid-delivery only hears later ones. A pending `once` listener is cancellable the same way:
+`off(type, fn)` (or `off(fn)`) finds it through its `.listener` tag, exactly like Node's
+`EventEmitter`.
 
 Legacy code that used the original `on(listener)` keeps working: that form *is* the
 wildcard now, so such listeners additionally see `hit`/`miss`/`evict`/`expire`.
@@ -405,12 +415,22 @@ caches in the same database never collide. Writes are debounced, flushed on `pag
 and `visibilitychange`, and absolute expiry is reconstructed from `storedAt` at
 hydration — records that expired while the tab was away are dropped on load.
 
+The persistence options are validated when the adapter is attached: a non-finite or
+negative `flushDelayMs`, or a `maxRecords` below `1`, throws a `RangeError` from `create`
+rather than misbehaving later (`maxRecords: 0` would persist *everything* — `slice(-0)` is
+the whole array, not the empty one).
+
 Failures are contained at both ends. An adapter that cannot open at all (private mode,
 enterprise policy) degrades to memory-only with a console warning rather than breaking
 the app. A flush that fails *later* — a quota error, a transient IndexedDB problem — is
 logged and, crucially, every record it had claimed is put straight back on the queue, so
-the next flush retries them instead of losing them. Only an awaited `flush()` or
-`dispose()` surfaces that error to you.
+the next flush retries them instead of losing them. The one exception is a record that
+fails *on its own* — an unserializable value, an adapter that rejects one specific row:
+it earns one strike per failed pass, and after three consecutive failures it is dropped
+from the queue with a console warning (the entry stays in memory) so one poison record
+cannot block every later flush. Any successful pass clears the strikes, so a temporary
+quota pinch never loses data. Only an awaited `flush()` or `dispose()` surfaces the
+storage error to you.
 
 Any storage can be plugged in:
 
@@ -463,7 +483,18 @@ Behaviour worth knowing:
   response's `Age`** (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
   `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
   — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
-  request skip the read.
+  request skip the read. Malformed directives are ignored rather than guessed at: an
+  empty `max-age=` reads as *no directive*, not as zero (that would send every response
+  back to the network), and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
+* `responseType: 'stream'` is never stored: `response.data` is a live Node stream the
+  caller is about to consume, so there is nothing complete to replay to the next caller.
+  The `x-blaze-cache` marker is stripped from the stored headers as well — it describes
+  *this* exchange, not the stored representation.
+* Params containers `JSON.stringify` cannot see into — `URLSearchParams`, `FormData`,
+  `Map` — are keyed by their actual contents instead of the `'{}'` they stringify to, so
+  two requests differing only in those params no longer collide. Order is preserved for
+  `URLSearchParams` (axios sends it verbatim) and ignored for `FormData` parts and `Map`
+  keys.
 * Freshness is enforced by the adapter, not trusted from the store: every record carries
   the deadline it was written with, so a store that never expires anything (a plain `Map`
   shim qualifies) still cannot replay a stale entry.
@@ -476,7 +507,10 @@ Behaviour worth knowing:
   header outside `varyHeaders` is left uncached rather than risk replaying the wrong
   variant — add the server's headers there to opt those responses in.
 * A cached response is replayed through the *current* request's `validateStatus`, so a
-  stored `404` rejects just like a live one.
+  stored `404` rejects just like a live one — with the same `error.code` the network path
+  would produce: `4xx` is `ERR_BAD_REQUEST`, while a sub-400 that failed a custom
+  `validateStatus` (and any `5xx`) is `ERR_BAD_RESPONSE`, exactly axios' own `settle`
+  partition.
 * Only responses that pass `validateStatus` are candidates for storage; the default
   stores `GET` requests answering `2xx`.
 * A cache that throws costs one extra request, never a failed response: reads and writes
@@ -515,17 +549,27 @@ Behaviour worth knowing:
   `forceRefresh` and `max-age=0` on the request skip the read and rewrite the entry; a
   response `no-cache` — per-field spelling included — is never stored; and
   `must-revalidate`/`proxy-revalidate` closes the stale window entirely, however short.
+  Malformed directives are ignored rather than guessed at: an empty `max-age=` reads as
+  *no directive*, not as zero, and a duplicated directive keeps its first value
+  (RFC 9111 §5.2.3).
 * Identical concurrent requests **coalesce**: one caller leads, and the rest wait for its
   write to settle and replay the record it stored, so a burst of the same `GET` opens one
   connection instead of N. Only cacheable requests lead (a `POST` is never folded into
   another), callers that explicitly demanded the network are never joined, and a leader
-  that fails simply opens the gate over an empty cache so its joiners fetch in turn.
+  that fails simply opens the gate over an empty cache so its joiners fetch in turn. A
+  joiner waits on the leader's write but still honours **its own** caller's signal:
+  unmount or cancel and it rejects immediately instead of hanging until the leader's
+  network call settles.
 * A cache-layer failure never fails a response the network delivered: a throwing
   `cache.get`, `cache.set` or `shouldCache` callback costs at most one console warning,
   after which the wrapper keeps working uncached.
 * `staleWhileRevalidate` serves the stale body immediately and refetches in the background.
   Those responses are marked **`STALE`** rather than `HIT` — the one marker value beyond
-  `HIT | MISS`, so a stale paint stays visible in the network tab.
+  `HIT | MISS`, so a stale paint stays visible in the network tab. The background refresh
+  runs on the wrapper's own fresh signal: a caller that merely *noticed* the staleness
+  aborting right after being served (an unmount, a route change) cannot kill it — with a
+  `Request` input the wrapper overrides the `Request`'s own signal explicitly, so the entry
+  is never left stale forever because the noticing caller went away.
 * `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`,
   or replace the whole key with `key`.
@@ -586,6 +630,9 @@ What you get:
   `shouldCache` and `respectCacheControl` exactly as in `fetch`.
 * Cache hits keep ky semantics: a non-2xx response replayed from cache still throws
   `ky.HTTPError`, because the hook hands ky a real `Response` rather than swallowing it.
+* `Cache-Control` parsing is the same code `@blaze-cache/fetch` uses — malformed
+  directives (`max-age=` with no value) are ignored rather than read as zero, and a
+  duplicated directive keeps its first value (RFC 9111 §5.2.3).
 * Both hook shapes are supported at runtime — ky v1 passes four positional arguments,
   ky v2 passes a single state object. The hook detects which, so the same build works
   with `ky@^1.14` and `ky@^2`.
@@ -619,17 +666,23 @@ hashed exactly as TanStack hashes it, so a custom `queryKeyHashFn` (per query, i
 mirror.
 
 The mirror reacts to query events: successful fetches and `setQueryData` are written;
-an **explicit** `removeQueries` or `clear` deletes; invalidation deliberately keeps the
-data so stale-while-revalidate still has something to paint. Ordinary garbage collection
+an **explicit** `removeQueries` or `clear` deletes — but only when the value under the key
+is a mirror record, so a foreign entry parked at a colliding key on a shared cache
+survives the removal; invalidation deliberately keeps the data so stale-while-revalidate
+still has something to paint. Ordinary garbage collection
 — a query that sat unobserved past `gcTime` — is housekeeping rather than a purge, so the
-mirror survives it: that copy is what paints the next session. Error states stay in
-TanStack.
+mirror survives it: that copy is what paints the next session. A refetch rewrites the
+record with the *existing* entry's tags and TTL when it has them: a helper that wrote
+`tags: ['todos']` under a short TTL keeps both across refetches instead of being
+re-stamped with the sync defaults. Error states stay in TanStack.
 
 ### Full API
 
 * `useBlazeQuery(cache, options)` — `useQuery` seeded from the mirror; `useBlazeInfiniteQuery`
   does the same for infinite queries (the whole `InfiniteData`, pages included, seeds back
-  as `initialData`), `useBlazeQueries` does it for parallel queries.
+  as `initialData` — but only when the mirrored value really is `InfiniteData`; a plain
+  record under the key is left unseeded and the query fetches normally),
+  `useBlazeQueries` does it for parallel queries.
 * `useBlazeMutation(cache, options)` — `useMutation` that runs the given
   `invalidate` filters through the two-sided helpers after success.
 * `prefetchBlazeQuery(cache, client, options)` — prefetch; seeds from the mirror first,
