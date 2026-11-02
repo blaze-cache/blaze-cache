@@ -80,7 +80,10 @@ arguments, then normal SWR options plus the Blaze-side stamp (`ttlMs`/`tags`).
 | `BlazeSWROptions` / `BlazeSWRMiddlewareOptions` / `BlazeSWRCacheLike` / `BlazeSWRRecord` | The option, cache and record types. |
 
 Precedence for the write stamp: the current `useSWR`/`useBlazeSWR` options, then the
-middleware's own options, then the defaults.
+middleware's own options, then the defaults. `useBlazeSWR` keeps `ttlMs`/`tags` in the
+SWR config it hands to `useSWR` rather than stripping them out, so a hook-level stamp
+also wins an `SWRConfig` provider's merged values — a provider default can never shadow
+a per-call one.
 
 ## Example usage
 
@@ -139,6 +142,17 @@ cache.invalidateTags('todos');
 mutate('/api/todos'); // SWR's own revalidation for the mounted hook
 ```
 
+## Testing
+
+```sh
+pnpm --filter @blaze-cache/swr test
+```
+
+The suite runs against the built package with Node's test runner, started with
+`--experimental-test-module-mocks`: the hook test replaces the `swr` module with a
+capture stub, so the exact config `useBlazeSWR` hands to SWR can be asserted without a
+React renderer (the main suite needs none of that).
+
 ## Documentation
 
 Setup and the full integration reference live in the
@@ -149,6 +163,7 @@ Setup and the full integration reference live in the
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
 * [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
 * [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
 * [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror + hook
 
 ## License
