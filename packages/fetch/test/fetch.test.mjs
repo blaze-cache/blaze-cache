@@ -1228,3 +1228,114 @@ describe('hashing helper', () => {
     assert.notEqual(fnv1a('a'), fnv1a('b'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression guards: each of these failed against the pre-fix code.
+// ---------------------------------------------------------------------------
+
+describe('regressions', () => {
+  it('keeps a background refresh alive when a Request’s own signal aborts', async () => {
+    const cache = await makeCache();
+    let calls = 0;
+    const net = async (input, init) => {
+      calls += 1;
+      await delay(30); // give the caller time to abort before the signal is consulted
+      // Emulate the platform contract: with no usable `init.signal`, `fetch` falls back
+      // to the `Request`'s own signal (WebIDL treats an undefined init member as absent),
+      // and an aborted signal rejects the call.
+      const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+      }
+      return new Response(JSON.stringify({ version: calls }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 100, staleWhileRevalidate: 1000 });
+    const controller = new AbortController();
+    const request = new Request('http://api.test/slow', { signal: controller.signal });
+
+    await fetch(request); // MISS — stored fresh
+    await delay(150); // the fresh window (100 ms) elapsed; the stale window is wide open
+
+    const stale = await fetch(request);
+    assert.equal(stale.headers.get('x-blaze-cache'), 'STALE', 'served from the stale window');
+
+    controller.abort(); // the caller unmounts immediately after being served
+    await delay(60); // the refresh (30 ms in the stub) had time to run either way
+
+    const next = await fetch('http://api.test/slow'); // same key, fresh caller
+    assert.equal(
+      next.headers.get('x-blaze-cache'),
+      'HIT',
+      'the refresh survived the original caller’s abort',
+    );
+  });
+
+  it('rejects an aborted in-flight joiner without waiting for the leader', async () => {
+    const cache = await makeCache();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const net = async () => {
+      calls += 1;
+      if (calls === 1) await gate; // the leader hangs until released
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const leader = fetch('/slow'); // opens the in-flight gate…
+    await delay(10); // …and reaches the network
+    assert.equal(calls, 1);
+
+    const controller = new AbortController();
+    const joiner = fetch('/slow', { signal: controller.signal }); // waits on the leader
+    await delay(10); // …it is now waiting
+    controller.abort();
+
+    const outcome = await Promise.race([
+      joiner.then(
+        () => 'resolved',
+        (error) => `rejected:${error?.name ?? 'unknown'}`,
+      ),
+      delay(150).then(() => 'timeout'),
+    ]);
+    assert.match(
+      outcome,
+      /^rejected:/,
+      'the joiner’s own abort rejects it immediately, not when the leader finishes',
+    );
+
+    release();
+    await leader;
+    assert.equal(calls, 1, 'the leader still completed its single network call');
+  });
+
+  it('ignores empty directive values and keeps the first duplicate (RFC 9111 §5.2.3)', () => {
+    assert.equal(
+      parseCacheControl('max-age=').maxAgeMs,
+      undefined,
+      'an empty max-age is malformed, not "instantly stale"',
+    );
+    assert.equal(
+      parseCacheControl('max-age=60, max-age=1').maxAgeMs,
+      60_000,
+      'the first max-age wins',
+    );
+    assert.equal(
+      parseCacheControl('stale-while-revalidate=').staleWhileRevalidateMs,
+      undefined,
+      'an empty stale-while-revalidate is malformed too',
+    );
+    assert.equal(
+      parseCacheControl('stale-while-revalidate=30, stale-while-revalidate=1')
+        .staleWhileRevalidateMs,
+      30_000,
+      'and the first stale window wins',
+    );
+  });
+});
