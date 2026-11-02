@@ -24,6 +24,11 @@ export const DEFAULT_FLUSH_DELAY_MS = 400;
 /** Upper bound on records written by a single flush. */
 export const DEFAULT_MAX_RECORDS = 2000;
 /**
+ * Consecutive failed flushes a single key may accumulate before it is dropped from the
+ * persistence queue (kept in memory, warned about) instead of blocking every later flush.
+ */
+const MAX_FAILED_FLUSHES = 3;
+/**
  * Shared stand-in for "no tags" on the write path.
  *
  * The binding copies the array into wasm memory synchronously during the call and never
@@ -184,6 +189,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   #disposed = false;
   /** The single in-flight teardown — overlapping {@link BlazeCache.dispose} calls share it. */
   #disposePromise: Promise<void> | null = null;
+  /** Consecutive failed flushes per dirty key; a key that keeps failing is dropped, not queued forever. */
+  #failedFlushes = new Map<string, number>();
 
   private constructor(wasm: WasmCache) {
     this.#wasm = wasm;
@@ -835,15 +842,37 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       // memory and storage disagree.
       const targets = toRemove.filter((key) => !this.#dirty.has(key));
       if (targets.length > 0) await persist.remove(targets);
+
+      // The pass completed — every strike from earlier failures is forgiven (a temporary
+      // quota pinch must not accumulate toward dropping a key).
+      this.#failedFlushes.clear();
     } catch (error) {
       // Hand back exactly what this pass claimed. Concurrent work that landed during the
       // awaits is kept as-is, and the two queues stay disjoint — a key the runner may have
       // touched in the meantime belongs to whoever claimed it last.
       if (clearAll) this.#clearAll = true;
+      // Quarantine: a batch that rejects blames no single key, but a *persistently* failing
+      // key (an unserializable value, an adapter that rejects one specific record) would
+      // otherwise requeue forever — every flush rejects, every flush requeues, and no later
+      // write ever reaches storage. Each claimed key earns one strike per failed pass; a key
+      // with `MAX_FAILED_FLUSHES` consecutive strikes is dropped from the queues with a
+      // warning instead of requeued. Any successful pass clears all strikes, so a
+      // temporarily full quota never permanently loses data.
       for (const key of dirty) {
         // Deleted while we were awaiting? Its delete bookkeeping is already queued — don't
         // resurrect it on the dirty side.
-        if (!this.#deleted.has(key)) this.#dirty.add(key);
+        if (this.#deleted.has(key)) continue;
+        const strikes = (this.#failedFlushes.get(key) ?? 0) + 1;
+        if (strikes >= MAX_FAILED_FLUSHES) {
+          this.#failedFlushes.delete(key);
+          console.warn(
+            `[blaze-cache] dropping "${key}" from persistence after ${strikes} failed flushes — the entry stays in memory only.`,
+            error,
+          );
+        } else {
+          this.#failedFlushes.set(key, strikes);
+          this.#dirty.add(key);
+        }
       }
       for (const key of toRemove) {
         // Re-`set` while we were awaiting? Then the next pass must save it, not delete the
