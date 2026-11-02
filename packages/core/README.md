@@ -9,8 +9,10 @@ invalidation and optional IndexedDB persistence.
 
 The engine behind
 [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios),
-[`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) and
-[`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) —
+[`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch),
+[`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky),
+[`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) and
+[`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) —
 also usable on its own.
 
 ## Install
