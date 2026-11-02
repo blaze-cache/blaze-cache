@@ -77,7 +77,9 @@ const users = await api.get('users').json();
   on the request, `no-store`/`no-cache` and `max-age=0` skip the read, and `no-store`
   also skips the write; on the response, `max-age` overrides `ttlMs`, `Age` is deducted,
   and `no-store`/`no-cache` — the per-field `no-cache="set-cookie"` form included — stop
-  it being stored.
+  it being stored. The parser is the same one `@blaze-cache/fetch` uses: malformed
+  directives (`max-age=` with no value) are ignored rather than read as zero, and a
+  duplicated directive keeps its first value (RFC 9111 §5.2.3).
 * **`Authorization` participates in the default key** (hashed, never stored verbatim), so
   a personalized response is never replayed to a different user. Tune with `varyHeaders`.
 * **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
@@ -210,6 +212,7 @@ Setup, core concepts and the complete API reference live in the
 * [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — the drop-in `fetch()` replacement (stale-while-revalidate included)
 * [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — the axios adapter
 * [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
+* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 
