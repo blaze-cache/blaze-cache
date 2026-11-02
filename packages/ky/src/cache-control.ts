@@ -53,7 +53,10 @@ export function parseCacheControl(value: string | undefined | null): CacheContro
       // this opt-out back into "cacheable".
       result.noCache = true;
     } else if (directive.startsWith('max-age=')) {
-      result.maxAgeMs = seconds(directive.slice('max-age='.length));
+      // First occurrence wins (RFC 9111 §5.2.3).
+      if (result.maxAgeMs === undefined) {
+        result.maxAgeMs = seconds(directive.slice('max-age='.length));
+      }
     }
   }
   return result;
@@ -103,6 +106,11 @@ export function parseAgeMs(value: string | undefined | null): number {
 
 /** Seconds → milliseconds, or `undefined` when the value is not a usable non-negative number. */
 function seconds(raw: string): number | undefined {
-  const value = Number(raw.trim());
+  const trimmed = raw.trim();
+  // An empty value (`max-age=`) is malformed, not zero: `Number('')` is `0`, and reading
+  // "instantly stale" out of a malformed directive would defeat the header entirely.
+  // RFC 9111 §5.2.3 says ignore it — which here means `undefined`, the no-directive answer.
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
   return Number.isFinite(value) && value >= 0 ? value * 1000 : undefined;
 }
