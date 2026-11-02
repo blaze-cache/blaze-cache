@@ -1156,3 +1156,232 @@ describe('string helpers', () => {
     assert.equal(Object.getPrototypeOf(hostile), Object.prototype, 'the input is untouched');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression guards: each of these failed against the pre-fix code.
+// ---------------------------------------------------------------------------
+
+describe('overlapping dispose', () => {
+  it('shares one teardown across concurrent dispose() calls', async () => {
+    const cache = await makeCache();
+    cache.set('k', 1);
+
+    // Two un-awaited calls both pass the `#disposed` check before either teardown lands
+    // (the flag only flips inside the awaited flush). Each used to run its own teardown,
+    // and the second `wasm.free()` was a null-pointer call into the Rust core —
+    // `Error: null pointer passed to rust`.
+    await assert.doesNotReject(
+      () => Promise.all([cache.dispose(), cache.dispose()]),
+      'the second caller awaits the same teardown instead of freeing twice',
+    );
+
+    // A later call still finds the completed teardown and stays quiet.
+    await cache.dispose();
+  });
+});
+
+describe('event delivery regressions', () => {
+  it('cancels a pending once() through off() with the original function', async () => {
+    const cache = await makeCache();
+    const seen = [];
+    const handler = (event) => seen.push(event);
+
+    cache.once('set', handler);
+    cache.off('set', handler); // the set holds the wrapper, not `handler`
+    cache.set('k', 1);
+
+    assert.deepEqual(seen, [], 'the one-shot never fired');
+    await cache.dispose();
+  });
+
+  it('stops the remaining listeners when one removes the type mid-emit', async () => {
+    const cache = await makeCache();
+    const order = [];
+    cache.on('set', () => {
+      order.push('first');
+      cache.off('set'); // wholesale removal while the event is being delivered
+    });
+    cache.on('set', () => order.push('second'));
+
+    cache.set('k', 1);
+    assert.deepEqual(order, ['first'], 'off("set") during delivery stops the rest');
+    await cache.dispose();
+  });
+
+  it('stops the remaining listeners when one clears every listener mid-emit', async () => {
+    const cache = await makeCache();
+    const order = [];
+    cache.on('set', () => {
+      order.push('first');
+      cache.off(); // everything — typed and wildcard alike
+    });
+    cache.on('set', () => order.push('second'));
+
+    cache.set('k', 1);
+    assert.deepEqual(order, ['first'], 'clear() during delivery stops the rest too');
+    await cache.dispose();
+  });
+
+  it('hears a listener added mid-emit only from the next event', async () => {
+    const cache = await makeCache();
+    const order = [];
+    cache.on('set', () => {
+      order.push('outer');
+      if (order.length === 1) cache.on('set', () => order.push('inner'));
+    });
+
+    cache.set('a', 1);
+    assert.deepEqual(order, ['outer'], 'the newcomer is not in the in-flight snapshot');
+    cache.set('b', 2);
+    assert.deepEqual(order, ['outer', 'outer', 'inner'], '…but hears every later event');
+    await cache.dispose();
+  });
+});
+
+describe('persistence option validation', () => {
+  it('rejects invalid persistence options at create instead of misbehaving later', async () => {
+    const adapter = memoryAdapter();
+
+    // `maxRecords: 0` would make `slice(-0)` hand back the *whole* dirty set —
+    // the opposite of "persist at most nothing".
+    await assert.rejects(
+      () => createCache({ wasm: wasmBytes, persistence: { adapter, maxRecords: 0 } }),
+      RangeError,
+      'maxRecords: 0 fails loudly',
+    );
+    await assert.rejects(
+      () => createCache({ wasm: wasmBytes, persistence: { adapter, maxRecords: 1.5 } }),
+      RangeError,
+      'a fractional maxRecords fails loudly too',
+    );
+
+    // A non-finite delay would make every debounce fire immediately (NaN never equals a
+    // time check), and a negative one is nonsense on the same clock.
+    await assert.rejects(
+      () => createCache({ wasm: wasmBytes, persistence: { adapter, flushDelayMs: Number.NaN } }),
+      RangeError,
+      'flushDelayMs: NaN fails loudly',
+    );
+    await assert.rejects(
+      () => createCache({ wasm: wasmBytes, persistence: { adapter, flushDelayMs: -1 } }),
+      RangeError,
+      'a negative flushDelayMs fails loudly',
+    );
+  });
+});
+
+describe('flush quarantine', () => {
+  it('drops a persistently failing key instead of re-queueing it forever', async () => {
+    const adapter = memoryAdapter();
+    const save = adapter.save;
+    let failuresLeft = 3;
+    adapter.save = async (records) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        throw new Error('simulated QuotaExceededError');
+      }
+      return save(records);
+    };
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.map(String).join(' '));
+    try {
+      const cache = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+
+      cache.set('poison', 1);
+      await assert.rejects(() => cache.flush(), /QuotaExceededError/); // strike 1
+      await assert.rejects(() => cache.flush(), /QuotaExceededError/); // strike 2
+      await assert.rejects(() => cache.flush(), /QuotaExceededError/); // strike 3 → dropped
+
+      // The adapter recovers. A fresh key must land — and the poisoned one must not be
+      // silently retried (pre-fix it was re-queued on every failure, so every later flush
+      // was poisoned by it forever).
+      failuresLeft = 0;
+      cache.set('fresh', 2);
+      await cache.flush();
+
+      assert.equal(adapter.rows.has('fresh'), true, 'the healthy key landed');
+      assert.equal(adapter.rows.has('poison'), false, 'the poisoned key was dropped, not retried');
+      assert.ok(
+        warnings.some((warning) => warning.includes('poison')),
+        'and the drop was announced',
+      );
+
+      await cache.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+describe('indexedDbPersistence transaction rollback', () => {
+  it('aborts the transaction when the write body throws mid-batch', async () => {
+    // A minimal IndexedDB stand-in with real transaction semantics: queued `put`s commit
+    // when the transaction completes — and an *abandoned* transaction (body threw, nobody
+    // called abort) still commits them, which is exactly the partial-write hazard the
+    // adapter must prevent by aborting.
+    const pending = [];
+    const committed = [];
+    let puts = 0;
+    const fakeTx = {
+      aborted: false,
+      error: null,
+      objectStore: () => ({
+        put: (record) => {
+          puts += 1;
+          if (puts === 2) throw new Error('simulated put failure');
+          pending.push(record);
+        },
+        delete: () => {},
+      }),
+      abort() {
+        this.aborted = true;
+        pending.length = 0; // the rollback the real transaction performs
+      },
+    };
+    const fakeDb = {
+      objectStoreNames: { contains: () => true },
+      close() {},
+      transaction: () => {
+        // The completion an abandoned transaction eventually reaches.
+        queueMicrotask(() => {
+          if (!fakeTx.aborted) committed.push(...pending.splice(0));
+        });
+        return fakeTx;
+      },
+    };
+    const fakeIndexedDB = {
+      open: () => {
+        const request = {};
+        queueMicrotask(() => {
+          request.result = fakeDb;
+          request.onsuccess?.();
+        });
+        return request;
+      },
+    };
+
+    const previous = globalThis.indexedDB;
+    globalThis.indexedDB = fakeIndexedDB;
+    try {
+      const adapter = indexedDbPersistence({ namespace: 'regression' });
+      await assert.rejects(
+        () =>
+          adapter.save([
+            { key: 'a', value: 1, tags: [], ttlMs: null, storedAt: 0 },
+            { key: 'b', value: 2, tags: [], ttlMs: null, storedAt: 0 },
+          ]),
+        /simulated put failure/,
+        'the caller still sees its own error',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0)); // let completion run
+
+      assert.equal(fakeTx.aborted, true, 'the half-written batch was rolled back');
+      assert.deepEqual(committed, [], 'and no partial write survived it');
+    } finally {
+      if (previous === undefined) delete globalThis.indexedDB;
+      else globalThis.indexedDB = previous;
+    }
+  });
+});
