@@ -21,7 +21,7 @@ import kyV1 from 'ky';
 import kyV2 from 'ky2';
 
 import { createCache } from '@blaze-cache/core';
-import { blazeKyHook, createBlazeKy, defaultCacheKey } from '@blaze-cache/ky';
+import { blazeKyHook, createBlazeKy, defaultCacheKey, parseCacheControl } from '@blaze-cache/ky';
 
 const wasmBytes = await readFile(
   new URL('../../core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url),
@@ -687,4 +687,29 @@ describe('resilience', () => {
       assert.equal(response.headers.get('x-blaze-cache'), 'MISS');
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Regression guards: each of these failed against the pre-fix code.
+// ---------------------------------------------------------------------------
+
+describe('malformed and duplicate Cache-Control directives', () => {
+  it('ignores an empty max-age and keeps the first duplicate (RFC 9111 §5.2.3)', () => {
+    assert.equal(
+      parseCacheControl('max-age=').maxAgeMs,
+      undefined,
+      'an empty value is malformed, not "instantly stale" — Number("") is 0',
+    );
+    assert.equal(
+      parseCacheControl('max-age=60, max-age=1').maxAgeMs,
+      60_000,
+      'the first occurrence wins over a later copy',
+    );
+    assert.equal(
+      parseCacheControl('max-age=1, max-age=60').maxAgeMs,
+      1_000,
+      '…whichever one comes first',
+    );
+    assert.equal(parseCacheControl('max-age=abc').maxAgeMs, undefined, 'garbage stays ignored');
+  });
 });
