@@ -1,6 +1,6 @@
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
 import { defaultCacheKey } from './key.js';
-import { normalizeInit, resolveMethod, resolveUrl } from './request.js';
+import { isRequest, normalizeInit, resolveMethod, resolveUrl } from './request.js';
 import type {
   BlazeFetch,
   BlazeFetchCacheLike,
@@ -222,12 +222,23 @@ export function createBlazeFetch(
   function revalidate(input: RequestInfo | URL, init: BlazeFetchInit, key: string): void {
     if (revalidating.has(key)) return;
     revalidating.add(key);
-    // The caller's `signal` is deliberately stripped. It belongs to the request that merely
+    // The caller's `signal` is deliberately replaced. It belongs to the request that merely
     // *happened* to notice the staleness — and such callers usually abort right after being
     // served (an unmount, a route change), which would abort the refresh and leave the
     // entry stale forever. A background refresh is the wrapper's own work and runs on the
     // wrapper's own terms; `forceRefresh` keeps it from re-serving the stale entry to itself.
-    void dispatch(input, { ...init, signal: undefined, forceRefresh: true })
+    //
+    // `undefined` suffices for a string/URL input — with no `Request` in play it simply
+    // means "no signal". It does **not** suffice when `input` is a `Request`: WebIDL treats
+    // an `init` member whose value is `undefined` as absent, so `fetch` falls back to the
+    // Request's own signal and the caller's abort still kills the refresh. An actual
+    // signal object — fresh, never aborted, controller discarded — is the only thing that
+    // overrides it.
+    void dispatch(input, {
+      ...init,
+      signal: isRequest(input) ? new AbortController().signal : undefined,
+      forceRefresh: true,
+    })
       // A background refresh must never reject into a caller: the stale entry simply stays
       // until the next attempt.
       .catch(() => undefined)
