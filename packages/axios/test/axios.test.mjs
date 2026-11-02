@@ -811,3 +811,179 @@ describe('varyIsStorable', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression guards: each of these failed against the pre-fix code.
+// ---------------------------------------------------------------------------
+
+describe('container params in the cache key', () => {
+  it('keys URLSearchParams, FormData and Map by contents, not by "{}"', () => {
+    const keyOf = (params) => defaultCacheKey({ url: '/u', params, headers: {} }, []);
+
+    // `JSON.stringify` sees no own enumerable properties on any of these, so every pair
+    // used to hash to the same `'{}'` key and replay one response for the other.
+    const searchA = keyOf(new URLSearchParams('q=a'));
+    const searchB = keyOf(new URLSearchParams('q=b'));
+    assert.notEqual(searchA, searchB, 'different search strings are different requests');
+    assert.equal(searchA, keyOf(new URLSearchParams('q=a')), 'same content, same key');
+    // axios sends `.toString()` verbatim, so order is part of the request on the wire.
+    assert.notEqual(
+      keyOf(new URLSearchParams('a=1&b=2')),
+      keyOf(new URLSearchParams('b=2&a=1')),
+      'differently ordered search strings key apart',
+    );
+
+    const formOne = new FormData();
+    formOne.append('x', '1');
+    formOne.append('y', '2');
+    const formReordered = new FormData();
+    formReordered.append('y', '2');
+    formReordered.append('x', '1');
+    assert.equal(keyOf(formOne), keyOf(formReordered), 'multipart part order is not semantics');
+    const formOther = new FormData();
+    formOther.append('x', '9');
+    assert.notEqual(keyOf(formOne), keyOf(formOther), 'a different field value keys apart');
+
+    assert.notEqual(
+      keyOf(new Map([['a', 1]])),
+      keyOf(new Map([['a', 2]])),
+      'Map entries reach the key',
+    );
+    assert.equal(keyOf(new Map([['a', 1]])), keyOf(new Map([['a', 1]])), 'stably');
+  });
+
+  it('stores two URLSearchParams requests as two entries end to end', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/search': { status: 200, data: { q: '?' } } });
+    const blaze = blazeAdapter({ cache, adapter });
+    const headers = () => new AxiosHeaders();
+
+    await blaze({ method: 'get', url: '/search', params: new URLSearchParams('q=a'), headers: headers() });
+    await blaze({ method: 'get', url: '/search', params: new URLSearchParams('q=b'), headers: headers() });
+
+    assert.equal(calls.length, 2, 'the second query must not be answered from the first’s entry');
+    assert.equal(cache.size(), 2, 'and both entries are stored');
+  });
+});
+
+describe('replayed error codes', () => {
+  it('rejects a cached failure with axios’s own settle() partition', async () => {
+    const cache = await makeCache();
+    // A lenient inner adapter is what lets non-2xx responses reach the cache at all;
+    // the replay path must then apply the *current* request's `validateStatus` with
+    // exactly axios's own `settle.js` code partition: 4xx is the caller's bad request,
+    // every other failing status is a bad *response*.
+    const lenient = async (config) => ({
+      data: 'payload',
+      status: config.url === '/gone' ? 404 : 302,
+      statusText: config.url === '/gone' ? 'Not Found' : 'Found',
+      headers: {},
+      config,
+      request: {},
+    });
+    const blaze = blazeAdapter({ cache, adapter: lenient, shouldCache: () => true });
+    const base = { method: 'get', headers: new AxiosHeaders(), validateStatus: () => true };
+
+    await blaze({ ...base, url: '/moved' }); // stored 302
+    await blaze({ ...base, url: '/gone' }); // stored 404
+    assert.equal(cache.size(), 2, 'both failures are replayable');
+
+    const rejectOf = (url) =>
+      blaze({ ...base, url, validateStatus: () => false }).then(
+        () => null,
+        (error) => error,
+      );
+
+    const redirected = await rejectOf('/moved');
+    assert.ok(redirected, 'the cached 302 rejects under a strict validateStatus');
+    assert.equal(
+      redirected.code,
+      AxiosError.ERR_BAD_RESPONSE,
+      'a sub-400 failing status is a bad response, not a bad request (axios settle.js)',
+    );
+    assert.match(redirected.message, /status code 302/);
+
+    const missing = await rejectOf('/gone');
+    assert.ok(missing, 'the cached 404 rejects too');
+    assert.equal(
+      missing.code,
+      AxiosError.ERR_BAD_REQUEST,
+      '4xx stays the caller’s bad request on both paths',
+    );
+  });
+});
+
+describe('stream responses', () => {
+  it('never stores a responseType: "stream" response', async () => {
+    const { Readable } = await import('node:stream');
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({
+      '/stream': { status: 200, data: Readable.from(['chunk']) },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+    const request = () => ({
+      method: 'get',
+      url: '/stream',
+      headers: new AxiosHeaders(),
+      responseType: 'stream',
+    });
+
+    const response = await blaze(request());
+    assert.equal(response.status, 200, 'the caller still gets the live stream');
+    assert.equal(calls.length, 1);
+    assert.equal(cache.size(), 0, 'a stream the caller is about to consume is never storable');
+
+    await blaze(request());
+    assert.equal(calls.length, 2, 'the next request goes back to the network, not to a dead stream');
+  });
+});
+
+describe('stored marker header', () => {
+  it('keeps the hit/miss marker out of the stored record', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({
+      '/u': {
+        status: 200,
+        data: { ok: true },
+        headers: { 'content-type': 'application/json', 'x-origin': 'yes' },
+      },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+    const request = () => ({ method: 'get', url: '/u', headers: new AxiosHeaders() });
+
+    const miss = await blaze(request());
+    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
+
+    const { record } = onlyRecord(cache);
+    assert.equal(
+      record.headers['x-blaze-cache'],
+      undefined,
+      'the per-request marker describes this exchange, not the stored representation',
+    );
+    assert.equal(record.headers['x-origin'], 'yes', 'real response headers still are stored');
+
+    const hit = await blaze(request());
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'replay still stamps HIT');
+  });
+});
+
+describe('malformed and duplicate Cache-Control directives', () => {
+  it('ignores an empty max-age and keeps the first duplicate (RFC 9111 §5.2.3)', () => {
+    assert.equal(
+      parseCacheControl('max-age=').maxAgeMs,
+      undefined,
+      'an empty value is malformed, not "instantly stale"',
+    );
+    assert.equal(
+      parseCacheControl('max-age=60, max-age=1').maxAgeMs,
+      60_000,
+      'the first occurrence wins',
+    );
+    assert.equal(
+      parseCacheControl('max-age=1, max-age=60').maxAgeMs,
+      1_000,
+      '…whichever one comes first',
+    );
+    assert.equal(parseCacheControl('max-age=abc').maxAgeMs, undefined, 'garbage stays ignored');
+  });
+});
