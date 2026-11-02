@@ -22,8 +22,15 @@ const DEFAULT_VARY_HEADERS: readonly string[] = ['authorization'];
 
 const DEFAULT_MARKER_HEADER = 'x-blaze-cache';
 
-/** Statuses that cannot carry a body — a replay must pass `null` for them. */
-const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+/**
+ * Statuses that cannot carry a body — a replay must pass `null` for them.
+ *
+ * `101` is deliberately **not** here: the `Response` constructor rejects it outright
+ * (`RangeError: init.status` must be 200–599), so a stored 101 could never be rebuilt at
+ * all — and none can ever reach the store, since a real `fetch` never returns a 101 to
+ * JavaScript (the handshake upgrades the connection below this layer).
+ */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
 
 /**
  * Wraps the platform `fetch` with a Blaze Cache layer.
