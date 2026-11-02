@@ -50,6 +50,21 @@ export function seedBlazeInfiniteQueryOptions<
   const record = readBlazeRecord(cache, client, options);
   if (record === undefined) return options;
 
+  // Shape gate before seeding: this key's mirror record may hold plain (non-paginated)
+  // data — a `setBlazeQueryData` write on the same key, a query that was once a plain
+  // query and later became infinite, or a foreign value at a colliding key on a shared
+  // cache. Handing TanStack a non-`InfiniteData` payload produces a "successful" query
+  // whose `data.pages` is `undefined` — the first `data.pages.map(...)` in app code
+  // crashes *after* rendering looked healthy. A non-matching record is simply not seeded:
+  // the query fetches normally, exactly as if the mirror were empty.
+  const data = record.data;
+  const isInfiniteShaped =
+    typeof data === 'object' &&
+    data !== null &&
+    Array.isArray((data as { pages?: unknown }).pages) &&
+    Array.isArray((data as { pageParams?: unknown }).pageParams);
+  if (!isInfiniteShaped) return options;
+
   // The mirror's payload *is* an `InfiniteData` object — that is what TanStack put in
   // the cache — so it slots into `initialData` without transformation. The cast exists
   // because the record type is deliberately untyped (`unknown`).
