@@ -153,6 +153,19 @@ export function syncBlazeQueryCache(
       return;
     }
 
+    // When the entry already exists (a *refetch*: new data, or a helper's write that this
+    // flush is now updating), the previous stamp wins over the sync defaults. A helper that
+    // wrote `tags: ['todos', 'user:42']` under a short TTL meant exactly that — re-stamping
+    // with the defaults would strip the per-query tags (so `cache.invalidateTags('todos')`
+    // silently stopped reaching the entry) and reset the deliberate short freshness window.
+    // `peek` and the readers below are synchronous, so nothing can change between them.
+    const preserve = existing !== undefined && isMirrorRecord(existing);
+    // `undefined` from either reader means "no reader on this cache" — fall back to the
+    // defaults, exactly as before. An *empty* tag list is a value, not an absence: an
+    // explicit `tags: []` write must survive a refetch too, so `??` (not `||`) selects it.
+    const previousTags = preserve && cache.tagsOf ? cache.tagsOf(hash) : undefined;
+    const previousTtlMs = preserve && cache.ttl ? (cache.ttl(hash) ?? 0) : undefined;
+
     // `queryKey` (and `queryType` for infinite queries) make the record self-describing:
     // dehydrate needs them to rebuild a TanStack query from the mirror alone.
     cache.set(
@@ -163,7 +176,14 @@ export function syncBlazeQueryCache(
         queryKey: query.queryKey,
         ...(query.queryType === 'infinite' ? ({ queryType: 'infinite' } as const) : null),
       },
-      { ttlMs, tags },
+      {
+        // `ttl() === undefined` for a live entry means it has *no* deadline; `0` is how
+        // the core spells "never expires", so that round-trips instead of being replaced
+        // by a fresh 24 h default. A finite value is the *remaining* window — the helper's
+        // original deadline stands; the refetch does not extend the lease it chose.
+        ttlMs: previousTtlMs ?? ttlMs,
+        tags: previousTags ?? tags,
+      },
     );
   });
 
