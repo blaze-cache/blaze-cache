@@ -785,3 +785,143 @@ describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
     await target.clear();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression guards: each of these failed against the pre-fix code.
+// ---------------------------------------------------------------------------
+
+describe('sync refetch stamp preservation', () => {
+  it('keeps a helper’s tags and TTL across a refetch', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
+
+    // A helper stamps the entry with its own tags and a deliberately short window.
+    setBlazeQueryData(cache, client, ['todos'], { v: 1 }, {
+      tags: ['todos', 'user:42'],
+      ttlMs: 30_000,
+    });
+    const hash = hashQueryKey(['todos']);
+    assert.deepEqual(cache.tagsOf(hash), ['todos', 'user:42'], 'the helper’s stamp landed');
+
+    // The query refetches — new data — and the sync layer re-writes the record.
+    client.setQueryData(['todos'], { v: 2 });
+
+    assert.deepEqual(
+      cache.tagsOf(hash),
+      ['todos', 'user:42'],
+      'the per-query tags survived the refetch (invalidateTags must still reach it)',
+    );
+    const ttl = cache.ttl(hash);
+    assert.ok(
+      ttl !== undefined && ttl <= 30_000 && ttl > 25_000,
+      `the helper’s short window survived, got ${ttl}ms`,
+    );
+
+    stop();
+    await client.clear();
+  });
+});
+
+describe('shared-cache purge shape gates', () => {
+  /** Another integration's entry parked on the very hash TanStack knows about. */
+  const parkForeignEntry = (cache, client, queryKey, options) => {
+    client.setQueryData(queryKey, [1]);
+    const hash = hashQueryKey(queryKey);
+    cache.set(hash, { source: 'axios', status: 200, storedAt: 1, freshUntil: 2 }, options);
+    return hash;
+  };
+
+  it('keeps a foreign value under a known hash when a stateful purge runs', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache });
+    const hash = parkForeignEntry(cache, client, ['todos']);
+
+    // `fetchStatus` makes the selection stateful — the branch that used to trust
+    // TanStack's hashes alone and deleted whatever sat under them. (`stale` would not do:
+    // an observer-less query reads as not-stale immediately after setQueryData.)
+    removeBlazeQueries(cache, client, { fetchStatus: 'idle' });
+
+    assert.equal(cache.has(hash), true, 'the foreign entry survives the stateful purge');
+    stop();
+    await client.clear();
+  });
+
+  it('keeps a tagged foreign value under a known hash when a stateful tag purge runs', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache });
+    // The tag is the very namespace TanStack purges with — caller domain tags are shared.
+    const hash = parkForeignEntry(cache, client, ['todos'], { tags: ['todos'] });
+
+    await invalidateBlazeQueries(cache, client, { tags: ['todos'], fetchStatus: 'idle' });
+
+    assert.equal(cache.has(hash), true, 'tagged but foreign: the purge leaves it');
+    stop();
+    await client.clear();
+  });
+
+  it('keeps a foreign value under an exact-match hash', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache });
+    const hash = parkForeignEntry(cache, client, ['todos']);
+
+    removeBlazeQueries(cache, client, { queryKey: ['todos'], exact: true });
+
+    assert.equal(cache.has(hash), true, 'an exact key purges mirror records only');
+    stop();
+    await client.clear();
+  });
+
+  it('keeps a foreign value when the query itself is explicitly removed', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+    const stop = syncBlazeQueryCache(client, { cache });
+    const hash = parkForeignEntry(cache, client, ['todos']);
+
+    client.removeQueries({ queryKey: ['todos'] }); // the patched, explicit path
+
+    assert.equal(cache.has(hash), true, 'the removed event does not destroy foreign data');
+    stop();
+    await client.clear();
+  });
+});
+
+describe('infinite seed shape gate', () => {
+  it('refuses to seed a non-InfiniteData record into an infinite query', async () => {
+    const cache = await makeCache();
+    const client = new QueryClient();
+
+    // A plain payload under the query's hash — a setBlazeQueryData write, or a query
+    // that was once non-infinite. Handing it to TanStack as `initialData` yields a
+    // "successful" query whose `data.pages` is undefined: the first `pages.map(...)`
+    // in app code crashes after rendering looked healthy.
+    setBlazeQueryData(cache, client, ['feed'], { items: [1, 2] });
+
+    const options = {
+      queryKey: ['feed'],
+      queryFn: async () => ({ pages: [[]], pageParams: [0] }),
+      initialPageParam: 0,
+      getNextPageParam: () => undefined,
+    };
+    const seeded = seedBlazeInfiniteQueryOptions(cache, client, options);
+    assert.equal(seeded.initialData, undefined, 'the plain record was not seeded');
+
+    // Control: a genuine InfiniteData payload still seeds.
+    setBlazeQueryData(cache, client, ['feed2'], { pages: [[1]], pageParams: [0] });
+    const seededInfinite = seedBlazeInfiniteQueryOptions(cache, client, {
+      ...options,
+      queryKey: ['feed2'],
+    });
+    assert.deepEqual(
+      seededInfinite.initialData,
+      { pages: [[1]], pageParams: [0] },
+      'an InfiniteData-shaped record seeds as before',
+    );
+    assert.equal(typeof seededInfinite.initialDataUpdatedAt, 'number', 'with its timestamp');
+
+    await client.clear();
+  });
+});
