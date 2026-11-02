@@ -55,10 +55,15 @@ export function useBlazeSWR<
   fetcher: Fetcher<Data, SWRKey> | null = null,
   options: BlazeSWROptions<Data, Error, Fetcher<Data, SWRKey>> = {},
 ): SWRResponse<Data, Error> {
-  const { ttlMs, tags, use, ...swrOptions } = options;
+  const { use, ...swrOptions } = options;
 
   return useSWR(key, fetcher, {
+    // `ttlMs`/`tags` deliberately stay *in* the config: SWR merges an `SWRConfig`
+    // provider's values into it too, and hook-level options win that merge — so a
+    // per-call stamp reaches the middleware's `config.ttlMs ?? options.ttlMs ?? default`
+    // read as the highest precedence. Stripping them into the middleware's own options
+    // would invert that: the provider's config value would then shadow the per-call one.
     ...swrOptions,
-    use: [blazeSWRMiddleware(cache, { ttlMs, tags }), ...(use ?? [])],
+    use: [blazeSWRMiddleware(cache, { ttlMs: options.ttlMs, tags: options.tags }), ...(use ?? [])],
   }) as SWRResponse<Data, Error>;
 }
