@@ -150,7 +150,12 @@ export function createBlazeFetch(
       if (!bypassRead) {
         const pending = inFlight.get(key);
         if (pending) {
-          await pending;
+          // The wait is abortable: without it a joiner whose caller cancels (unmount, route
+          // change) would hang until the *leader's* network call settles — the joiner's own
+          // abort must reject it immediately, exactly as it would have mid-flight. The
+          // effective signal is `init`'s, or the `Request`'s when no init overrode it.
+          const signal = request.signal ?? (isRequest(input) ? input.signal : null);
+          await raceWithAbort(pending, signal);
           const shared = read(key);
           // Freshly written, but a pathologically short TTL may have aged it out already.
           if (shared && Date.now() <= shared.freshUntil) return replay(shared, 'HIT');
@@ -384,6 +389,41 @@ export function createBlazeFetch(
 /** Successful responses only. The {@link BlazeFetchOptions.methods} gate has already applied. */
 function defaultShouldCache(response: Response): boolean {
   return response.status >= 200 && response.status < 300;
+}
+
+/**
+ * Waits for `pending`, but rejects as soon as `signal` aborts — the abort reason (or a
+ * standard `AbortError`) propagates, exactly as a mid-flight `fetch` would.
+ *
+ * Used by the in-flight join path: a joiner waiting on another caller's network call must
+ * still honour *its own* caller's cancellation, instead of hanging for as long as the
+ * leader takes.
+ */
+function raceWithAbort(pending: Promise<void>, signal: AbortSignal | null | undefined): Promise<void> {
+  if (!signal) return pending;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** `signal.reason` when set, else the standard `AbortError` DOMException. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
 }
 
 /**
