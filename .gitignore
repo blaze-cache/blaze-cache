@@ -13,3 +13,7 @@ packages/core/pkg/
 .DS_Store
 .idea/
 .vscode/
+
+SKILL.md
+.agents/
+skills-lock.json
