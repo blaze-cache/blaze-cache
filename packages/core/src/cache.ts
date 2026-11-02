@@ -647,6 +647,22 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     }
 
     this.#persist = adapter;
+    // Validated, not defaulted silently: `flushDelayMs: NaN` would make every debounce fire
+    // immediately, and `maxRecords: 0` would persist *everything* — `slice(-0)` is the whole
+    // array, not the empty one. A caller who passes a number gets a loud failure at `create`
+    // rather than a mysterious persistence behaviour later.
+    if (flushDelayMs !== undefined && (!Number.isFinite(flushDelayMs) || flushDelayMs < 0)) {
+      this.#persist = null;
+      throw new RangeError(
+        `[blaze-cache] persistence.flushDelayMs must be a finite number >= 0, got ${String(flushDelayMs)}.`,
+      );
+    }
+    if (maxRecords !== undefined && (!Number.isInteger(maxRecords) || maxRecords < 1)) {
+      this.#persist = null;
+      throw new RangeError(
+        `[blaze-cache] persistence.maxRecords must be an integer >= 1, got ${String(maxRecords)}.`,
+      );
+    }
     this.#flushDelayMs = flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
     this.#maxRecords = maxRecords ?? DEFAULT_MAX_RECORDS;
 
