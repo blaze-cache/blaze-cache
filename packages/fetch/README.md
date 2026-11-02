@@ -52,10 +52,15 @@ window.fetch = fetch;                   // now every request in the app is cache
   `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache` — the per-field
   `no-cache="set-cookie"` form included — stop it being stored.
   `must-revalidate`/`proxy-revalidate` gets no stale window, however short the fresh one.
+  Malformed directives are ignored rather than guessed at: an empty `max-age=` reads as
+  *no directive*, not as zero, and a duplicated directive keeps its first value
+  (RFC 9111 §5.2.3).
 * **Identical concurrent requests coalesce** — one caller leads and the rest replay the
   record it stored, so a burst of the same `GET` opens one connection. Only cacheable
   requests lead, callers that demanded the network are never joined, and a leader that
-  fails opens the gate over an empty cache so its joiners fetch in turn.
+  fails opens the gate over an empty cache so its joiners fetch in turn. A joiner waits on
+  the leader's write but still honours **its own** caller's signal: unmount or cancel and
+  it rejects immediately instead of hanging until the leader's network call settles.
 * **Only successful responses are stored** — the default `shouldCache` keeps `2xx`; replace
   it to widen or narrow that.
 * **`Authorization` participates in the default key** (hashed, never stored verbatim), so a
@@ -145,7 +150,11 @@ const fetch = createBlazeFetch(cache, { ttlMs: 10_000, staleWhileRevalidate: 30_
 Within the stale window a request is answered **immediately** from the cache with
 `x-blaze-cache: STALE`, while a background refresh rewrites the entry — the next request is
 a fresh `HIT`. One refresh runs per key at a time, and its failure is swallowed: a stale
-entry is better than a failed request.
+entry is better than a failed request. The refresh runs on the wrapper's own fresh signal,
+so the caller that merely *noticed* the staleness aborting right after being served (an
+unmount, a route change) cannot kill it — with a `Request` input the wrapper overrides the
+`Request`'s own signal explicitly, and the entry is never left stale forever because the
+noticing caller went away.
 
 The window comes from the response's `Cache-Control: stale-while-revalidate=<seconds>`;
 the number you pass is only the fallback for servers that do not send it.
@@ -198,7 +207,9 @@ Setup, core concepts and the complete API reference live in the
 
 * [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
 * [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — the axios adapter
+* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
 * [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
+* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 
