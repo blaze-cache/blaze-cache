@@ -705,3 +705,30 @@ fn touch_installs_a_deadline_even_when_no_entry_has_one_yet() {
     assert!(cache.touch("k", Some(Duration::ZERO)));
     assert_eq!(cache.ttl("k"), Some(None));
 }
+
+#[test]
+fn drop_log_trims_the_oldest_records_at_its_soft_cap() {
+    // `log_drop`'s MAX_DROPS path had no coverage at all: pin both the cap and the FIFO
+    // sacrifice (oldest first) that keeps a listener which stopped draining bounded.
+    const MAX_DROPS: usize = 64 * 1024;
+    const EXTRA: usize = 16;
+    let mut cache = Cache::new(1);
+    cache.set_drop_tracking(true);
+    cache.insert(0, 0);
+    for i in 1..=(MAX_DROPS + EXTRA) as u64 {
+        // Capacity 1: every write evicts the previous entry → exactly one drop per write.
+        cache.insert(i, i);
+    }
+    let drops = cache.drain_drops();
+    assert_eq!(drops.len(), MAX_DROPS, "log must clamp at MAX_DROPS");
+    // Drops total MAX_DROPS + EXTRA (evicted keys 0..=MAX_DROPS+EXTRA-1); the EXTRA
+    // oldest were sacrificed, so the first survivor is key EXTRA and the newest is last.
+    assert_eq!(drops.first().unwrap().key, EXTRA as u64);
+    assert_eq!(drops.last().unwrap().key, (MAX_DROPS + EXTRA - 1) as u64);
+    assert!(
+        drops.iter().all(|d| d.reason == DropReason::Evicted),
+        "capacity pressure only ever evicts"
+    );
+    assert_eq!(cache.len(), 1, "the cache itself keeps working");
+    assert!(cache.drain_drops().is_empty(), "drain empties the log");
+}

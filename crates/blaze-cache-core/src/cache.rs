@@ -1,7 +1,7 @@
 //! The cache itself: slab storage, hash index, SIEVE queue and tag bookkeeping.
 
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::time::Duration;
 
@@ -107,8 +107,10 @@ pub struct Cache<K, V> {
     ///
     /// Empty — and never pushed to — unless [`set_drop_tracking`](Self::set_drop_tracking)
     /// turned it on, so the default hot path pays only a predictable `bool` branch at the
-    /// moment an entry dies (never per read/write).
-    drops: Vec<Dropped<K, V>>,
+    /// moment an entry dies (never per read/write). A [`VecDeque`] because the soft cap
+    /// sacrifices the oldest record: `pop_front` stays `O(1)` where `Vec::remove(0)`
+    /// would shift the whole log on every drop once it fills.
+    drops: VecDeque<Dropped<K, V>>,
     /// Whether `drops` is being collected. Off by default.
     track_drops: bool,
 }
@@ -134,7 +136,7 @@ where
             capacity,
             stats: CacheStats::default(),
             ttl_count: 0,
-            drops: Vec::new(),
+            drops: VecDeque::new(),
             track_drops: false,
         }
     }
@@ -164,7 +166,7 @@ where
     /// [`clear`](Self::clear) and [`prune`](Self::prune) never appear here — the caller
     /// initiated those and already knows the outcome.
     pub fn drain_drops(&mut self) -> Vec<Dropped<K, V>> {
-        std::mem::take(&mut self.drops)
+        std::mem::take(&mut self.drops).into()
     }
 
     /// Records a self-initiated drop when tracking is on.
@@ -177,9 +179,9 @@ where
             // Older records are sacrificed first (FIFO semantics).
             const MAX_DROPS: usize = 64 * 1024;
             if self.drops.len() >= MAX_DROPS {
-                self.drops.remove(0);
+                self.drops.pop_front();
             }
-            self.drops.push(Dropped { key, value, reason });
+            self.drops.push_back(Dropped { key, value, reason });
         }
     }
 
