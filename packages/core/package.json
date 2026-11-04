@@ -44,6 +44,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "pnpm run build && node --test",
+    "test:live": "pnpm run build && node --test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build && node -e \"require('fs').accessSync('pkg/blaze_cache_wasm_bg.wasm')\""
   },
