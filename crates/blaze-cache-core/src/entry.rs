@@ -29,7 +29,20 @@ impl EntryOptions {
 
     /// Expire the entry `ttl` after it is written.
     ///
-    /// `Duration::ZERO` expires the write immediately, which is a no-op insertion.
+    /// `Duration::ZERO` is ignored — the entry is stored with **no** deadline, exactly as
+    /// if `ttl` had never been set (a zero deadline would only create a phantom entry that
+    /// expires on the next instruction). Callers that mean "do not cache" should simply
+    /// not insert.
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use blaze_cache_core::{Cache, EntryOptions};
+    ///
+    /// let mut cache = Cache::new(4);
+    /// cache.insert_with("forever", 1, EntryOptions::new().ttl(Duration::ZERO));
+    /// assert_eq!(cache.get("forever"), Some(&1), "stored, not a no-op");
+    /// assert_eq!(cache.meta("forever").unwrap().ttl_remaining, None, "no deadline");
+    /// ```
     pub fn ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
