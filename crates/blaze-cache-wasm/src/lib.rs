@@ -120,7 +120,9 @@ impl BlazeCache {
     /// Batch set: stores every key/value pair in one boundary crossing.
     ///
     /// `ttl_ms[i] < 0` means no expiry. `tag_offsets[i]`..`tag_offsets[i+1]` index into
-    /// `tags_flat` for the tags of entry `i`.
+    /// `tags_flat` for the tags of entry `i`. Those offsets come from JS, so they are
+    /// clamped rather than trusted: a non-monotonic or out-of-range pair yields no tags
+    /// for that entry instead of panicking and trapping the wasm instance.
     #[wasm_bindgen(js_name = setMany)]
     pub fn set_many(
         &mut self,
@@ -136,8 +138,18 @@ impl BlazeCache {
             .min(values_arr.length() as usize)
             .min(ttl_ms.len());
         for i in 0..len {
-            let start = tag_offsets.get(i).copied().unwrap_or(0);
-            let end = tag_offsets.get(i + 1).copied().unwrap_or(start);
+            // JS supplies these offsets, so they are clamped instead of trusted: a
+            // non-monotonic pair (end < start) or one reaching past `tags_flat` would
+            // otherwise panic mid-slice and trap the whole wasm instance. Bad input
+            // degrades to "no tags for this entry", matching how short arrays above are
+            // already tolerated.
+            let flat_len = tags_flat.len();
+            let start = tag_offsets.get(i).copied().unwrap_or(0).min(flat_len);
+            let end = tag_offsets
+                .get(i + 1)
+                .copied()
+                .unwrap_or(start)
+                .clamp(start, flat_len);
             let entry_tags = &tags_flat[start..end];
 
             let mut options = EntryOptions::new().tags(entry_tags.iter().map(|s| s.as_str()));

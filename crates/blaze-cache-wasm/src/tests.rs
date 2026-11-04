@@ -454,3 +454,56 @@ fn explicit_deletes_are_never_reported_as_drops() {
     small.set_drop_tracking(false);
     assert_eq!(small.drain_drops().length(), 0, "…cleared with the flag");
 }
+
+#[wasm_bindgen_test]
+fn set_many_clamps_malformed_tag_offsets_instead_of_trapping() {
+    let mut cache = BlazeCache::new(8.0);
+
+    let values = Array::new();
+    values.push(&JsValue::from_str("v1"));
+    values.push(&JsValue::from_str("v2"));
+    values.push(&JsValue::from_str("v3"));
+
+    // Hostile offsets covering every failure shape of `tag_offsets[i]..tag_offsets[i+1]`
+    // against a 2-element `tags_flat`:
+    //   i=0 → end < start        (1..0)  — non-monotonic
+    //   i=1 → end past the flat  (0..99)
+    //   i=2 → start past the flat (99..99)
+    // Unclamped, each panics mid-slice and traps the whole wasm instance.
+    cache.set_many(
+        vec!["k1".into(), "k2".into(), "k3".into()],
+        values.into(),
+        vec![0.0, 0.0, 0.0],
+        vec!["tA".into(), "tB".into()],
+        vec![1, 0, 99],
+    );
+
+    // All three entries must still be stored and readable — bad tags cost at most the tags.
+    assert_eq!(cache.size(), 3);
+    assert_eq!(
+        cache.get("k1").and_then(|v| v.as_string()).as_deref(),
+        Some("v1")
+    );
+    assert_eq!(
+        cache.get("k2").and_then(|v| v.as_string()).as_deref(),
+        Some("v2")
+    );
+    assert_eq!(
+        cache.get("k3").and_then(|v| v.as_string()).as_deref(),
+        Some("v3")
+    );
+
+    assert!(
+        cache.tags_of("k1").is_empty(),
+        "non-monotonic range degrades to no tags, not a trap"
+    );
+    assert_eq!(
+        cache.tags_of("k2"),
+        vec!["tA".to_string(), "tB".to_string()],
+        "out-of-range end clamps to tags_flat.len()"
+    );
+    assert!(
+        cache.tags_of("k3").is_empty(),
+        "out-of-range start yields no tags"
+    );
+}
