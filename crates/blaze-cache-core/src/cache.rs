@@ -388,19 +388,21 @@ where
     ///
     /// Used by persistence layers to serialise the cache in one pass.
     pub fn entries(&self) -> Vec<EntryView<'_, K, V>> {
-        let now = Instant::now();
+        // No deadline anywhere → nothing can be expired, so the walk takes no clock (on
+        // wasm that call is a `performance.now()` import). See `get` for the rationale.
+        let now = (self.ttl_count > 0).then(Instant::now);
         let mut out = Vec::with_capacity(self.index.len());
         let mut cursor = self.queue_head();
         while let Some(idx) = cursor {
             let node = self.nodes[idx].as_ref().expect("live slot");
             cursor = node.next;
-            if node.is_expired(now) {
+            if now.is_some_and(|n| node.is_expired(n)) {
                 continue;
             }
             out.push(EntryView {
                 key: &node.key,
                 value: &node.value,
-                meta: self.meta_for(node, Some(now)),
+                meta: self.meta_for(node, now),
             });
         }
         out
@@ -422,13 +424,14 @@ where
 
     /// Keys of every live entry, in queue (oldest-first) order.
     pub fn keys(&self) -> impl Iterator<Item = &K> {
-        let now = Instant::now();
+        // Clock skipped when no entry carries a deadline (see `get`).
+        let now = (self.ttl_count > 0).then(Instant::now);
         let mut cursor = self.queue_head();
         std::iter::from_fn(move || {
             while let Some(idx) = cursor {
                 let node = self.nodes[idx].as_ref().expect("live slot");
                 cursor = node.next;
-                if !node.is_expired(now) {
+                if !now.is_some_and(|n| node.is_expired(n)) {
                     return Some(&node.key);
                 }
             }
@@ -438,12 +441,13 @@ where
 
     /// Every key carrying `tag`, ignoring expired entries.
     pub fn keys_with_tag(&self, tag: &str) -> Vec<&K> {
-        let now = Instant::now();
+        // Clock skipped when no entry carries a deadline (see `get`).
+        let now = (self.ttl_count > 0).then(Instant::now);
         self.tags
             .members(tag)
             .into_iter()
             .filter_map(|idx| self.nodes[idx].as_ref())
-            .filter(|node| !node.is_expired(now))
+            .filter(|node| !now.is_some_and(|n| node.is_expired(n)))
             .map(|node| &node.key)
             .collect()
     }
@@ -642,6 +646,10 @@ where
     /// Expired entries are also reclaimed lazily on access and opportunistically during
     /// eviction; call this when you want the cache *observed* to be clean right now.
     pub fn prune(&mut self) -> Vec<K> {
+        // No deadline anywhere → nothing can be expired: skip the clock *and* the scan.
+        if self.ttl_count == 0 {
+            return Vec::new();
+        }
         let now = Instant::now();
         let expired: Vec<usize> = self
             .nodes
