@@ -252,6 +252,24 @@ for (const { label, ky, prefix } of versions) {
       assert.equal(hitBlob.size, bytes.byteLength, 'and its size');
       assert.deepEqual(new Uint8Array(await hitBlob.arrayBuffer()), bytes, 'and every byte');
     });
+
+    it('hands back a readable body when the network response refuses the marker', async () => {
+      // Every MISS path is rebuilt in production, because an undici network response has
+      // *immutable* headers — the marker can't be set, so the hook rebuilds around the
+      // body. ky then cancels the response the hook received; rebuilding around a *moved*
+      // stream handed the caller a body that was already cancelled ("Body is unusable").
+      // `data:` URLs produce undici's immutable-headers responses offline, deterministically.
+      const cache = await makeCache();
+      const bytes = [1, 2, 3, 244, 250];
+      const net = () =>
+        fetch(`data:application/octet-stream;base64,${Buffer.from(bytes).toString('base64')}`);
+      const api = hookApi(cache, net, { ttlMs: TTL_MS });
+
+      const miss = await api.get(USERS);
+      const body = new Uint8Array(await miss.arrayBuffer());
+      assert.deepEqual([...body], bytes, 'the caller gets the bytes, not a cancelled stream');
+      assert.equal(miss.headers.get('x-blaze-cache'), 'MISS', 'and the marker survived the rebuild');
+    });
   });
 
   describe(`Cache-Control (${label})`, () => {
