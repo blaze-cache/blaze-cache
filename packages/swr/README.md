@@ -145,13 +145,20 @@ mutate('/api/todos'); // SWR's own revalidation for the mounted hook
 ## Testing
 
 ```sh
-pnpm --filter @blaze-cache/swr test
+pnpm --filter @blaze-cache/swr test        # offline — stubbed fetcher, no network
+pnpm --filter @blaze-cache/swr test:live   # live — real public API, needs the network
 ```
 
-The suite runs against the built package with Node's test runner, started with
+The offline suite runs against the built package with Node's test runner, started with
 `--experimental-test-module-mocks`: the hook test replaces the `swr` module with a
 capture stub, so the exact config `useBlazeSWR` hands to SWR can be asserted without a
 React renderer (the main suite needs none of that).
+
+The live suite (4 tests) runs against `api.github.com`, proving the middleware round-trips
+a real response body through the persisted envelope, that a fresh middleware run seeds
+from the mirror with zero network, that a failing fetcher persists nothing, and that a
+revalidation rewrites the same single entry in place. Every live test is skipped unless
+`BLAZE_CACHE_LIVE=1` is set, so the default suite always runs offline.
 
 ## Documentation
 
