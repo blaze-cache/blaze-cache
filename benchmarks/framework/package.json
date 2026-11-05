@@ -1,0 +1,16 @@
+{
+  "name": "blaze-cache-framework-bench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Benchmarks Blaze Cache against TanStack Query and SWR cache stores",
+  "type": "module",
+  "scripts": {
+    "bench": "node --expose-gc runner.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@blaze-cache/core": "workspace:*",
+    "@tanstack/query-core": "^5.104.5",
+    "swr": "^2.5.1"
+  }
+}
