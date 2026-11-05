@@ -278,8 +278,15 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     return response;
   }
 
-  /** Stamps the marker on a network response, rebuilding it only if its headers refuse. */
-  function mark(response: Response, marker: BlazeKyMarker): Response {
+  /**
+   * Stamps the marker on a network response, rebuilding it only if its headers refuse.
+   *
+   * ky cancels the response an `afterResponse` hook received whenever the hook returns a
+   * different object — so a rebuilt response must never share that response's body stream:
+   * the bytes would be cancelled from under the caller ("Body is unusable"). When the
+   * headers refuse the marker we buffer the body and build around the copy instead.
+   */
+  async function mark(response: Response, marker: BlazeKyMarker): Promise<Response> {
     if (markerHeader === false) return response;
     try {
       response.headers.set(markerHeader, marker);
@@ -291,7 +298,11 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
       if (response.status === 0) return response;
       const headers = new Headers(response.headers);
       headers.set(markerHeader, marker);
-      const rebuilt = new Response(response.body, {
+      // Buffer instead of moving: the hook-supplied response is cancelled by ky right
+      // after this returns, and a teed-moving `new Response(response.body)` would be built
+      // on a stream that is then cancelled underneath the caller ("Body is unusable").
+      const body = response.body === null ? null : await response.arrayBuffer();
+      const rebuilt = new Response(body, {
         status: response.status,
         statusText: response.statusText,
         headers,
