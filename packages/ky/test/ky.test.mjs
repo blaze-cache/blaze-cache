@@ -6,9 +6,10 @@
  * exactly once" is a real assertion about the cache — and each marker-header check is paired
  * with a look *inside* the store, so a green run means the payload really landed there.
  *
- * The whole suite runs **twice**: once on ky v1 and once on ky v2 (installed under the
- * `ky2` alias), whose hook signatures differ completely. `createBlazeKy` runs once more —
- * it is bound to whatever `ky` resolves to in the consumer's app.
+ * Almost the whole suite runs **twice**: once on ky v1 and once on ky v2 (installed under
+ * the `ky2` alias), whose hook signatures differ completely. The exceptions run once each:
+ * `createBlazeKy` — bound to whatever `ky` resolves to in the consumer's app — and the pure
+ * `parseCacheControl` checks, which never see a ky at all.
  *
  *   pnpm --filter @blaze-cache/ky test
  */

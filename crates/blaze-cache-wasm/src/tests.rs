@@ -3,7 +3,7 @@
 //! Declared behind `#[cfg(all(test, target_arch = "wasm32"))]` in `lib.rs`, so host
 //! `cargo test` never compiles it while `pnpm test:wasm` runs it in Node.
 //!
-//! What this covers that the 36 host-side tests cannot: everything that actually crosses
+//! What this covers that the host-side engine tests cannot: everything that actually crosses
 //! the wasm boundary — `Option` ↔ `undefined`/`null`, `Vec<String>` ↔ `Array`, the
 //! `{ key, value, ttlMs, tags }` object shape built with `Reflect`, and the serialised
 //! stats object — through the real wasm-bindgen glue.
