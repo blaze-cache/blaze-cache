@@ -31,6 +31,18 @@ tagging the raw url, and axios/fetch/SWR/react-query misreading or destroying ea
 other's values under a forced key collision. All six were fixed in their packages; each
 now has a positive assertion here, so a regression fails the suite immediately.
 
+## Testing
+
 ```sh
-pnpm --filter @blaze-cache/integration-tests test   # after pnpm build:wasm && pnpm build
+pnpm --filter @blaze-cache/integration-tests test        # offline — after pnpm build:wasm && pnpm build
+pnpm --filter @blaze-cache/integration-tests test:live   # live — after a workspace build (same prerequisite)
 ```
+
+The offline suite pins the isolation contract with canned adapters. The live suite (4
+tests) drives the same five integrations against `api.github.com` on one shared cache,
+proving every integration's marker works against a real response, a second read replays
+without a single network call, `fetch` and `ky` genuinely share one entry for identical
+request identity, and a default-tag purge removes exactly that integration's entry.
+`test:live` does not build the workspace — the build comes first, as with the offline
+suite. Every live test is skipped unless `BLAZE_CACHE_LIVE=1` is set, so the default
+suite always runs offline.

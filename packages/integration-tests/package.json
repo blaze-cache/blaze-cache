@@ -5,7 +5,8 @@
   "description": "Cross-integration tests: several @blaze-cache integrations sharing one cache instance",
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:live": "BLAZE_CACHE_LIVE=1 node --test test/live.test.mjs"
   },
   "devDependencies": {
     "@blaze-cache/axios": "workspace:*",
