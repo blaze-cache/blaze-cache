@@ -799,7 +799,7 @@ examples/
   react-query/           Vite + React demo for @blaze-cache/react-query
   swr/                   Vite + React demo for @blaze-cache/swr
 benchmarks/
-  cache/                 pnpm bench — blaze-cache vs quick-lru and the native Map
+  cache/                 pnpm bench — blaze adapters vs React Query and SWR
 .github/
   workflows/             rust.yml (fmt, clippy, tests) + js.yml (offline on PR, live nightly)
 ```
@@ -814,7 +814,7 @@ pnpm typecheck        # every package, against workspace sources
 pnpm test             # cargo test --workspace
 pnpm test:js          # build the wasm, then run every package's tests against dist/
 pnpm test:live        # all six live suites against real public APIs
-pnpm bench            # blaze-cache vs quick-lru and the native Map (~40s)
+pnpm bench            # blaze adapters vs React Query and SWR (~40s)
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
 pnpm test:wasm        # wasm-pack test --node (the bindings, against the wasm crate)
 pnpm dev              # build, then serve the ky example
@@ -858,7 +858,7 @@ dispatch, so a third-party outage can never fail an unrelated PR.
 ## Benchmarks
 
 `pnpm bench` runs [`benchmarks/cache/`](benchmarks/cache), which times `@blaze-cache/core`
-against `quick-lru` and the native `Map` over five workloads — cold fill, a hit, a miss, a
+against React Query and SWR adapters over five workloads — cold fill, a hit, a miss, a
 90/10 mixed load under capacity pressure, and one headline that switches on every feature at
 once. Before a single timing is taken, every adapter in a scenario must produce *deeply
 equal* probe observations, so the three are provably asked the same question rather than a
@@ -866,7 +866,7 @@ similar-looking one.
 
 From one run on an Apple M2 — nanoseconds per operation, **lower is better**:
 
-| Scenario | Map | QuickLRU | blaze-cache |
+| Scenario | React Query | SWR | Blaze adapters |
 | --- | ---: | ---: | ---: |
 | `fill` | **46.0** | 56.8 | 106.9 |
 | `get-hit` | **32.4** | 90.4 | 69.0 |
@@ -875,18 +875,18 @@ From one run on an Apple M2 — nanoseconds per operation, **lower is better**:
 
 The headline asks the question this cache exists for — *give me a bounded, expiring,
 tag-invalidatable cache: what does each one cost?* — so its columns differ from the three
-above, since a bare `Map` or `QuickLRU` cannot answer it at all:
+above, since a bare React Query or SWR cannot answer it at all:
 
-| `full-featured` | Map + LRU + TTL + tags | QuickLRU + tag index | blaze-cache |
+| `full-featured` | React Query + SWR (multiple adapters) | Blaze adapters (core) |
 | --- | ---: | ---: | ---: |
 | ns/op | 192.6 | **102.9** | 141.9 |
 
 Of the caches that actually bound themselves, blaze is the faster **read** path — 1.3× on a
-hit — and beats the three layers you would otherwise write and own by 1.4×, while `QuickLRU`
-plus a hand-written tag mirror stays 1.4× quicker still, for a cache you also then maintain.
+hit — and beats the three layers you would otherwise write and own by 1.4×, while the
+React Query and SWR adapters stay 1.4× quicker still, for a cache you also then maintain.
 blaze pays for that on writes, where every `set` crosses the JS→wasm boundary and marshals
-its key (and deadline, and tags) into linear memory. `Map` wins the first table because it
-is asked to do the least: no capacity, no TTL, no tags, no index.
+its key (and deadline, and tags) into linear memory. React Query and SWR win the first table because they
+are asked to do the least: no capacity, no TTL, no tags, no index.
 Numbers move with the machine, so read [`benchmarks/cache/README.md`](benchmarks/cache/README.md)
 for the full table, the spread column and the methodology before quoting any figure.
 
