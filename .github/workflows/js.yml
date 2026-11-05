@@ -73,7 +73,7 @@ jobs:
       - name: build wasm
         run: pnpm build:wasm
 
-      # Pass counts from the offline suites: core 62, axios 35, ky 58, react-query 39,
+      # Pass counts from the offline suites: core 62, axios 35, ky 60, react-query 39,
       # swr 28, fetch 46, integration-tests 16 — plus the live files, skipped here.
       - name: package tests
         run: pnpm -r test
