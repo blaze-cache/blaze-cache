@@ -808,7 +808,7 @@ pnpm build:wasm       # wasm-pack only
 pnpm typecheck        # every package, against workspace sources
 pnpm test             # cargo test --workspace
 pnpm test:js          # build the wasm, then run every package's tests against dist/
-pnpm test:live        # the opt-in live suites (fetch + axios) against real public APIs
+pnpm test:live        # all six live suites against real public APIs
 pnpm bench            # blaze-cache vs quick-lru and the native Map (~40s)
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
 pnpm test:wasm        # wasm-pack test --node (the bindings, against the wasm crate)
@@ -822,21 +822,24 @@ Every package carries its own suite in `packages/<name>/test/`, run with `node -
 either side drifts, and each marker-header assertion is paired with a look *inside*
 the store, so a green run means the payload really landed there.
 
-The `fetch` and `axios` packages additionally ship an opt-in **live** suite that talks to
-real public APIs — `api.github.com` and `raw.githubusercontent.com` (keyless, and well
-within GitHub's unauthenticated 60 requests/hour) plus `jsonplaceholder.typicode.com` —
-so that *actual* `Cache-Control` and `Vary` headers are exercised rather than a stub's
-idea of them:
+The network-facing packages additionally ship an opt-in **live** suite that talks to real
+public APIs — `api.github.com` (keyless, and well within GitHub's unauthenticated 60
+requests/hour; the fetch suite also exercises `raw.githubusercontent.com` and
+`jsonplaceholder.typicode.com`). The HTTP integrations (`fetch`, `axios`, `ky`) prove that
+*real* `Cache-Control` and `Vary` headers are parsed and honoured; `swr` and
+`react-query` prove their persist/mirror round-trips against a real response body; and
+`integration-tests` drives all five, sharing one cache. `core` has no live suite — its
+engine never talks to a network:
 
 ```sh
-pnpm test:live                             # all live suites (fetch + axios)
+pnpm test:live                             # every live suite
 pnpm --filter @blaze-cache/fetch test:live # just one of them
 ```
 
 Every test in those suites is skipped unless `BLAZE_CACHE_LIVE=1` (their `test:live`
 scripts set it for you), so `pnpm test:js` always keeps working offline. The same pass
-also builds and runs `core`'s own suite — `core` has no live tests, but `axios` and
-`fetch` resolve `@blaze-cache/core` through its built declarations, so `core` goes first.
+also builds and runs `core`'s own suite — `core` has no live tests, but every dependent
+package resolves `@blaze-cache/core` through its built declarations, so `core` goes first.
 [`.github/workflows/js.yml`](.github/workflows/js.yml) mirrors that split — the offline
 suites gate every push and PR, the live ones run on a nightly cron and on manual
 dispatch, so a third-party outage can never fail an unrelated PR.
