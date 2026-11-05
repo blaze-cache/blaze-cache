@@ -71,9 +71,11 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 
 ## API
 
-The integration is one cache + a set of hooks, helpers and hydration functions. All of
-them take `(cache, client?, options?)` — the cache first, then the `QueryClient` (from
-context when omitted by a hook), then the options.
+The integration is one cache + a set of hooks, helpers and hydration functions. The
+hooks take `(cache, options)` with the `QueryClient` from context when omitted; the
+imperative helpers and the seed/read functions take `(cache, client, …)` with the
+client explicit. `hashQueryKey`, `resolveQueryHash` and `isMirrorRecord` work from a
+query key, a `QueryClient` and a plain value — no cache needed.
 
 | Export | What it does |
 | --- | --- |
@@ -82,6 +84,11 @@ context when omitted by a hook), then the options.
 | `useBlazeInfiniteQuery` | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData` — only for `InfiniteData`-shaped records; a plain record under the key is left unseeded. |
 | `useBlazeQueries` | `useQueries` over several keys, each seeded independently. |
 | `useBlazeMutation` | `useMutation` that invalidates queries after success. |
+| `seedBlazeQueryOptions` / `seedBlazeInfiniteQueryOptions` / `seedBlazeQueriesOptions` | The seeding the hooks do, as options transforms you can call yourself: fill `initialData` + `initialDataUpdatedAt` from the mirror — an explicit `initialData` always wins, and the infinite one only seeds `InfiniteData`-shaped records. |
+| `readBlazeRecord` | The lookup every seed shares: resolve the hash the way TanStack does, `peek` over `get` (a render must not skew stats) and accept only records this package could have written. |
+| `resolveQueryHash` | The hash TanStack will file a query under — an explicit `queryHash`, then the configured `queryKeyHashFn` (per-query, `setQueryDefaults` or client defaults), else the default hasher. |
+| `hashQueryKey` | TanStack's own canonical hash for a query key. |
+| `isMirrorRecord` | Shape guard: does this value carry a numeric `dataUpdatedAt` — is it a record the sync layer could have written? |
 | `prefetchBlazeQuery` | Imperatively seed + prefetch, mirroring the fetched result. |
 | `setBlazeQueryData` | Write data through to the mirror (TanStack first, then Blaze). |
 | `invalidateBlazeQueries` | Invalidate in TanStack **and** purge the mirror. |

@@ -198,8 +198,11 @@ pnpm --filter @blaze-cache/ky test
 ```
 
 The suite runs against the built package with a stubbed network — deterministic, offline
-— and executes **every test twice**, once on ky v1 and once on ky v2 (installed under an
-npm alias), because the two majors take their hooks in completely different shapes.
+— and executes **almost every test twice**, once on ky v1 and once on ky v2 (installed
+under an npm alias), because the two majors take their hooks in completely different
+shapes. The exceptions run once each — `createBlazeKy` (bound to whatever `ky` resolves
+to in the consumer's app) and the pure `parseCacheControl` checks — so 27 test cases run
+twice and four once: 58 tests in all.
 
 ## Documentation
 

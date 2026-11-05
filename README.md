@@ -606,7 +606,7 @@ const cache = await BlazeCache.create({ wasmSource });
 const api = ky.extend({
   prefixUrl: 'https://api.example.com/v1',
   headers: { authorization: 'Bearer k' },
-  hooks: blazeKyHook(cache, { varyHeaders: ['authorization'], tags: ['v1'] }),
+  hooks: blazeKyHook(cache, { varyHeaders: ['authorization'], tags: () => ['v1'] }),
 });
 
 // helper style — one call, cache options folded into the same options object
@@ -614,7 +614,7 @@ const api2 = createBlazeKy(cache, {
   prefixUrl: 'https://api.example.com/v1',
   headers: { authorization: 'Bearer k' },
   ttlMs: 30_000,
-  tags: ['v1'],
+  tags: () => ['v1'],
   varyHeaders: ['authorization'],
 });
 
@@ -624,10 +624,12 @@ await api('users/42'); // HIT  — replayed from cache, x-blaze-cache: HIT
 
 What you get:
 
-* `cache.get('users/42')` works — plain URLs, no request objects. Custom keys are
-  `key: (request) => string`, tags `tags` (string or `(request, response) => …`), TTL
-  `ttlMs` (number or `(request, response) => …`), plus `markerHeader`, `varyHeaders`,
-  `shouldCache` and `respectCacheControl` exactly as in `fetch`.
+* Custom keys are `key: (request) => string`; the default is `defaultCacheKey` (method +
+  URL + a hash of `varyHeaders`), exported from `@blaze-cache/ky` — call it to look an
+  entry up yourself, or supply your own `key`. Tags are
+  `tags: (response, request) => readonly string[]` and TTL is
+  `ttlMs: number | (response, request) => number`; `markerHeader`, `varyHeaders`,
+  `shouldCache` and `cacheControl` behave exactly as in `fetch`.
 * Cache hits keep ky semantics: a non-2xx response replayed from cache still throws
   `ky.HTTPError`, because the hook hands ky a real `Response` rather than swallowing it.
 * `Cache-Control` parsing is the same code `@blaze-cache/fetch` uses — malformed
@@ -692,6 +694,9 @@ re-stamped with the sync defaults. Error states stay in TanStack.
 * `invalidateBlazeQueries(cache, client, filters)` / `removeBlazeQueries(cache, client, filters)`
   — invalidate (mark stale + purge persisted data) / remove, query-key, tag or predicate
   based, on both caches at once.
+
+  The exhaustive list — including the `seed*` helpers and hashing functions the hooks are
+  built on — lives in [`packages/react-query`](packages/react-query).
 
 ### Round trip
 
@@ -824,12 +829,14 @@ so that *actual* `Cache-Control` and `Vary` headers are exercised rather than a 
 idea of them:
 
 ```sh
-pnpm test:live                             # every package's live suite
+pnpm test:live                             # all live suites (fetch + axios)
 pnpm --filter @blaze-cache/fetch test:live # just one of them
 ```
 
-Every test in those suites is skipped unless `BLAZE_CACHE_LIVE=1` (each package's
-`test:live` script sets it for you), so `pnpm test:js` always keeps working offline.
+Every test in those suites is skipped unless `BLAZE_CACHE_LIVE=1` (their `test:live`
+scripts set it for you), so `pnpm test:js` always keeps working offline. The same pass
+also builds and runs `core`'s own suite — `core` has no live tests, but `axios` and
+`fetch` resolve `@blaze-cache/core` through its built declarations, so `core` goes first.
 [`.github/workflows/js.yml`](.github/workflows/js.yml) mirrors that split — the offline
 suites gate every push and PR, the live ones run on a nightly cron and on manual
 dispatch, so a third-party outage can never fail an unrelated PR.
