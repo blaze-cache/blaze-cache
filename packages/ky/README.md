@@ -194,15 +194,22 @@ ignore the rest. Both are covered by the test suite.
 ## Testing
 
 ```sh
-pnpm --filter @blaze-cache/ky test
+pnpm --filter @blaze-cache/ky test        # offline — stubbed network, no network
+pnpm --filter @blaze-cache/ky test:live   # live — real public APIs, needs the network
 ```
 
-The suite runs against the built package with a stubbed network — deterministic, offline
-— and executes **almost every test twice**, once on ky v1 and once on ky v2 (installed
+The offline suite runs against the built package with a stubbed network — deterministic,
+offline — and executes **almost every test twice**, once on ky v1 and once on ky v2 (installed
 under an npm alias), because the two majors take their hooks in completely different
 shapes. The exceptions run once each — `createBlazeKy` (bound to whatever `ky` resolves
 to in the consumer's app) and the pure `parseCacheControl` checks — so 27 test cases run
 twice and four once: 58 tests in all.
+
+The live suite (4 tests) runs against `api.github.com` and a real PNG from
+`raw.githubusercontent.com`, proving the server's own `Cache-Control`/`Vary` headers are
+parsed and honoured, that a byte-for-byte binary replay round-trips, and that a bogus
+`Authorization` never poisons the anonymous entry. Every live test is skipped unless
+`BLAZE_CACHE_LIVE=1` is set, so the default suite always runs offline.
 
 ## Documentation
 
