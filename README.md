@@ -773,7 +773,7 @@ await createCache({ wasm: wasmUrl });
 | Next.js / others | `?url` via `serverComponentsExternalPackages`, or serve the file yourself |
 
 If your bundler does **not** pre-bundle dependencies (or you exclude
-`@blaze-cache/core` from pre-bundling, as `examples/browser` does), omitting `wasm`
+`@blaze-cache/core` from pre-bundling, as the examples do), omitting `wasm`
 also works: the package resolves the binary relative to its own module URL.
 
 ## Repository layout
@@ -792,7 +792,12 @@ packages/
   integration-tests/     cross-integration tests: several packages, one shared cache
   <name>/test/           that package's Node test suite
 examples/
-  browser/               Vite + React demo with a mock API and a latency counter
+  core/                  Vite + React cache playground for @blaze-cache/core
+  axios/                 Vite + React demo for @blaze-cache/axios
+  fetch/                 Vite + React demo for @blaze-cache/fetch
+  ky/                    Vite + React demo for @blaze-cache/ky
+  react-query/           Vite + React demo for @blaze-cache/react-query
+  swr/                   Vite + React demo for @blaze-cache/swr
 benchmarks/
   cache/                 pnpm bench — blaze-cache vs quick-lru and the native Map
 .github/
@@ -812,7 +817,13 @@ pnpm test:live        # all six live suites against real public APIs
 pnpm bench            # blaze-cache vs quick-lru and the native Map (~40s)
 pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
 pnpm test:wasm        # wasm-pack test --node (the bindings, against the wasm crate)
-pnpm dev              # build, then serve the browser example
+pnpm dev              # build, then serve the ky example
+pnpm dev:core         # build, then serve the @blaze-cache/core playground
+pnpm dev:axios        # build, then serve the @blaze-cache/axios example
+pnpm dev:fetch        # build, then serve the @blaze-cache/fetch example
+pnpm dev:ky           # build, then serve the @blaze-cache/ky example
+pnpm dev:react-query  # build, then serve the @blaze-cache/react-query example
+pnpm dev:swr          # build, then serve the @blaze-cache/swr example
 pnpm clean            # remove build outputs
 ```
 
