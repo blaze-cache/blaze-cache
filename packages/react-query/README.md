@@ -206,6 +206,21 @@ hydrateBlazeQueryClient(cache, queryClient, dehydratedState, {
 });
 ```
 
+## Testing
+
+```sh
+pnpm --filter @blaze-cache/react-query test        # offline — stubbed fetcher, no network
+pnpm --filter @blaze-cache/react-query test:live   # live — real public API, needs the network
+```
+
+The offline suite drives real `QueryClient`s against stubbed fetchers, exercising the
+mirror exactly as TanStack drives it. The live suite (4 tests) swaps in the real
+`globalThis.fetch` against `api.github.com`, proving a real `queryFn` result is mirrored
+under TanStack's own hash, a second prefetch inside `staleTime` never reaches the
+network, a dehydrate → hydrate round trip restores the mirror with zero network calls,
+and an aborted fetch mirrors nothing. Every live test is skipped unless
+`BLAZE_CACHE_LIVE=1` is set, so the default suite always runs offline.
+
 ## Documentation
 
 Setup and the full integration reference live in the
