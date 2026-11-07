@@ -12,7 +12,7 @@ import type {
   TouchOptions,
 } from './types.js';
 import { CacheEventBus } from './events.js';
-import { initBlazeWasm, WasmCache } from './wasm.js';
+import { initBlazeWasm, keyScratch, WasmCache } from './wasm.js';
 import type { WasmInitInput } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
 import type { CachePersistence, IndexedDbOptions, PersistedRecord } from './persistence/types.js';
@@ -171,6 +171,13 @@ export interface BlazeCacheOptions {
  */
 export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   readonly #wasm: WasmCache;
+  /**
+   * Whether the instantiated module supports the raw-key fast path (pre-encoded keys that
+   * skip the per-call string allocation). Probed once during {@link create}; `false` for a
+   * caller-supplied `.wasm` binary that predates the `*Raw` bindings, which then keeps the
+   * ordinary string path.
+   */
+  readonly #raw: boolean;
   readonly #events = new CacheEventBus<V>(() => this.#syncDropTracking());
   /**
    * Mirrors {@link CacheEventBus.wantsDrops} onto the wasm core: `true` while the Rust
@@ -194,6 +201,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   private constructor(wasm: WasmCache) {
     this.#wasm = wasm;
+    this.#raw = keyScratch.enabled;
   }
 
   /**
@@ -220,7 +228,15 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * miss — from the caller's side there is no way to tell it apart from absence anyway.
    */
   get(key: string): V | undefined {
-    const value = this.#wasm.get(key);
+    let value: V | undefined;
+    if (this.#raw) {
+      // Pre-encode into the shared scratch: a repeated key costs one identity check instead
+      // of a wasm-side malloc + copy + free (see `KeyScratch`).
+      keyScratch.encode(key);
+      value = this.#wasm.getRaw(keyScratch.ptr, keyScratch.len) as V | undefined;
+    } else {
+      value = this.#wasm.get(key);
+    }
     // `hears` first: the payload (and the boundary-crossing bookkeeping around it) is only
     // built when a listener of that exact type — or a wildcard — exists.
     if (value === undefined) {
@@ -368,7 +384,16 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // No defensive copy of `tags`: the binding reads the array synchronously while building
     // the wasm call and never retains it, so the `readonly`→`string[]` cast below is safe.
     // Untagged writes share `NO_TAGS` (see its doc).
-    this.#wasm.set(key, value, options?.ttlMs ?? null, (options?.tags ?? NO_TAGS) as string[]);
+    const tags = (options?.tags ?? NO_TAGS) as string[];
+    const ttlMs = options?.ttlMs ?? null;
+    if (this.#raw && tags.length === 0) {
+      // Untagged write via the pre-encoded-key path: skips both the key allocation and the
+      // empty-tags array crossing — the two avoidable costs of the string `set`.
+      keyScratch.encode(key);
+      this.#wasm.setRaw(keyScratch.ptr, keyScratch.len, value, ttlMs);
+    } else {
+      this.#wasm.set(key, value, ttlMs, tags);
+    }
     if (this.#hasChangeConsumers) this.#notify({ type: 'set', key });
     // Capacity pressure is applied inside the wasm call: entries it dropped surface here.
     if (this.#dropTracking) this.#drainDrops();
@@ -436,7 +461,13 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   /** Removes `key`, returning whether it was there. */
   delete(key: string): boolean {
-    const removed = this.#wasm.delete(key);
+    let removed: boolean;
+    if (this.#raw) {
+      keyScratch.encode(key);
+      removed = this.#wasm.deleteRaw(keyScratch.ptr, keyScratch.len);
+    } else {
+      removed = this.#wasm.delete(key);
+    }
     if (removed && this.#hasChangeConsumers) this.#notify({ type: 'delete', key });
     return removed;
   }
