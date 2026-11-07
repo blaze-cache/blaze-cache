@@ -13,6 +13,7 @@
 #![allow(clippy::unused_unit)]
 
 use js_sys::Array;
+use std::cell::RefCell;
 use std::time::Duration;
 
 use blaze_cache_core::{Cache, EntryOptions};
@@ -21,6 +22,14 @@ use wasm_bindgen::prelude::*;
 /// Hard ceiling for a JS-supplied capacity: enough for any realistic workload, and small
 /// enough that the eager hash-map reservation in `Cache::new` can never approach wasm memory.
 pub const MAX_CAPACITY: usize = 1_000_000;
+
+thread_local! {
+    /// Host-writable bytes the `*Raw` methods read keys from — the storage behind
+    /// [`ensureScratch`]. Module-global (one per wasm instance, shared by every
+    /// `BlazeCache`), which is exactly what lets the TypeScript wrapper keep a single
+    /// "last encoded key" cache across cache instances.
+    static KEY_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// A JavaScript-visible Blaze Cache.
 #[wasm_bindgen]
@@ -209,6 +218,47 @@ impl BlazeCache {
         self.inner.remove(key).is_some()
     }
 
+    /// [`get`](Self::get) with the key already encoded into wasm memory by the host.
+    ///
+    /// The TypeScript wrapper encodes each distinct key once into the shared scratch (see
+    /// [`ensureScratch`]) and passes the offset/length, so a repeat lookup costs no
+    /// `passStringToWasm0` allocation — that malloc + copy + free was the single largest
+    /// component of a read.
+    ///
+    /// # Host contract
+    ///
+    /// `ptr`/`len` must address `len` bytes of valid UTF-8. The wrapper only ever passes
+    /// bytes it encoded from a JS string (ASCII fast path or `TextEncoder`), so the slice
+    /// below is valid by construction.
+    #[wasm_bindgen(js_name = getRaw)]
+    pub fn get_raw(&mut self, ptr: u32, len: u32) -> Option<JsValue> {
+        let key = unsafe { key_from_scratch(ptr, len) };
+        self.inner.get(key).cloned()
+    }
+
+    /// [`set`](Self::set) with a pre-encoded key and **no tags** — the untagged write fast
+    /// path. Untagged writes skip the `Vec<String>` boundary crossing entirely; use
+    /// [`set`](Self::set) when the entry carries tags.
+    #[wasm_bindgen(js_name = setRaw)]
+    pub fn set_raw(&mut self, ptr: u32, len: u32, value: JsValue, ttl_ms: Option<f64>) {
+        let key = unsafe { key_from_scratch(ptr, len) };
+        let mut options = EntryOptions::new();
+        if let Some(ms) = ttl_ms {
+            if ms.is_finite() && ms > 0.0 {
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+            }
+        }
+        self.inner.insert_borrowed(key, value, options);
+    }
+
+    /// [`delete`](Self::delete) with a pre-encoded key. See [`getRaw`](Self::get_raw) for
+    /// the host contract.
+    #[wasm_bindgen(js_name = deleteRaw)]
+    pub fn delete_raw(&mut self, ptr: u32, len: u32) -> bool {
+        let key = unsafe { key_from_scratch(ptr, len) };
+        self.inner.remove(key).is_some()
+    }
+
     /// Full view of one key — value, remaining TTL (ms) and tags — or `undefined` when the key
     /// is missing or expired. Does not affect statistics or eviction state.
     #[wasm_bindgen(js_name = entry)]
@@ -367,6 +417,44 @@ impl BlazeCache {
 pub fn set_panic_hook() {
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
+}
+
+/// Ensures the shared key scratch holds at least `len` bytes and returns its offset in
+/// wasm memory.
+///
+/// The host encodes keys here — once per *distinct* key; a repeated key is served from the
+/// wrapper's last-key cache with no write at all — and hands the offset to
+/// [`getRaw`](BlazeCache::get_raw)/[`setRaw`](BlazeCache::set_raw)/
+/// [`deleteRaw`](BlazeCache::delete_raw). That is what keeps a read from paying
+/// `passStringToWasm0`'s malloc + copy + free on every single call.
+///
+/// The returned offset stays valid until the next `ensureScratch` that has to grow the
+/// buffer; `memory.grow` never moves it (wasm memory contents are preserved across
+/// growth), so the wrapper only has to refresh its `Uint8Array` view, not the pointer.
+#[wasm_bindgen(js_name = ensureScratch)]
+pub fn ensure_scratch(len: usize) -> u32 {
+    KEY_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        if scratch.len() < len {
+            scratch.resize(len, 0);
+        }
+        scratch.as_mut_ptr() as u32
+    })
+}
+
+/// Reinterprets host-written scratch bytes as the key slice a lookup needs.
+///
+/// # Safety
+///
+/// `ptr`/`len` must address `len` bytes of valid UTF-8 — see the host contract on
+/// [`getRaw`](BlazeCache::get_raw). The scratch buffer itself is never freed while the
+/// wasm module lives, so the slice outlives any single call.
+unsafe fn key_from_scratch(ptr: u32, len: u32) -> &'static str {
+    // SAFETY: caller guarantees UTF-8 validity; `from_raw_parts` upholds the slice invariants
+    // for any in-range (ptr, len) the host passes, and wasm memory cannot be unmapped.
+    unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr as *const u8, len as usize))
+    }
 }
 
 fn set_field(target: &js_sys::Object, key: &str, value: &JsValue) {
