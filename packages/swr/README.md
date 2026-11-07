@@ -10,11 +10,11 @@ stale-while-revalidate still works.
 ## Install
 
 ```sh
-npm install @blaze-cache/swr@beta   # swr ≥ 2 is a peer dependency
+npm install @blaze-cache/swr   # swr ≥ 2 is a peer dependency
 ```
 
-`@beta` is npm's dist-tag for the prerelease; drop it to install the last stable
-release.
+`@beta` is npm's dist-tag for prereleases; append it to install a prerelease
+instead of this stable release.
 
 ## Quick start
 
