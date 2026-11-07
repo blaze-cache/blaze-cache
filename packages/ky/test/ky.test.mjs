@@ -139,6 +139,24 @@ for (const { label, ky, prefix } of versions) {
       assert.ok(record.storedAt <= record.freshUntil, 'storedAt ≤ freshUntil');
     });
 
+    it('a read issued straight after a MISS waits for the write and hits', async () => {
+      const cache = await makeCache();
+      const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
+      const api = hookApi(cache, net, { ttlMs: TTL_MS });
+
+      // Deliberately *not* settled: `store` runs fire-and-forget, so without the
+      // in-flight gate this second read races the write — and on a runtime that resolves
+      // the write later (Node 22 does, Node 24 does not) it loses, paying for a network
+      // call the cache already holds the answer to. `settle()` above is courtesy for
+      // assertions that observe the store itself; this one pins the gate instead.
+      const miss = await api.get(USERS);
+      const hit = await api.get(USERS);
+
+      assert.equal(calls.length, 1, 'the second read found the entry the first one wrote');
+      assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
+      assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
+    });
+
     it('never caches methods outside `methods`', async () => {
       const cache = await makeCache();
       const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
