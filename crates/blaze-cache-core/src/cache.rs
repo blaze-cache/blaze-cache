@@ -270,9 +270,12 @@ where
                 return None;
             }
         }
-        self.nodes[idx].as_mut().expect("live slot").visited = true;
+        // One slot access for both the visited bit and the value: a single bounds check and
+        // a single `expect` where the old code re-indexed the slab twice.
+        let node = self.nodes[idx].as_mut().expect("live slot");
+        node.visited = true;
         self.stats.hits += 1;
-        Some(&self.nodes[idx].as_ref().expect("live slot").value)
+        Some(&node.value)
     }
 
     /// Fetches a value **without** recording a hit or a miss, and without marking the entry
@@ -497,6 +500,41 @@ where
     /// Re-inserting an existing key refreshes its value, its deadline **and** its tags, and
     /// re-queues it as the newest entry (unvisited).
     pub fn insert_with(&mut self, key: K, value: V, options: EntryOptions) -> Option<V> {
+        let existing = self.index.get(&key).copied();
+        self.insert_at(existing, Some(key), value, options)
+    }
+
+    /// [`insert_with`](Self::insert_with) that borrows the key and materialises a `K` only
+    /// when the entry is genuinely new.
+    ///
+    /// An overwrite therefore allocates no key at all — the difference matters when keys
+    /// arrive as `&str` (the wasm binding stores `String` keys but looks every one of them
+    /// up by slice first), where the owned variant would clone the key purely to throw it
+    /// away again on the very next line.
+    pub fn insert_borrowed<Q>(&mut self, key: &Q, value: V, options: EntryOptions) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized + ToOwned<Owned = K>,
+    {
+        match self.index.get(key).copied() {
+            Some(idx) => self.insert_at(Some(idx), None, value, options),
+            None => self.insert_at(None, Some(key.to_owned()), value, options),
+        }
+    }
+
+    /// Shared body of [`insert_with`](Self::insert_with) and
+    /// [`insert_borrowed`](Self::insert_borrowed).
+    ///
+    /// `existing` is the already-resolved index slot (`None` for a new key) so neither
+    /// caller hashes twice, and `owned` supplies the key a brand-new entry needs — `None`
+    /// on an overwrite, which must not allocate one.
+    fn insert_at(
+        &mut self,
+        existing: Option<usize>,
+        owned: Option<K>,
+        value: V,
+        options: EntryOptions,
+    ) -> Option<V> {
         // The clock is only needed when a TTL is actually requested — a plain write must not
         // pay a wasm→JS `performance.now()` call just to discard the result.
         let expires_at = options
@@ -507,7 +545,7 @@ where
             .tags
             .intern_all(options.tags_ref().iter().map(String::as_str));
 
-        let previous = match self.index.get(&key).copied() {
+        let previous = match existing {
             Some(idx) => {
                 let (old_expires_at, old_tag_ids) = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
@@ -538,6 +576,7 @@ where
                 ))
             }
             None => {
+                let key = owned.expect("insert_at: a new entry needs an owned key");
                 // Make room *before* publishing the node: a write must never be able to
                 // evict the entry it just created.
                 while self.index.len() >= self.capacity && self.evict_one().is_some() {}
@@ -614,8 +653,12 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let idx = *self.index.get(key)?;
-        let (_, value) = self.free(idx);
+        // One hash total: the index entry goes away under the caller's key, so `release`
+        // must not re-hash `node.key` on the way out — the old path hashed the same key a
+        // second time on every delete.
+        let idx = self.index.remove(key)?;
+        self.unlink(idx);
+        let (_, value) = self.release(idx, false);
         self.stats.invalidations += 1;
         Some(value)
     }
@@ -703,18 +746,29 @@ where
 
     /// Unlinks `idx` if it is still linked, then frees its slab slot.
     fn free(&mut self, idx: usize) -> (K, V) {
+        self.unlink(idx);
+        self.release(idx, true)
+    }
+
+    /// Unlinks `idx` from the SIEVE queue when it is still linked.
+    fn unlink(&mut self, idx: usize) {
         if self.queue.is_linked(&self.nodes, idx) {
             self.queue.unlink(&mut self.nodes, idx);
         }
-        self.release(idx)
     }
 
-    /// Removes `idx` from the index and slab. The caller must have unlinked it already.
-    fn release(&mut self, idx: usize) -> (K, V) {
+    /// Removes `idx` from the slab. The caller must have unlinked it already.
+    ///
+    /// `indexed` says whether the index still maps the key to `idx`: `false` when the
+    /// caller already removed the entry under its own query key (see [`remove`](Self::remove)),
+    /// which is what keeps a delete down to a single hash of the key.
+    fn release(&mut self, idx: usize, indexed: bool) -> (K, V) {
         let node = self.nodes[idx].take().expect("release of a free slot");
         // Single point where an entry dies: keep the fast-path counter in step.
         self.shift_ttl(node.expires_at, None);
-        self.index.remove(&node.key);
+        if indexed {
+            self.index.remove(&node.key);
+        }
         for &id in &node.tags {
             self.tags.detach(id, idx);
         }
@@ -734,7 +788,7 @@ where
         let idx = self.queue.evict_candidate(&mut self.nodes, now)?;
         let was_expired =
             now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now));
-        let (key, value) = self.release(idx); // `evict_candidate` already unlinked it
+        let (key, value) = self.release(idx, true); // `evict_candidate` already unlinked it
         if was_expired {
             self.stats.expirations += 1;
             self.log_drop(key, value, DropReason::Expired);
