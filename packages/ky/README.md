@@ -13,11 +13,11 @@ shape they are called with, from one implementation.
 ## Install
 
 ```sh
-npm install @blaze-cache/ky@beta @blaze-cache/core@beta
+npm install @blaze-cache/ky @blaze-cache/core
 ```
 
-`@beta` is npm's dist-tag for the prerelease; drop it to install the last stable
-release. `ky` ≥ 1.14 is a peer dependency — v1 and v2 both work.
+`@beta` is npm's dist-tag for prereleases; append it to install a prerelease
+instead of this stable release. `ky` ≥ 1.14 is a peer dependency — v1 and v2 both work.
 
 ## Quick start
 

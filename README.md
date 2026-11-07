@@ -47,17 +47,16 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core@beta         # prerelease — 0.3.0-beta.0
-npm install @blaze-cache/axios@beta         # prerelease — 0.3.0-beta.0
-npm install @blaze-cache/fetch@beta         # prerelease — 0.3.0-beta.0
-npm install @blaze-cache/ky@beta            # prerelease — 0.3.0-beta.0
-npm install @blaze-cache/react-query@beta   # prerelease — 0.3.0-beta.0
-npm install @blaze-cache/swr@beta           # prerelease — 0.3.0-beta.0
+npm install @blaze-cache/core         # stable — 0.3.0
+npm install @blaze-cache/axios         # stable — 0.3.0
+npm install @blaze-cache/fetch         # stable — 0.3.0
+npm install @blaze-cache/ky            # stable — 0.3.0
+npm install @blaze-cache/react-query   # stable — 0.3.0
+npm install @blaze-cache/swr           # stable — 0.3.0
 ```
 
-`pnpm add …` and `yarn add …` are equivalent. The `@beta` dist-tag points at the
-prerelease this branch documents; drop it (`@blaze-cache/core`, no tag) to install
-the last stable release instead.
+`pnpm add …` and `yarn add …` are equivalent. These commands install the stable
+0.3.0 line; append `@beta` to any of them to install a prerelease instead.
 
 | Package | Expects as a peer dependency |
 | --- | --- |
@@ -248,7 +247,7 @@ polling a key can never turn it into an eviction-proof resident.
 
 Five reads answer "what is in there, and for how long?" — none of them counts a hit or
 a miss. All are available in the Rust core (`blaze-cache-core`) and exposed through the
-wasm bindings as of `0.3.0-beta.0`:
+wasm bindings as of `0.3.0`:
 
 ```ts
 const cache = await createCache({ capacity: 1000 });
