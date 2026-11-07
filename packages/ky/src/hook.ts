@@ -77,6 +77,17 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
    */
   const servedFromCache = new WeakSet<Request>();
   /**
+   * Writes this closure started but has not finished, by key.
+   *
+   * `store` is deliberately fire-and-forget (see `afterResponse`), so a read issued straight
+   * after a MISS can reach `beforeRequest` while the entry is still buffering. This gate
+   * records that in-flight write so such a reader waits for it instead of racing it to the
+   * network — the same rendezvous `@blaze-cache/fetch` keeps with its `inFlight` map, and
+   * the reason its half of the shared-cache suite never misses. A later write for the same
+   * key replaces the entry; each write retires only its own gate (identity-checked).
+   */
+  const pendingWrites = new Map<string, Promise<void>>();
+  /**
    * Whether a cache-layer failure has been reported already.
    *
    * A throwing `cache.get`/`cache.set` or callback must never fail a request the network
@@ -108,7 +119,7 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     }
   }
 
-  const beforeRequest: BlazeKyBeforeRequestHook = (requestOrState) => {
+  const beforeRequest: BlazeKyBeforeRequestHook = async (requestOrState) => {
     const request = unwrapRequest(requestOrState);
     if (!request || !methods.has(request.method.toUpperCase())) return undefined;
 
@@ -128,7 +139,16 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     if (bypassRead) return undefined;
 
     const key = keyOf(request);
-    const record = read(key);
+    let record = read(key);
+    // Not serveable as it stands — absent, foreign-shaped, or past its window — so if a
+    // write for *this* key is still in flight, wait it out before deciding: what lands
+    // next may be exactly the entry this read is looking for, and a stale-entry delete
+    // must never overtake a write that just made it fresh. A record that already serves
+    // never waits, and a caller that demanded the network never reaches this code at all.
+    if (!canServe(record, request)) {
+      const pending = pendingWrites.get(key);
+      if (pending && (await settleOrAbort(pending, request.signal))) record = read(key);
+    }
     if (!isKyRecord(record)) return undefined;
 
     // `force-cache` means "use it whatever its age"; otherwise freshness decides.
@@ -180,7 +200,9 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
           // body can be consumed exactly once. Deliberately fire-and-forget — the caller's
           // branch of the tee delivers bytes while `store` buffers its own, so nothing
           // about this response's latency depends on the write, and the record is complete
-          // (never half-written) by the time `cache.set` runs.
+          // (never half-written) by the time `cache.set` runs. Fire-and-forget, not
+          // unobserved: the gate below lets an immediate re-read wait for exactly this
+          // write instead of racing it.
           let stored: Response | undefined;
           let storeKey: string | undefined;
           try {
@@ -195,7 +217,16 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
             warnCacheFailure(error);
           }
           if (stored !== undefined && storeKey !== undefined) {
-            void store(stored, request, storeKey).catch(warnCacheFailure);
+            // Fire-and-forget for *this* response's latency, but never unobserved: the
+            // write opens a gate an immediate re-read can wait on (see `pendingWrites`),
+            // and the gate retires only once the write has settled — over whatever it
+            // left behind, an entry or nothing at all.
+            const gateKey = storeKey;
+            const write = store(stored, request, gateKey).catch(warnCacheFailure);
+            void write.finally(() => {
+              if (pendingWrites.get(gateKey) === write) pendingWrites.delete(gateKey);
+            });
+            pendingWrites.set(gateKey, write);
           }
         }
       }
@@ -319,6 +350,49 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
 /** Successful responses only. The {@link BlazeKyCacheOptions.methods} gate has already applied. */
 function defaultShouldCache(response: Response): boolean {
   return response.status >= 200 && response.status < 300;
+}
+
+/**
+ * Would this record answer `request` — well-shaped for this adapter, and (unless the
+ * caller demanded `force-cache`) still inside its freshness window?
+ *
+ * The read path asks this twice: once to decide whether a pending write is worth waiting
+ * for, once — after any wait — to decide between a replay and the stale-entry delete.
+ */
+function canServe(value: KyCacheRecord | undefined, request: Request): value is KyCacheRecord {
+  return (
+    isKyRecord(value) &&
+    (request.cache === 'force-cache' || Date.now() <= value.freshUntil)
+  );
+}
+
+/**
+ * Waits for `pending` to settle — or gives up the moment `signal` aborts, reporting
+ * whether the wait actually completed.
+ *
+ * The waiter is a request that would otherwise miss; letting it hang on a body still
+ * buffering *after* it aborted would trade a prompt `AbortError` for a stall. A rejection
+ * still counts as settled: `store` failures are swallowed by `warnCacheFailure`, and the
+ * gate then opens over an empty cache — a miss, never a crash, never a hang.
+ */
+function settleOrAbort(
+  pending: Promise<unknown>,
+  signal: AbortSignal | null | undefined,
+): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (!signal) return pending.then(() => true, () => true);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(false);
+    };
+    const opened = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(opened, opened);
+  });
 }
 
 /**
