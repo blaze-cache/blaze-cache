@@ -91,6 +91,10 @@ export class CacheEventBus<V = any> {
    * tell you *after* the (possibly expensive) event object exists.
    */
   hears(type: CacheEventType): boolean {
+    // The hot-path gate: a cache with no subscribers at all answers in one integer
+    // comparison, skipping the per-type `Map` lookup the wildcard check would otherwise
+    // fall through to.
+    if (this.#size === 0) return false;
     return this.#wildcard.size > 0 || (this.#typed.get(type)?.size ?? 0) > 0;
   }
 
