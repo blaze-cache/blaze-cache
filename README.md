@@ -14,8 +14,8 @@ A full-featured client-side cache for the browser: TTL, tags, SIEVE eviction, an
 
 The hot path — storage, TTL bookkeeping, tag indexing and eviction — runs in Wasm.
 The TypeScript layer adds the browser glue: one-time module initialisation, optional
-IndexedDB persistence, an axios adapter, drop-in `fetch()` and `ky` wrappers, and TanStack
-Query and SWR integrations.
+IndexedDB persistence, an axios adapter, drop-in `fetch()`, `ky`, and `ofetch` wrappers, and
+TanStack Query and SWR integrations.
 
 ```ts
 import { createCache } from '@blaze-cache/core';
@@ -39,6 +39,7 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 | [`@blaze-cache/axios`](packages/axios) | An axios adapter that caches HTTP responses (honouring `Cache-Control`) |
 | [`@blaze-cache/fetch`](packages/fetch) | A drop-in `fetch()` replacement with automatic HTTP caching |
 | [`@blaze-cache/ky`](packages/ky) | A `ky.extend` hook (`beforeRequest`/`afterResponse`) that caches HTTP responses |
+| [`@blaze-cache/ofetch`](packages/ofetch) | Caches `ofetch`/`$fetch` responses with the same `Cache` (`HIT`/`MISS`, `Cache-Control`) |
 | [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache |
 | [`@blaze-cache/swr`](packages/swr) | SWR middleware + `useSWR` that paints instantly from cache and persists fetches |
 
@@ -51,6 +52,7 @@ npm install @blaze-cache/core         # stable — 0.3.0
 npm install @blaze-cache/axios         # stable — 0.3.0
 npm install @blaze-cache/fetch         # stable — 0.3.0
 npm install @blaze-cache/ky            # stable — 0.3.0
+npm install @blaze-cache/ofetch        # stable — 0.3.0
 npm install @blaze-cache/react-query   # stable — 0.3.0
 npm install @blaze-cache/swr           # stable — 0.3.0
 ```
@@ -64,6 +66,7 @@ npm install @blaze-cache/swr           # stable — 0.3.0
 | `@blaze-cache/axios` | `axios` ≥ 1.7 |
 | `@blaze-cache/fetch` | — (any `fetch`-shaped function) |
 | `@blaze-cache/ky` | `ky` ≥ 1.14 (v1 or v2 — one hook supports both) |
+| `@blaze-cache/ofetch` | `ofetch` ≥ 1.0 |
 | `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5 |
 | `@blaze-cache/swr` | `swr` ≥ 2 |
 
@@ -641,6 +644,57 @@ What you get:
   then miss. For SWR (with an `STALE` marker) use [`@blaze-cache/fetch`](#fetch).
 
 Full option reference: [`packages/ky`](packages/ky).
+
+## ofetch
+
+Same cache, for [ofetch](https://github.com/unjs/ofetch) / `$fetch` (the HTTP client behind
+Nuxt and Nitro). Wrap an existing instance with `blazeOfetch(ofetch, cache)` or create one
+from scratch with `createBlazeOfetch(cache, options)` — every successful `GET` is stored in
+the same `Cache` and replayed from it:
+
+```ts
+import { ofetch } from 'ofetch';
+import { BlazeCache } from '@blaze-cache/core';
+import { blazeOfetch, createBlazeOfetch } from '@blaze-cache/ofetch';
+
+const cache = await BlazeCache.create({ wasmSource });
+
+// wrap an existing instance (including ofetch.create() ones)
+const api = blazeOfetch(ofetch.create({ baseURL: 'https://api.example.com/v1' }), cache, {
+  ttlMs: 30_000,
+  tags: () => ['v1'],
+});
+
+// helper style — ofetch defaults and cache options in one bag
+const api2 = createBlazeOfetch(cache, {
+  baseURL: 'https://api.example.com/v1',
+  ttlMs: 30_000,
+  tags: () => ['v1'],
+});
+
+await api('/users/42');      // MISS — network, parsed JSON stored in the background
+await api('/users/42');      // HIT  — replayed from cache
+await api.raw('/users/42');  // HIT  — FetchResponse with x-blaze-cache: HIT
+```
+
+What you get:
+
+* Custom keys are `key: ({ method, url, headers, ... }) => string`; the default is
+  method + resolved URL (after `baseURL`/`query`) plus a hash of `varyHeaders`, exported as
+  `defaultCacheKey`. Tags are `tags: (response, ctx) => readonly string[]` and TTL is
+  `ttlMs: number | (response, ctx) => number`; `markerHeader`, `varyHeaders`,
+  `shouldCache`, and `cacheControl` behave like the other HTTP adapters.
+* `Cache-Control` is honoured on both sides when `cacheControl` is on (the default):
+  request `no-store`/`no-cache`/`max-age=0` skip the read (and `no-store` also skips the
+  write); response `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache`
+  (including per-field `no-cache="…"`) stop storage. `Vary` is always honoured.
+* The wrapped instance keeps ofetch's full API — call it directly for parsed data, `.raw()`
+  for the `FetchResponse` (with the `x-blaze-cache` marker), `.native` for the underlying
+  fetch, and `.create()` for derived instances (which remain cached).
+* No stale-while-revalidate here. For SWR (with an `STALE` marker) use
+  [`@blaze-cache/fetch`](#fetch).
+
+Full option reference: [`packages/ofetch`](packages/ofetch).
 
 ## TanStack Query
 
