@@ -27,6 +27,7 @@
       "@blaze-cache/axios": ["./packages/axios/src/index.ts"],
       "@blaze-cache/fetch": ["./packages/fetch/src/index.ts"],
       "@blaze-cache/ky": ["./packages/ky/src/index.ts"],
+      "@blaze-cache/ofetch": ["./packages/ofetch/src/index.ts"],
       "@blaze-cache/react-query": ["./packages/react-query/src/index.ts"],
       "@blaze-cache/swr": ["./packages/swr/src/index.ts"]
     }
