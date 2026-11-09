@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": [],
+    // Resolve workspace packages through their built declarations, so `dist` only ever
+    // contains this package's own files.
+    "paths": {}
+  },
+  "include": ["src/**/*.ts"]
+}
