@@ -37,6 +37,56 @@ export interface CachedAxiosResponse<T = unknown, D = unknown> extends AxiosResp
   fromBlazeCache: boolean;
 }
 
+/** Per-request overrides passed via `config.blazeCache`. */
+export interface BlazeAxiosRequestOptions {
+  /**
+   * Enable or disable caching for this request.
+   *
+   * `false` bypasses the cache read/write for this request (it still performs any
+   * {@link invalidateTags} after the network response). Omit/`true` to follow the
+   * adapter defaults.
+   */
+  enabled?: boolean;
+
+  /**
+   * Freshness window for this request's cached response, in milliseconds.
+   *
+   * Overrides the adapter-level `ttlMs`. Ignored when the response carries
+   * `Cache-Control: max-age` and `honourCacheControl` is on. `<= 0` means "do not store".
+   */
+  ttlMs?: number | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => number);
+
+  /** Tags attached to this request's stored response. Overrides the adapter-level `tags`. */
+  tags?: readonly string[] | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
+
+  /**
+   * Cache key for this request. A string is used as-is; a function receives the
+   * (post-interceptor) config. Overrides the adapter-level key.
+   */
+  key?: string | ((config: InternalAxiosRequestConfig) => string);
+
+  /**
+   * Request headers whose values participate in the cache key for this request.
+   * Overrides the adapter-level `varyHeaders`.
+   */
+  varyHeaders?: readonly string[];
+
+  /**
+   * Tags to invalidate on the cache **after** this request completes against the
+   * network (typically used on mutations: POST/PUT/PATCH/DELETE).
+   *
+   * Requires a cache that implements `invalidateTags` (e.g. `BlazeCache` from
+   * `@blaze-cache/core`); silently ignored otherwise.
+   */
+  invalidateTags?: readonly string[];
+
+  /**
+   * Force a network round-trip, bypassing the cache read (the fresh response may still
+   * be stored, subject to normal rules). Equivalent to a "reload".
+   */
+  forceRefresh?: boolean;
+}
+
 /** Options for {@link blazeAdapter}. */
 export interface BlazeAxiosCacheOptions {
   /** Cache instance (or any {@link BlazeCacheLike} implementation). */
@@ -51,12 +101,35 @@ export interface BlazeAxiosCacheOptions {
   adapter?: AxiosAdapter;
 
   /**
+   * HTTP methods eligible for caching. Default: `['GET', 'HEAD']`.
+   *
+   * Applied before {@link shouldCache}. Per-request `blazeCache.enabled = true` can
+   * still cache a method outside this list when paired with a permissive `shouldCache`.
+   */
+  methods?: readonly string[];
+
+  /**
    * Freshness window for a cached response, in milliseconds.
    *
-   * Ignored when the response carries `Cache-Control: max-age`, which wins.
-   * Default: `60_000`. A value `<= 0` means "do not store".
+   * Ignored when the response carries `Cache-Control: max-age` and Cache-Control
+   * honouring is enabled. Default: `30_000`. A value `<= 0` means "do not store".
    */
   ttlMs?: number | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => number);
+
+  /**
+   * Honour `Cache-Control` (and `Age`) on both the request and the response.
+   * Default: `true`.
+   *
+   * - request `no-store` → neither read nor write
+   * - request `no-cache` / `max-age=0` → skip read (revalidate intent)
+   * - response `max-age` → overrides `ttlMs` (minus `Age`)
+   * - response `no-store` / `no-cache` → never stored
+   *
+   * `cacheControl` is accepted as an alias.
+   */
+  honourCacheControl?: boolean;
+  /** Alias for {@link honourCacheControl}. */
+  cacheControl?: boolean;
 
   /**
    * Builds the cache key. Receives the final (post-interceptor) config.
@@ -69,12 +142,12 @@ export interface BlazeAxiosCacheOptions {
   /**
    * Decide whether a response is worth storing.
    *
-   * Default: `GET` requests answering `2xx` without a `Cache-Control: no-store`/`no-cache`.
+   * Default: methods in {@link methods} answering `2xx`.
    */
   shouldCache?: (response: AxiosResponse, config: InternalAxiosRequestConfig) => boolean;
 
-  /** Tags attached to stored responses. Default: `['axios', '<METHOD> <resolved url>']` — the resolved URL, so it matches the equivalent `@blaze-cache/fetch` tag for the same resource. */
-  tags?: (response: AxiosResponse, config: InternalAxiosRequestConfig) => string[];
+  /** Tags attached to stored responses. Default: `['axios', '<method> <resolved url>']`. */
+  tags?: readonly string[] | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
 
   /**
    * Request headers whose values participate in the cache key.
@@ -99,6 +172,23 @@ export interface BlazeAxiosCacheLike {
    * without it a non-expiring store would keep dead weight it is never allowed to serve.
    */
   delete?(key: string): boolean | void;
+  /**
+   * Optional tag-based invalidation (e.g. `BlazeCache` from `@blaze-cache/core`).
+   * Used by per-request `blazeCache.invalidateTags` on mutations.
+   */
+  invalidateTags?(...tags: string[]): string[] | void;
 }
 
 export type { AxiosAdapter, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig };
+
+// Augment axios so `config.blazeCache` and `response.fromBlazeCache` are typed for consumers.
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** Per-request Blaze Cache options (or `false` to disable caching for this request). */
+    blazeCache?: BlazeAxiosRequestOptions | false;
+  }
+  interface AxiosResponse {
+    /** `true` when the response came from cache instead of the network. */
+    fromBlazeCache?: boolean;
+  }
+}

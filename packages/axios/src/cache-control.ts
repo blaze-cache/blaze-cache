@@ -8,6 +8,13 @@ export interface CacheControl {
   maxAgeMs: number | undefined;
 }
 
+/** The value used when Cache-Control honouring is disabled or a header is absent. */
+export const NO_DIRECTIVES: CacheControl = Object.freeze({
+  noStore: false,
+  noCache: false,
+  maxAgeMs: undefined,
+});
+
 /**
  * Minimal `Cache-Control` parser — only the directives a client-side cache must honour.
  *

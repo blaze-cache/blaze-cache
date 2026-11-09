@@ -7,21 +7,25 @@ import type {
   InternalAxiosRequestConfig,
 } from 'axios';
 
-import { parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
+import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
 import { defaultCacheKey, resolveRequestUrl } from './key.js';
 import { readHeader, toAxiosHeaders, toPlainHeaders } from './headers.js';
 import type {
   AxiosCacheRecord,
   BlazeAxiosCacheLike,
   BlazeAxiosCacheOptions,
+  BlazeAxiosRequestOptions,
   CachedAxiosResponse,
 } from './types.js';
 
 /** Freshness window when neither the option nor `Cache-Control` says otherwise. */
-const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_TTL_MS = 30_000;
+
+/** Only these methods are cached unless the caller says otherwise. */
+const DEFAULT_METHODS: readonly string[] = ['GET', 'HEAD'];
 
 /** Headers whose values split the cache unless the caller says otherwise. */
-const DEFAULT_VARY_HEADERS: readonly string[] = ['authorization'];
+const DEFAULT_VARY_HEADERS: readonly string[] = ['Authorization'];
 
 const HIT = 'HIT';
 const MISS = 'MISS';
@@ -35,8 +39,18 @@ const MISS = 'MISS';
  * mirrors carry neither), and a read must neither serve nor destroy it. On a
  * single-integration cache this is always true; the check exists for the shared one.
  */
-function isAxiosRecord(value: AxiosCacheRecord): value is AxiosCacheRecord {
-  return typeof value.freshUntil === 'number' && 'data' in value;
+function isAxiosRecord(value: AxiosCacheRecord | undefined): value is AxiosCacheRecord {
+  return typeof value?.freshUntil === 'number' && 'data' in value;
+}
+
+function toUpperMethods(methods: readonly string[] | undefined): Set<string> {
+  return new Set((methods ?? DEFAULT_METHODS).map((m) => m.toUpperCase()));
+}
+
+function getRequestOptions(config: InternalAxiosRequestConfig): BlazeAxiosRequestOptions | undefined {
+  const raw = (config as InternalAxiosRequestConfig & { blazeCache?: BlazeAxiosRequestOptions | false }).blazeCache;
+  if (raw === false) return { enabled: false };
+  return raw;
 }
 
 /**
@@ -53,46 +67,83 @@ function isAxiosRecord(value: AxiosCacheRecord): value is AxiosCacheRecord {
  */
 export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
   const cache: BlazeAxiosCacheLike = options.cache;
-  const varyHeaders = options.varyHeaders ?? DEFAULT_VARY_HEADERS;
+  const globalMethods = toUpperMethods(options.methods);
+  const globalVaryHeaders = options.varyHeaders ?? DEFAULT_VARY_HEADERS;
   const markerHeader = options.markerHeader === undefined ? 'x-blaze-cache' : options.markerHeader;
+  const honourCacheControl = options.honourCacheControl ?? options.cacheControl ?? true;
   const network = options.adapter ?? getAdapter(['xhr', 'http', 'fetch']);
-  const keyOf = (config: InternalAxiosRequestConfig): string =>
-    options.key ? options.key(config) : defaultCacheKey(config, varyHeaders);
-  const shouldCache = options.shouldCache ?? defaultShouldCache;
 
   return async function blazeCacheAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse> {
-    const requestControl = parseCacheControl(readHeader(config.headers, 'Cache-Control'));
-    // `no-store`: neither read nor write. `no-cache`: may store, but must not serve blindly.
-    // `max-age=0`: the caller declares that nothing stored is fresh any more (RFC 9111
-    // §5.2.2.1) — and with no conditional requests available here, the only honest answer
-    // is to skip the read and go to the network.
+    const reqOpts = getRequestOptions(config);
+    const method = (config.method ?? 'get').toUpperCase();
+    const enabled = reqOpts?.enabled ?? true;
+    const methods = globalMethods;
+    // Per-request `enabled: true` can opt a method in; `enabled: false` opts out entirely.
+    const methodAllowed = methods.has(method) || reqOpts?.enabled === true;
+    const cacheable = enabled && methodAllowed && config.responseType !== 'stream';
+
+    const varyHeaders = reqOpts?.varyHeaders ?? globalVaryHeaders;
+    const keyOf = (): string => {
+      if (typeof reqOpts?.key === 'string') return reqOpts.key;
+      if (typeof reqOpts?.key === 'function') return reqOpts.key(config);
+      return options.key ? options.key(config) : defaultCacheKey(config, varyHeaders);
+    };
+    const shouldCache = options.shouldCache ?? ((response) => response.status >= 200 && response.status < 300);
+    const tagsFor = options.tags;
+
+    // --- mutation/side-effect invalidation (runs after network, even if not cacheable) ---
+    const invalidateTags = (tags: readonly string[] | undefined) => {
+      if (!tags || tags.length === 0) return;
+      if (typeof cache.invalidateTags !== 'function') return;
+      try {
+        cache.invalidateTags(...tags);
+      } catch (error) {
+        console.warn('[blaze-cache] tag invalidation failed', error);
+      }
+    };
+
+    if (!cacheable) {
+      const response = await network(config);
+      if (markerHeader) {
+        response.headers = toAxiosHeaders(response.headers).set(markerHeader, MISS);
+      }
+      (response as CachedAxiosResponse).fromBlazeCache = false;
+      invalidateTags(reqOpts?.invalidateTags);
+      return response;
+    }
+
+    const requestControl = honourCacheControl
+      ? parseCacheControl(readHeader(config.headers, 'Cache-Control'))
+      : NO_DIRECTIVES;
+    // `no-store`: neither read nor write. `no-cache` / `max-age=0`: skip read (revalidate intent).
     const skipWrite = requestControl.noStore;
     const skipRead =
-      requestControl.noStore || requestControl.noCache || requestControl.maxAgeMs === 0;
-    const key = keyOf(config);
+      requestControl.noStore || requestControl.noCache || requestControl.maxAgeMs === 0 || reqOpts?.forceRefresh === true;
 
-    if (!skipRead) {
+    let key: string | undefined;
+    if (!skipRead || !skipWrite) {
+      try {
+        key = keyOf();
+      } catch (error) {
+        console.warn('[blaze-cache] cache key generation failed — falling back to the network', error);
+        key = undefined;
+      }
+    }
+
+    if (!skipRead && key !== undefined) {
       let cached: CachedAxiosResponse | undefined;
       try {
         const record = cache.get(key);
-        if (record && isAxiosRecord(record)) {
+        if (isAxiosRecord(record)) {
           if (Date.now() <= record.freshUntil) {
             cached = cachedResponse(record, config, markerHeader);
           } else {
-            // Past its own deadline — the store itself may never expire anything (the types
-            // bless a plain `Map` shim, which drops nothing), so *our* record is dropped
-            // here. Left alone it would linger as dead weight that nothing is allowed to
-            // serve. A value that is not ours (see `isAxiosRecord`) is never deleted: a
-            // read must not destroy an entry another integration wrote to a colliding key.
+            // Past its own deadline — drop our stale record (but never a foreign one).
             cache.delete?.(key);
           }
         }
       } catch (error) {
-        // A cache that throws must cost one extra request — never a failed response.
-        console.warn(
-          '[blaze-cache] reading from the cache failed — falling back to the network',
-          error,
-        );
+        console.warn('[blaze-cache] reading from the cache failed — falling back to the network', error);
       }
       if (cached) return settle(cached, config);
     }
@@ -101,60 +152,46 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
     if (markerHeader) {
       response.headers = toAxiosHeaders(response.headers).set(markerHeader, MISS);
     }
+    (response as CachedAxiosResponse).fromBlazeCache = false;
 
-    if (!skipWrite) {
+    // Invalidate after the network round-trip (useful on mutations / cache-busting writes).
+    invalidateTags(reqOpts?.invalidateTags);
+
+    if (!skipWrite && key !== undefined) {
       try {
-        // The response's own `Vary` gates the store: `Vary: *` is never cacheable, and a
-        // response varying on a header outside `varyHeaders` would be replayed to callers
-        // who differ in exactly that header — see `varyIsStorable` for why "unknown ⇒ do
-        // not store" is the only safe answer.
-        //
-        // `responseType: 'stream'` is never storable either: `response.data` is a live Node
-        // stream that the caller is about to consume — the adapter would store an object
-        // that is empty (or half-read) by the time anyone replays it, handing the next
-        // caller a dead stream instead of the body.
+        // `Vary` is always honored (variant correctness is not a freshness preference).
         const storable =
-          config.responseType !== 'stream' &&
           shouldCache(response, config) &&
           varyIsStorable(readHeader(response.headers, 'Vary'), varyHeaders);
         if (storable) {
-          const control = parseCacheControl(readHeader(response.headers, 'Cache-Control'));
-          // `Age` spends the origin's freshness budget before it reaches us: a response
-          // replayed with `max-age=60, Age: 50` has ten seconds of life left, not sixty.
-          const ageMs = parseAgeMs(readHeader(response.headers, 'Age'));
-          const ttlMs = (control.maxAgeMs ?? resolveTtl(options.ttlMs, response, config)) - ageMs;
-          // `max-age=0` (or a non-positive TTL) means "do not keep this" — and so does a
-          // response whose `Age` already carries it past its freshness lifetime: by the time
-          // it landed here there was nothing fresh left to store.
+          const control = honourCacheControl
+            ? parseCacheControl(readHeader(response.headers, 'Cache-Control'))
+            : NO_DIRECTIVES;
+          const ageMs = honourCacheControl ? parseAgeMs(readHeader(response.headers, 'Age')) : 0;
+          const configuredTtl = resolveTtl(reqOpts?.ttlMs ?? options.ttlMs, response, config);
+          const ttlMs = (control.maxAgeMs ?? configuredTtl) - ageMs;
           if (!(control.noStore || control.noCache) && ttlMs > 0) {
-            const method = (config.method ?? 'get').toLowerCase();
             const storedAt = Date.now();
             const headers = storedHeaders(response.headers, response.data);
-            // The hit/miss marker describes *this* exchange — a MISS on the response that
-            // just came off the network — not the stored representation. Baked into the
-            // record it would read as a stale cache-state claim: `cachedResponse` overwrites
-            // it with HIT on replay, but anyone inspecting the record itself (debugging,
-            // a shared store, a re-stamp hook) would see the marker as if the origin sent it.
-            // `AxiosHeaders.set` normalized the name, so the plain copy has it lowercase.
             if (markerHeader) delete headers[markerHeader.toLowerCase()];
             const record: AxiosCacheRecord = {
               status: response.status,
               statusText: response.statusText,
               headers,
-              // Raw on purpose: axios runs `transformResponse` on replay, exactly as it would
-              // for a fresh network response.
-              data: response.data,
+              data: response.data, // raw: axios runs transformResponse on replay
               storedAt,
               freshUntil: storedAt + ttlMs,
             };
-            const tags =
-              options.tags?.(response, config) ?? ['axios', `${method} ${resolveRequestUrl(config)}`];
-            cache.set(key, record, { ttlMs, tags });
+            const reqTags = reqOpts?.tags;
+            const globalTags = tagsFor;
+            const tagList =
+              (typeof reqTags === 'function' ? reqTags(response, config) : reqTags) ??
+              (typeof globalTags === 'function' ? globalTags(response, config) : globalTags) ??
+              ['axios', `${method.toLowerCase()} ${resolveRequestUrl(config)}`];
+            cache.set(key, record, { ttlMs, tags: [...tagList] });
           }
         }
       } catch (error) {
-        // The network response is good; a broken cache layer (hooks or store) must not be
-        // able to turn it into a failed request. Serving it unstored costs one request.
         console.warn('[blaze-cache] storing the response failed — it is returned unstored', error);
       }
     }
@@ -169,8 +206,8 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
  * ```ts
  * import { installBlazeCache } from '@blaze-cache/axios';
  *
- * installBlazeCache(api, { cache });          // GET responses stay fresh for 60s
- * installBlazeCache(api, { cache, ttlMs: 5_000 });
+ * installBlazeCache(api, { cache });                          // GET/HEAD, 30s, Cache-Control aware
+ * installBlazeCache(api, { cache, ttlMs: 30_000, methods: ['GET'], varyHeaders: ['Authorization'] });
  * ```
  *
  * The adapter currently in `instance.defaults` is captured **before** it is replaced, so the
@@ -201,14 +238,10 @@ function resolveAdapter(adapter: AxiosRequestConfig['adapter']): AxiosAdapter {
  * Response headers for the record, corrected to describe `data` instead of the wire.
  *
  * axios's adapters decode the body for you (and already drop `content-encoding`), but
- * `content-length` keeps the size of what crossed the network — on a real API, `1425`
- * claimed for `6504` stored bytes — and `transfer-encoding` stops being true the moment
- * the body is buffered. Replaying either hands back a response that contradicts itself,
- * which breaks anything that measures `data.byteLength` against the declared length.
- *
- * Bodyless responses (HEAD) keep both: there the headers describe the body a GET *would*
- * return. A parsed object has no byte length of its own, so its `content-length` is left
- * alone rather than invented.
+ * `content-length` keeps the size of what crossed the network. `transfer-encoding` stops
+ * being true the moment the body is buffered. Replaying either hands back a response that
+ * contradicts itself. Bodyless responses (HEAD) keep both; a parsed object has no
+ * knowable byte length, so its `content-length` is left alone rather than invented.
  */
 function storedHeaders(headers: unknown, data: unknown): Record<string, unknown> {
   const record = toPlainHeaders(headers);
@@ -229,14 +262,6 @@ function byteLengthOf(data: unknown): number | undefined {
   if (ArrayBuffer.isView(data)) return data.byteLength;
   if (typeof data === 'string') return new TextEncoder().encode(data).length;
   return undefined;
-}
-
-function defaultShouldCache(
-  response: AxiosResponse,
-  config: InternalAxiosRequestConfig,
-): boolean {
-  const method = (config.method ?? 'get').toLowerCase();
-  return method === 'get' && response.status >= 200 && response.status < 300;
 }
 
 function resolveTtl(
@@ -284,9 +309,6 @@ function settle(
   return Promise.reject(
     new AxiosError(
       `Request failed with status code ${response.status}`,
-      // Same partition axios' own `settle` uses: 4xx is the caller's bad request, while a
-      // sub-400 failing a custom `validateStatus` (or any 5xx) is a bad *response*.
-      // Anything else would make `error.code` on a replay diverge from the network path.
       response.status >= 400 && response.status < 500
         ? AxiosError.ERR_BAD_REQUEST
         : AxiosError.ERR_BAD_RESPONSE,
