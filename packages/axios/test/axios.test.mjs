@@ -20,6 +20,7 @@ import {
   defaultCacheKey,
   fnv1a,
   installBlazeCache,
+  invalidateCacheTags,
   parseAgeMs,
   parseCacheControl,
   varyIsStorable,
@@ -79,7 +80,7 @@ describe('adapter', () => {
     const hit = await blaze({ method: 'get', url: '/users/1', headers: new AxiosHeaders() });
 
     assert.equal(calls.length, 1, 'the network is hit exactly once');
-    assert.equal(miss.fromBlazeCache, undefined);
+    assert.equal(miss.fromBlazeCache, false);
     assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
     assert.equal(hit.fromBlazeCache, true);
     assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
@@ -395,7 +396,7 @@ describe('adapter', () => {
     allowStore = false;
     const miss = await blaze({ method: 'get', url: '/shim', headers: new AxiosHeaders() });
     assert.equal(calls.length, 2, 'past freshUntil it is a miss, shim or no shim');
-    assert.equal(miss.fromBlazeCache, undefined);
+    assert.equal(miss.fromBlazeCache, false);
     assert.equal(store.size, 0, 'and the expired record was deleted, not left to linger');
   });
 
@@ -411,7 +412,7 @@ describe('adapter', () => {
 
     const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
     assert.equal(calls.length, 1, 'the foreign value is not served — it goes to the network');
-    assert.equal(miss.fromBlazeCache, undefined);
+    assert.equal(miss.fromBlazeCache, false);
     assert.deepEqual(cache.get('shared-key'), foreign, 'and the read left it untouched');
   });
 
@@ -436,7 +437,7 @@ describe('adapter', () => {
 
     const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
     assert.equal(calls.length, 1, 'not served despite a fresh-looking deadline');
-    assert.equal(miss.fromBlazeCache, undefined);
+    assert.equal(miss.fromBlazeCache, false);
     assert.deepEqual(cache.get('shared-key'), foreign, 'and not deleted either');
   });
 
@@ -478,7 +479,7 @@ describe('adapter', () => {
     });
     assert.equal(calls.length, 2, 'the read was bypassed');
     assert.equal(fresh.headers.get('x-blaze-cache'), 'MISS');
-    assert.equal(fresh.fromBlazeCache, undefined);
+    assert.equal(fresh.fromBlazeCache, false);
   });
 
   it('never lets a throwing cache layer fail a good response', async () => {
@@ -985,5 +986,196 @@ describe('malformed and duplicate Cache-Control directives', () => {
       '…whichever one comes first',
     );
     assert.equal(parseCacheControl('max-age=abc').maxAgeMs, undefined, 'garbage stays ignored');
+  });
+});
+
+describe('solid defaults', () => {
+  it('caches GET and HEAD by default (methods)', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({
+      '/g': { status: 200, data: { ok: true } },
+      '/h': { status: 200, data: null, headers: { 'content-length': '5' } },
+      '/p': { status: 200, data: { ok: true } },
+    });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/g', headers: new AxiosHeaders() });
+    await blaze({ method: 'get', url: '/g', headers: new AxiosHeaders() });
+    await blaze({ method: 'head', url: '/h', headers: new AxiosHeaders() });
+    await blaze({ method: 'head', url: '/h', headers: new AxiosHeaders() });
+    await blaze({ method: 'post', url: '/p', headers: new AxiosHeaders(), data: {} });
+    await blaze({ method: 'post', url: '/p', headers: new AxiosHeaders(), data: {} });
+
+    assert.equal(calls.length, 4, 'GET and HEAD cached; POST never cached by default');
+  });
+
+  it('respects a custom methods option', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/h': { status: 200, data: null } });
+    const blaze = blazeAdapter({ cache, adapter, methods: ['GET'] }); // HEAD excluded
+
+    await blaze({ method: 'head', url: '/h', headers: new AxiosHeaders() });
+    await blaze({ method: 'head', url: '/h', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 2, 'HEAD not cached when methods excludes it');
+  });
+
+  it('honourCacheControl can be disabled (and cacheControl alias works)', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({
+      '/x': { status: 200, data: { n: 1 }, headers: { 'cache-control': 'no-store, max-age=1' } },
+    });
+    const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000, cacheControl: false });
+
+    await blaze({ method: 'get', url: '/x', headers: new AxiosHeaders() });
+    const hit = await blaze({ method: 'get', url: '/x', headers: new AxiosHeaders() });
+    assert.equal(hit.fromBlazeCache, true, 'server no-store ignored when cacheControl is false');
+
+    const cache2 = await makeCache();
+    const blaze2 = blazeAdapter({ cache: cache2, adapter, ttlMs: 60_000, honourCacheControl: false });
+    await blaze2({ method: 'get', url: '/x', headers: new AxiosHeaders() });
+    const hit2 = await blaze2({ method: 'get', url: '/x', headers: new AxiosHeaders() });
+    assert.equal(hit2.fromBlazeCache, true, 'honourCacheControl alias also works');
+  });
+});
+
+describe('per-request blazeCache options', () => {
+  it('bypasses cache when blazeCache is false or enabled is false', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/a': { status: 200, data: { n: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
+
+    await blaze({ method: 'get', url: '/a', headers: new AxiosHeaders(), blazeCache: false });
+    await blaze({ method: 'get', url: '/a', headers: new AxiosHeaders(), blazeCache: { enabled: false } });
+    assert.equal(calls.length, 2);
+    assert.equal(cache.size(), 0);
+  });
+
+  it('overrides ttlMs per request', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/t': { status: 200, data: { n: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
+
+    await blaze({ method: 'get', url: '/t', headers: new AxiosHeaders(), blazeCache: { ttlMs: 1 } });
+    const [key] = cache.keys();
+    const rec = cache.get(key);
+    assert.ok(rec.freshUntil - rec.storedAt <= 5, 'per-request ttlMs applied');
+    await new Promise((r) => setTimeout(r, 15));
+    await blaze({ method: 'get', url: '/t', headers: new AxiosHeaders() });
+    assert.equal(calls.length, 2, 'expired per-request ttl refetched');
+  });
+
+  it('overrides tags per request (function and array forms)', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({ '/tag': { status: 200, data: { ok: true } }, '/tag2': { status: 200, data: { ok: true } } });
+    const blaze = blazeAdapter({ cache, adapter, tags: ['global'] });
+
+    await blaze({ method: 'get', url: '/tag', headers: new AxiosHeaders(), blazeCache: { tags: ['user', 'user:1'] } });
+    assert.deepEqual(cache.tagsOf(cache.keys()[0]), ['user', 'user:1']);
+    await blaze({ method: 'get', url: '/tag2', headers: new AxiosHeaders(), blazeCache: { tags: () => ['fn'] } });
+    assert.ok(cache.keys().some((k) => JSON.stringify(cache.tagsOf(k)) === JSON.stringify(['fn'])));
+  });
+
+  it('overrides the cache key per request (string)', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/k': { status: 200, data: { v: 1 } } });
+    const blaze = blazeAdapter({ cache, adapter });
+
+    await blaze({ method: 'get', url: '/k', headers: new AxiosHeaders(), blazeCache: { key: 'user:1' } });
+    const hit = await blaze({ method: 'get', url: '/k?other=1', headers: new AxiosHeaders(), blazeCache: { key: 'user:1' } });
+    assert.equal(calls.length, 1);
+    assert.equal(hit.fromBlazeCache, true);
+    assert.deepEqual(cache.keys(), ['user:1']);
+  });
+
+  it('forceRefresh bypasses the read but stores the fresh response', async () => {
+    const cache = await makeCache();
+    let n = 0;
+    const calls = [];
+    const adapter = async (config) => {
+      calls.push(config);
+      n += 1;
+      return { data: { n }, status: 200, statusText: '200', headers: { 'content-type': 'application/json' }, config, request: {} };
+    };
+    const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
+
+    await blaze({ method: 'get', url: '/fr', headers: new AxiosHeaders() });
+    const forced = await blaze({ method: 'get', url: '/fr', headers: new AxiosHeaders(), blazeCache: { forceRefresh: true } });
+    assert.equal(calls.length, 2);
+    assert.equal(forced.fromBlazeCache, false);
+    assert.deepEqual(forced.data, { n: 2 });
+    const hit = await blaze({ method: 'get', url: '/fr', headers: new AxiosHeaders() });
+    assert.equal(hit.fromBlazeCache, true);
+    assert.deepEqual(hit.data, { n: 2 });
+  });
+});
+
+describe('mutation invalidation helpers', () => {
+  it('invalidates tags after a mutation request', async () => {
+    const cache = await makeCache();
+    let todoVersion = 0;
+    const adapter = async (config) => {
+      if (config.url === '/todos-create') {
+        return { data: { id: 2 }, status: 201, statusText: '201', headers: {}, config, request: {} };
+      }
+      todoVersion += 1;
+      const data = todoVersion === 1 ? [{ id: 1 }] : [{ id: 1 }, { id: 2 }];
+      return { data, status: 200, statusText: '200', headers: {}, config, request: {} };
+    };
+    const blaze = blazeAdapter({ cache, adapter, tags: () => ['todos'] });
+
+    await blaze({ method: 'get', url: '/todos', headers: new AxiosHeaders() });
+    const hit = await blaze({ method: 'get', url: '/todos', headers: new AxiosHeaders() });
+    assert.equal(hit.fromBlazeCache, true);
+    assert.equal(cache.size(), 1);
+
+    await blaze({
+      method: 'post', url: '/todos-create', headers: new AxiosHeaders(), data: { text: 'x' },
+      blazeCache: { invalidateTags: ['todos'] },
+    });
+    assert.equal(cache.size(), 0, 'todos invalidated after mutation');
+
+    const fresh = await blaze({ method: 'get', url: '/todos', headers: new AxiosHeaders() });
+    assert.equal(fresh.fromBlazeCache, false);
+    assert.deepEqual(fresh.data, [{ id: 1 }, { id: 2 }]);
+  });
+
+  it('invalidateTags is a no-op when the cache lacks invalidateTags', async () => {
+    const store = new Map();
+    const cache = {
+      get: (k) => store.get(k),
+      set: (k, v) => { store.set(k, v); },
+      delete: (k) => store.delete(k),
+    };
+    const { adapter, calls } = stubNetwork({ '/m': { status: 201, data: {} } });
+    const blaze = blazeAdapter({ cache, adapter });
+    const res = await blaze({ method: 'post', url: '/m', headers: new AxiosHeaders(), data: {}, blazeCache: { invalidateTags: ['x'] } });
+    assert.equal(res.status, 201);
+    assert.equal(calls.length, 1);
+  });
+
+  it('invalidateCacheTags helper invalidates when supported', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({ '/z': { status: 200, data: 1 } });
+    const blaze = blazeAdapter({ cache, adapter, tags: () => ['z'] });
+    await blaze({ method: 'get', url: '/z', headers: new AxiosHeaders() });
+    assert.equal(cache.size(), 1);
+    invalidateCacheTags(cache, 'z');
+    assert.equal(cache.size(), 0);
+    invalidateCacheTags({}); // no-op
+    invalidateCacheTags(null, 'z'); // no-op
+  });
+});
+
+describe('observability', () => {
+  it('sets fromBlazeCache false on network MISS responses', async () => {
+    const cache = await makeCache();
+    const { adapter } = stubNetwork({ '/o': { status: 200, data: { ok: true } } });
+    const blaze = blazeAdapter({ cache, adapter });
+    const miss = await blaze({ method: 'get', url: '/o', headers: new AxiosHeaders() });
+    assert.equal(miss.fromBlazeCache, false);
+    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
+    const hit = await blaze({ method: 'get', url: '/o', headers: new AxiosHeaders() });
+    assert.equal(hit.fromBlazeCache, true);
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
   });
 });
