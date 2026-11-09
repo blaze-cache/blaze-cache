@@ -20,27 +20,75 @@ instead of this stable release.
 
 ```ts
 import axios from 'axios';
+import { createCache } from '@blaze-cache/core';
 import { installBlazeCache } from '@blaze-cache/axios';
-import { cache } from './blaze.js'; // a cache created by @blaze-cache/core
 
+const cache = await createCache({ capacity: 1000 });
 const api = axios.create({ baseURL: '/api' });
 
-installBlazeCache(api, { cache, ttlMs: 30_000 });
+installBlazeCache(api, {
+  cache,
+  ttlMs: 30_000,                  // default
+  methods: ['GET', 'HEAD'],       // default
+  honourCacheControl: true,       // default (cacheControl is an alias)
+  varyHeaders: ['Authorization'], // default
+});
 
+// Cached GET
 const response = await api.get('/users/42');
-response.fromBlazeCache;              // true when served from the cache
+response.fromBlazeCache;              // false on MISS, true on HIT
 response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
+
+// Bypass cache for a single request
+await api.get('/users/42', { blazeCache: false });
+
+// Custom TTL/tags (and optional key override) per request
+await api.get('/users/1', {
+  blazeCache: {
+    enabled: true,
+    ttlMs: 30_000,
+    tags: ['user', 'user:1'],
+    key: 'user:1', // optional string override
+  },
+});
+
+// Invalidate after a mutation
+await api.post('/todos', body, {
+  blazeCache: {
+    invalidateTags: ['todos'],
+  },
+});
 ```
+
+## Per-request options
+
+Pass `blazeCache` on any request config (types are augmented on `axios`):
+
+```ts
+await api.get('/users/1', {
+  blazeCache: {
+    enabled: true,                         // false bypasses read/write for this request
+    ttlMs: 30_000,                         // overrides adapter ttlMs (number or fn)
+    tags: (res, config) => ['user', 'user:1'],
+    key: 'user:1',                         // string or (config) => string
+    varyHeaders: ['Authorization'],
+    forceRefresh: true,                    // bypass read, store fresh response
+    invalidateTags: ['todos'],             // invalidate after the network response
+  },
+});
+```
+
+`blazeCache: false` is a shorthand to bypass caching for that request.
 
 ## Behaviour
 
-* **`Cache-Control` is honoured on both sides** — `max-age` overrides `ttlMs` *minus the
-  response's `Age`* (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
-  `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
-  — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
-  request skip the read. Malformed directives are ignored rather than guessed at: an
-  empty `max-age=` reads as *no directive*, not as zero (that would send every response
-  back to the network), and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
+* **`Cache-Control` is honoured on both sides** when `honourCacheControl` is on (default;
+  `cacheControl` is an alias) — `max-age` overrides `ttlMs` *minus the response's `Age`*
+  (a `max-age=60, Age: 50` response has ten seconds left, not sixty); `no-store` (on the
+  request or the response) bypasses the cache entirely, and `no-cache` — the per-field
+  `no-cache="set-cookie"` spelling included — plus `max-age=0` on the request skip the
+  read. Malformed directives are ignored rather than guessed at: an empty `max-age=` reads
+  as *no directive*, not as zero, and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
 * **Freshness is enforced by the adapter, not by the store** — each record carries the
   deadline it was written with, so even a store that never expires anything (a plain `Map`
   shim satisfies the interface) still cannot replay a response past its freshness lifetime.
@@ -75,7 +123,14 @@ response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
   contradicts `data.byteLength`. Bodyless responses (HEAD) keep theirs: there the headers
   describe the body a GET *would* return.
 * Only responses that pass `validateStatus` are stored; by default the cache keeps
-  `GET` requests answering `2xx`.
+  `GET` and `HEAD` requests answering `2xx` (`methods: ['GET', 'HEAD']`).
+* **HIT/MISS observability** — `response.fromBlazeCache` is `true` on cache hits and
+  `false` on network responses, and the `x-blaze-cache` header is set to `HIT`/`MISS`
+  (configurable via `markerHeader`, or `false` to disable). Core cache `hit`/`miss`/`set`
+  events fire when using `@blaze-cache/core`.
+* **Mutation invalidation** — `blazeCache.invalidateTags` invalidates tags on a cache that
+  supports it (e.g. `BlazeCache`) after the network response, so `POST`/`PUT`/`PATCH`/`DELETE`
+  can bust related GET caches. The `invalidateCacheTags(cache, ...tags)` helper is also exported.
 * **A cache that throws costs one extra request, never a failed response** — the read and
   the write are both guarded, and the failure is reported once on the console instead of
   turning a good network response into a rejected promise.
@@ -98,7 +153,7 @@ pnpm --filter @blaze-cache/axios test        # offline — canned adapter, no ne
 pnpm --filter @blaze-cache/axios test:live   # live — real public APIs, needs the network
 ```
 
-The offline suite (35 tests) stubs the network so it can assert exact call counts and look
+The offline suite stubs the network so it can assert exact call counts and look
 inside the store: payload, status, stored headers, TTL window, tags and key shape. The
 live suite (4 tests) runs against `api.github.com` and a real PNG, proving that the
 server's own `Cache-Control` is parsed, that a rejected `401` never overwrites a good
