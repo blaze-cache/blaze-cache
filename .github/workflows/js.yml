@@ -115,11 +115,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # `pnpm test:live` = build:wasm + every workspace suite: the live ones (fetch 8,
-      # axios 4, ky 4, swr 4, react-query 4, integration-tests 4) and core's own. Core
-      # runs first (topological order) and its script builds `packages/core/dist` — the
-      # other packages resolve `@blaze-cache/core` through those built declarations, which
-      # is why core cannot simply be skipped here.
+      # `pnpm test:live` = build:wasm + every workspace `test:live` script (pnpm -r):
+      # the live suites (fetch, axios, ky, ofetch, swr, react-query, integration-tests)
+      # and core's own. Core runs first (topological order) and its script builds
+      # `packages/core/dist` — the other packages resolve `@blaze-cache/core` through
+      # those built declarations, which is why core cannot simply be skipped here.
       # BLAZE_CACHE_LIVE is set by each package's script, so a bare runner has to opt in
       # exactly like a developer does.
       - name: live suites (real public APIs)
