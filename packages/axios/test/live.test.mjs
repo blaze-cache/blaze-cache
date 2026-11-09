@@ -103,7 +103,7 @@ describe('live: real public API', () => {
     const miss = await instance.get(REPO);
     assert.equal(miss.status, 200, 'the endpoint answered');
     assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
-    assert.equal(miss.fromBlazeCache, undefined, 'the first one came off the wire');
+    assert.equal(miss.fromBlazeCache, false, 'the first one came off the wire');
     assert.equal(miss.data.full_name, 'blaze-cache/blaze-cache', 'the real body parsed');
 
     const hit = await instance.get(REPO);
