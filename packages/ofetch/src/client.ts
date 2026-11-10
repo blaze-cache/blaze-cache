@@ -52,6 +52,8 @@ function defaultTags(ctx: BlazeOfetchKeyContext): readonly string[] {
  * instances may point at two different origins and must not share what they learn.
  */
 interface WrapState {
+  /** ofetch options this instance was created with, which the wrapper must key on too. */
+  defaults: FetchOptions;
   /**
    * The origin learned from a response when the instance's own `baseURL` was invisible.
    *
@@ -80,7 +82,7 @@ interface WrapState {
  * Successful `GET` responses are cached by default. The wrapped instance keeps ofetch's
  * full API: call it directly, or use `.raw()` / `.native` / `.create()`. Instances
  * returned by `.create()` on the wrapped result are themselves cached with the same
- * settings.
+ * settings, and their options apply to both the request *and* the cache key.
  *
  * @param instance The ofetch (`$fetch`) instance to wrap.
  * @param cache The Blaze Cache instance (or any {@link BlazeOfetchCacheLike}).
@@ -145,24 +147,34 @@ export function blazeOfetch(
   /**
    * Resolves the request identity the cache key is built from.
    *
-   * `baseURL` is taken from the most specific source that has one — the call, the option
-   * given to `blazeOfetch`, and finally the origin learned from an earlier response. That
-   * last source exists because an instance's own `defaults` are a closure ofetch does not
+   * `baseURL` is taken from the most specific source that has one — the call, the
+   * `.create()` defaults this wrapper was derived with, the option given to
+   * `blazeOfetch`, and finally the origin learned from an earlier response. That last
+   * source exists because an instance's own `defaults` are a closure ofetch does not
    * expose: without it a relative url would key two different origins onto one entry.
    */
   function resolveRequest(
     request: string | Request | URL,
     opts: FetchOptions,
+    inherited: FetchOptions,
     state: WrapState,
   ): BlazeOfetchKeyContext {
     let url: string;
     if (typeof request === 'string') {
       url = request;
       // Mirror ofetch's resolution order: baseURL then query/params (applied to strings only).
-      const base = opts.baseURL ?? options.baseURL ?? state.resolvedBase;
+      const base = opts.baseURL ?? inherited.baseURL ?? options.baseURL ?? state.resolvedBase;
       if (base) url = withBase(url, base);
-      const query = opts.query ?? opts.params;
-      if (query && Object.keys(query).length > 0) {
+
+      // ofetch merges defaults and per-call values into one object rather than letting the
+      // call replace the defaults, so the key has to merge them the same way.
+      const query = {
+        ...(inherited.params ?? {}),
+        ...(inherited.query ?? {}),
+        ...(opts.params ?? {}),
+        ...(opts.query ?? {}),
+      };
+      if (Object.keys(query).length > 0) {
         url = withQuery(url, query as Parameters<typeof withQuery>[1]);
       }
     } else if (request instanceof URL) {
@@ -174,6 +186,7 @@ export function blazeOfetch(
 
     const method = (opts.method ?? (typeof request !== 'string' && 'method' in request ? (request as Request).method : undefined) ?? 'GET').toUpperCase();
     const headers = mergeHeaders(
+      inherited.headers,
       typeof request !== 'string' && 'headers' in request ? (request as Request).headers : undefined,
       opts.headers as HeadersInit | undefined,
     );
@@ -191,8 +204,8 @@ export function blazeOfetch(
    * would describe one origin while the response came from another. ofetch resolves
    * per-call options over the instance defaults, so passing it here makes the two agree.
    */
-  function wireOptions(callOpts: FetchOptions): FetchOptions {
-    const base = callOpts.baseURL ?? options.baseURL;
+  function wireOptions(callOpts: FetchOptions, inherited: FetchOptions): FetchOptions {
+    const base = callOpts.baseURL ?? inherited.baseURL ?? options.baseURL;
     return base === undefined ? callOpts : { ...callOpts, baseURL: base };
   }
 
@@ -277,18 +290,20 @@ export function blazeOfetch(
   }
 
   async function execute<T>(
+    target: $Fetch,
     state: WrapState,
     request: string | Request | URL,
     opts: FetchOptions | undefined,
     wantRaw: boolean,
   ): Promise<T | FetchResponse<T>> {
-    const callOpts = opts ? { ...opts } : {};
-    const ctx = resolveRequest(request, callOpts, state);
-    const wire = wireOptions(callOpts);
+    const callOpts: FetchOptions = opts ? { ...opts } : {};
+    const inherited = state.defaults;
+    const ctx = resolveRequest(request, callOpts, inherited, state);
+    const wire = wireOptions(callOpts, inherited);
 
     if (!methods.has(ctx.method)) {
-      if (wantRaw) return (instance.raw as Function)(request, wire) as FetchResponse<T>;
-      return instance(request as string, wire) as Promise<T>;
+      if (wantRaw) return (target.raw as Function)(request, wire) as FetchResponse<T>;
+      return target(request as string, wire) as Promise<T>;
     }
 
     const control = cacheControl ? parseCacheControl(ctx.headers.get('Cache-Control')) : NO_DIRECTIVES;
@@ -331,7 +346,7 @@ export function blazeOfetch(
     }
 
     // --- miss: network ---
-    const response = (await instance.raw(request as string, wire)) as FetchResponse<T>;
+    const response = (await target.raw(request as string, wire)) as FetchResponse<T>;
     // Learn the origin before keying anything, so the store below never writes an entry
     // under a URL that does not say which host it came from.
     learnOrigin(state, ctx, response);
@@ -423,13 +438,25 @@ export function blazeOfetch(
     }
   }
 
-  function wrap(target: $Fetch): BlazeOfetchInstance {
-    const state: WrapState = {};
-    const wrapped = ((request: any, opts?: any) => execute(state, request, opts, false)) as BlazeOfetchInstance;
-    wrapped.raw = ((request: any, opts?: any) => execute(state, request, opts, true)) as BlazeOfetchInstance['raw'];
+  /**
+   * Wraps one concrete ofetch instance.
+   *
+   * Everything the wrapper does to a request — keying it, sending it, reading the origin
+   * back out — runs against *this* `target`, never against the instance `blazeOfetch` was
+   * originally handed. Deriving a second instance with `.create({ baseURL })` must apply
+   * that `baseURL` to both halves, or the entry would describe one host while the request
+   * went to another.
+   */
+  function wrap(target: $Fetch, defaults: FetchOptions = {}): BlazeOfetchInstance {
+    const state: WrapState = { defaults };
+    const run = <T>(request: any, opts: any, wantRaw: boolean): Promise<T | FetchResponse<T>> =>
+      execute(target, state, request, opts, wantRaw);
+
+    const wrapped = ((request: any, opts?: any) => run(request, opts, false)) as BlazeOfetchInstance;
+    wrapped.raw = ((request: any, opts?: any) => run(request, opts, true)) as BlazeOfetchInstance['raw'];
     wrapped.native = target.native?.bind ? target.native.bind(target) : target.native;
     wrapped.create = ((defaultOptions?: any, customGlobalOptions?: any) =>
-      wrap(target.create(defaultOptions, customGlobalOptions))) as BlazeOfetchInstance['create'];
+      wrap(target.create(defaultOptions, customGlobalOptions), defaultOptions)) as BlazeOfetchInstance['create'];
     return wrapped;
   }
 

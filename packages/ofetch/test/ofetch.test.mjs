@@ -634,4 +634,52 @@ describe('regressions (ofetch)', () => {
       `beta stored under its own origin, got ${JSON.stringify(keys)}`,
     );
   });
+
+  it('applies a derived .create({ baseURL }) to both the request and the key', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url) => ({ body: { url } }));
+    const base = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
+    const derived = base.create({ baseURL: 'https://derived.example.com' });
+
+    const out = await settle(derived('/things'));
+
+    assert.equal(calls.length, 1, 'one network call');
+    assert.equal(
+      calls[0].url,
+      'https://derived.example.com/things',
+      'the derived baseURL goes on the wire',
+    );
+    assert.deepEqual(out, { url: 'https://derived.example.com/things' });
+
+    await delay(20);
+    const [key] = cache.keys();
+    assert.ok(
+      key.includes('https://derived.example.com/things'),
+      `the key uses the derived baseURL too, got ${key}`,
+    );
+  });
+
+  it('folds a derived .create({ headers }) identity into the vary key', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, n, headers) => ({
+      body: { auth: headers.get('authorization') ?? null },
+      headers: { 'content-type': 'application/json', vary: 'authorization' },
+    }));
+    const base = blazeOfetch(createFetch({ fetch: net }), cache, {
+      ttlMs: TTL_MS,
+      baseURL: 'https://api.example.com',
+    });
+    const asAda = base.create({ headers: { authorization: 'Bearer ada' } });
+    const asGrace = base.create({ headers: { authorization: 'Bearer grace' } });
+
+    const ada = await settle(asAda('/me'));
+    const grace = await settle(asGrace('/me'));
+
+    assert.deepEqual(ada, { auth: 'Bearer ada' }, 'ada sees ada');
+    assert.deepEqual(grace, { auth: 'Bearer grace' }, 'grace must never be served ada');
+    assert.equal(calls.length, 2, 'the second identity reaches the network');
+
+    await delay(20);
+    assert.equal(cache.size(), 2, 'two identities occupy two entries');
+  });
 });
