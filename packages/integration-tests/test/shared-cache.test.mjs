@@ -397,7 +397,10 @@ describe('forced key collisions (custom keys)', () => {
     const miss = await blaze({ method: 'get', url: RESOURCE_URL, headers: new AxiosHeaders() });
 
     assert.equal(calls.length, 1, 'the foreign value is not served');
-    assert.equal(miss.fromBlazeCache, undefined);
+    // The response came from the network, not the store — `fromBlazeCache` is `false` on
+    // every network MISS (the same contract the axios suite asserts), never `true`.
+    assert.equal(miss.fromBlazeCache, false);
+    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
     assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
   });
 
