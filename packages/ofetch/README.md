@@ -76,8 +76,11 @@ const users = await api('/users');
 * **The full ofetch API is preserved** — call the wrapped instance directly for parsed
   data, `.raw()` for the `FetchResponse` (with `_data` and the `x-blaze-cache` marker),
   `.native` for the underlying fetch, and `.create()` for derived instances (which remain
-  cached). `baseURL` and `query`/`params` are resolved into the cache key the same way
-  ofetch resolves them.
+  cached). A `baseURL` from the call or from the wrapper's own `baseURL` option is resolved
+  into the cache key the same way ofetch resolves it; an instance's *own* `defaults.baseURL`
+  — which ofetch keeps in a closure it does not expose — is learned from the first
+  response's URL, and until that response arrives the request URL is still relative, so
+  nothing is read or written: two wrappers over different origins can never share an entry.
 * **Buffering never delays a response** — the body is stored from a clone in the
   background, and the record is complete before it is written, so a hit can never
   half-load. Transport headers are corrected to the stored bytes (`content-encoding` and

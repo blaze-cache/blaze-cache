@@ -2,7 +2,7 @@ import { withBase, withQuery } from 'ufo';
 import type { $Fetch, FetchOptions, FetchResponse } from 'ofetch';
 
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey } from './key.js';
+import { defaultCacheKey, isAbsoluteUrl } from './key.js';
 import type {
   BlazeOfetchCacheLike,
   BlazeOfetchInstance,
@@ -43,6 +43,22 @@ function defaultShouldCache(response: FetchResponse<unknown>): boolean {
  */
 function defaultTags(ctx: BlazeOfetchKeyContext): readonly string[] {
   return ['ofetch', `${ctx.method.toLowerCase()} ${ctx.url}`];
+}
+
+/**
+ * State that belongs to one wrapped instance rather than to the adapter as a whole.
+ *
+ * Each `wrap()` — the root and every `.create()` — gets its own, because two derived
+ * instances may point at two different origins and must not share what they learn.
+ */
+interface WrapState {
+  /**
+   * The origin learned from a response when the instance's own `baseURL` was invisible.
+   *
+   * `undefined` until then — and while it is, the request URL is still relative, so the
+   * adapter neither reads nor writes rather than key two origins onto one entry.
+   */
+  resolvedBase?: string;
 }
 
 /**
@@ -111,12 +127,39 @@ export function blazeOfetch(
     }
   }
 
-  function resolveRequest(request: string | Request | URL, opts: FetchOptions): BlazeOfetchKeyContext {
+  /**
+   * Reported once when a response could not be keyed at all — i.e. when the instance
+   * resolved an origin this wrapper never saw and could not recover it from the response.
+   * Without this the request would silently stop being cached, with no clue why.
+   */
+  let warnedUnresolved = false;
+  function warnUnresolved(): void {
+    if (warnedUnresolved) return;
+    warnedUnresolved = true;
+    console.warn(
+      '[blaze-cache] could not determine the full request URL, so this response was not stored; ' +
+        'pass `baseURL` to blazeOfetch to make the key origin-specific',
+    );
+  }
+
+  /**
+   * Resolves the request identity the cache key is built from.
+   *
+   * `baseURL` is taken from the most specific source that has one — the call, the option
+   * given to `blazeOfetch`, and finally the origin learned from an earlier response. That
+   * last source exists because an instance's own `defaults` are a closure ofetch does not
+   * expose: without it a relative url would key two different origins onto one entry.
+   */
+  function resolveRequest(
+    request: string | Request | URL,
+    opts: FetchOptions,
+    state: WrapState,
+  ): BlazeOfetchKeyContext {
     let url: string;
     if (typeof request === 'string') {
       url = request;
       // Mirror ofetch's resolution order: baseURL then query/params (applied to strings only).
-      const base = opts.baseURL ?? options.baseURL;
+      const base = opts.baseURL ?? options.baseURL ?? state.resolvedBase;
       if (base) url = withBase(url, base);
       const query = opts.query ?? opts.params;
       if (query && Object.keys(query).length > 0) {
@@ -139,6 +182,49 @@ export function blazeOfetch(
 
   function keyOf(ctx: BlazeOfetchKeyContext): string {
     return options.key ? options.key(ctx) : defaultCacheKey(ctx.method, ctx.url, ctx.headers, varyHeaders);
+  }
+
+  /**
+   * Options to hand the underlying instance, with the wrapper's own `baseURL` forced in.
+   *
+   * Keying on a base the request then ignores would be worse than not keying: the entry
+   * would describe one origin while the response came from another. ofetch resolves
+   * per-call options over the instance defaults, so passing it here makes the two agree.
+   */
+  function wireOptions(callOpts: FetchOptions): FetchOptions {
+    const base = callOpts.baseURL ?? options.baseURL;
+    return base === undefined ? callOpts : { ...callOpts, baseURL: base };
+  }
+
+  /**
+   * Records the origin ofetch resolved for a request whose URL we could not resolve
+   * ourselves, so the next call can key on a real, origin-specific URL.
+   *
+   * Only a non-redirected response can teach us this: `Response.url` is the *final* URL,
+   * so after a redirect it no longer describes the request that produced it. The candidate
+   * is accepted only if applying it round-trips back to exactly the URL the response came
+   * from — a suffix match alone would let `/users` be "resolved" from `…/notusers`.
+   */
+  function learnOrigin(state: WrapState, ctx: BlazeOfetchKeyContext, response: FetchResponse<unknown> | undefined): void {
+    if (state.resolvedBase !== undefined) return;
+    if (isAbsoluteUrl(ctx.url)) return; // already names its origin — nothing to learn
+    const finalUrl = response?.url;
+    if (!finalUrl || response?.redirected) return;
+    if (!finalUrl.endsWith(ctx.url)) return;
+
+    const cut = finalUrl.length - ctx.url.length;
+    if (cut <= 0) return;
+    const candidate = finalUrl.slice(0, cut);
+    let roundTrip: string;
+    try {
+      roundTrip = withBase(ctx.url, candidate);
+    } catch {
+      return;
+    }
+    if (roundTrip !== finalUrl) return;
+
+    state.resolvedBase = candidate;
+    ctx.url = roundTrip;
   }
 
   async function store(
@@ -191,16 +277,18 @@ export function blazeOfetch(
   }
 
   async function execute<T>(
+    state: WrapState,
     request: string | Request | URL,
     opts: FetchOptions | undefined,
     wantRaw: boolean,
   ): Promise<T | FetchResponse<T>> {
     const callOpts = opts ? { ...opts } : {};
-    const ctx = resolveRequest(request, callOpts);
+    const ctx = resolveRequest(request, callOpts, state);
+    const wire = wireOptions(callOpts);
 
     if (!methods.has(ctx.method)) {
-      if (wantRaw) return (instance.raw as Function)(request, opts) as FetchResponse<T>;
-      return instance(request as string, opts as FetchOptions) as Promise<T>;
+      if (wantRaw) return (instance.raw as Function)(request, wire) as FetchResponse<T>;
+      return instance(request as string, wire) as Promise<T>;
     }
 
     const control = cacheControl ? parseCacheControl(ctx.headers.get('Cache-Control')) : NO_DIRECTIVES;
@@ -213,40 +301,55 @@ export function blazeOfetch(
       (callOpts as { cache?: string }).cache === 'reload';
     const bypassWrite = control.noStore || (callOpts as { cache?: string }).cache === 'no-store';
 
-    let key: string | undefined;
-    if (!bypassRead || !bypassWrite) {
+    // --- read ---
+    // The key is only safe to build once the URL names its own origin. A relative url here
+    // means the instance's `baseURL` was invisible to us and no response has taught us the
+    // origin yet; reading under it could serve another origin's response, so the read waits.
+    if (!bypassRead && isAbsoluteUrl(ctx.url)) {
+      let key: string | undefined;
       try {
         key = keyOf(ctx);
       } catch (error) {
         warnCacheFailure(error);
-        key = undefined;
       }
-    }
-
-    // --- read ---
-    if (!bypassRead && key !== undefined) {
-      let record = read(key);
-      if (!canServe(record, callOpts)) {
-        const pending = pendingWrites.get(key);
-        if (pending && (await settleOrAbort(pending, (callOpts as { signal?: AbortSignal }).signal))) {
-          record = read(key);
+      if (key !== undefined) {
+        let record = read(key);
+        if (!canServe(record, callOpts)) {
+          const pending = pendingWrites.get(key);
+          if (pending && (await settleOrAbort(pending, (callOpts as { signal?: AbortSignal }).signal))) {
+            record = read(key);
+          }
         }
-      }
-      if (isRecord(record)) {
-        if ((callOpts as { cache?: string }).cache !== 'force-cache' && Date.now() > record.freshUntil) {
-          try { cache.delete?.(key); } catch (error) { warnCacheFailure(error); }
-        } else {
-          return replay(record, 'HIT', wantRaw) as T | FetchResponse<T>;
+        if (isRecord(record)) {
+          if ((callOpts as { cache?: string }).cache !== 'force-cache' && Date.now() > record.freshUntil) {
+            try { cache.delete?.(key); } catch (error) { warnCacheFailure(error); }
+          } else {
+            return replay(record, 'HIT', wantRaw) as T | FetchResponse<T>;
+          }
         }
       }
     }
 
     // --- miss: network ---
-    const response = (await instance.raw(request as string, opts as FetchOptions)) as FetchResponse<T>;
+    const response = (await instance.raw(request as string, wire)) as FetchResponse<T>;
+    // Learn the origin before keying anything, so the store below never writes an entry
+    // under a URL that does not say which host it came from.
+    learnOrigin(state, ctx, response);
 
     // --- write ---
-    if (!bypassWrite && key !== undefined && response) {
-      if (varyIsStorable(response.headers.get('Vary'), varyHeaders)) {
+    if (!bypassWrite && response) {
+      let key: string | undefined;
+      if (isAbsoluteUrl(ctx.url)) {
+        try {
+          key = keyOf(ctx);
+        } catch (error) {
+          warnCacheFailure(error);
+        }
+      } else if (!response.redirected) {
+        warnUnresolved();
+      }
+
+      if (key !== undefined && varyIsStorable(response.headers.get('Vary'), varyHeaders)) {
         let keep = false;
         try {
           keep = shouldCache(response as FetchResponse<unknown>, ctx);
@@ -321,8 +424,9 @@ export function blazeOfetch(
   }
 
   function wrap(target: $Fetch): BlazeOfetchInstance {
-    const wrapped = ((request: any, opts?: any) => execute(request, opts, false)) as BlazeOfetchInstance;
-    wrapped.raw = ((request: any, opts?: any) => execute(request, opts, true)) as BlazeOfetchInstance['raw'];
+    const state: WrapState = {};
+    const wrapped = ((request: any, opts?: any) => execute(state, request, opts, false)) as BlazeOfetchInstance;
+    wrapped.raw = ((request: any, opts?: any) => execute(state, request, opts, true)) as BlazeOfetchInstance['raw'];
     wrapped.native = target.native?.bind ? target.native.bind(target) : target.native;
     wrapped.create = ((defaultOptions?: any, customGlobalOptions?: any) =>
       wrap(target.create(defaultOptions, customGlobalOptions))) as BlazeOfetchInstance['create'];

@@ -170,9 +170,17 @@ export interface BlazeOfetchOptions {
   markerHeader?: string | false;
 
   /**
-   * Default `baseURL` for cache-key resolution when wrapping a pre-configured ofetch
-   * instance whose defaults are not otherwise visible to the wrapper. {@link createBlazeOfetch}
-   * forwards its `baseURL` automatically.
+   * `baseURL` for cache-key resolution when wrapping a pre-configured ofetch instance.
+   *
+   * ofetch keeps an instance's `defaults` in a closure it does not expose, so a wrapper
+   * cannot read them. Passing it here makes the key describe the same URL the request will
+   * actually go to — and the value is forced onto the request as well, so key and wire can
+   * never disagree. {@link createBlazeOfetch} forwards its `baseURL` automatically.
+   *
+   * When it is *not* passed and the instance has its own `baseURL`, the adapter recovers
+   * the origin from the first response's `Response.url` and keys from then on. Until that
+   * happens the request URL is still relative, so nothing is read or written — a relative
+   * URL is exactly what two different origins have in common.
    */
   baseURL?: string;
 }
