@@ -20,7 +20,7 @@ export interface CacheControl {
   staleWhileRevalidateMs: number | undefined;
 }
 
-/** The value used when parsing is switched off (`cacheControl: false`) or a header is absent. */
+/** The value used when parsing is switched off (`honourCacheControl: false`) or a header is absent. */
 export const NO_DIRECTIVES: CacheControl = Object.freeze({
   noStore: false,
   noCache: false,

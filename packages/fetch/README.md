@@ -5,7 +5,8 @@
 <h1 align="center">@blaze-cache/fetch</h1>
 
 A drop-in `fetch()` replacement backed by a WebAssembly cache — TTLs, `Cache-Control`,
-stale-while-revalidate and an `x-blaze-cache: HIT | MISS` marker.
+stale-while-revalidate, per-request `blazeCache` options and `HIT`/`MISS` observability
+(`x-blaze-cache` plus `response.fromBlazeCache`).
 
 ## Install
 
@@ -27,11 +28,13 @@ const fetch = createBlazeFetch(cache, { ttlMs: 30_000 });
 
 const response = await fetch('/api/users');
 response.headers.get('x-blaze-cache'); // 'MISS' …
+response.fromBlazeCache;                // … false: it came off the wire
 ```
 
 ```ts
 const again = await fetch('/api/users');
 again.headers.get('x-blaze-cache');    // … then 'HIT'
+again.fromBlazeCache;                   // … then true: replayed from the store
 await again.json();                     // the body replayed from the cache
 ```
 
@@ -46,12 +49,14 @@ window.fetch = fetch;                   // now every request in the app is cache
 ## Behaviour
 
 * **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
-  else (including errors from uncached methods) always goes to the network. A method you
+  else (including errors from uncached methods) always goes to the network, unless one
+  request opts itself in with `blazeCache: { enabled: true }`. A method you
   *do* list is only stored (or coalesced) when its body can be folded into the cache key —
   two different payloads to the same URL must never share an entry — so a body the key
   cannot read (a stream, a `Blob`, raw bytes) leaves that request uncached unless you
   supply a `key` callback that describes it.
-* **`Cache-Control` is honoured on both sides** when `cacheControl` is on (the default):
+* **`Cache-Control` is honoured on both sides** when `honourCacheControl` is on (the
+  default; `cacheControl` is its alias):
   on the request, `no-store`/`no-cache` and `max-age=0` skip the read; on the response,
   `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache` — the per-field
   `no-cache="set-cookie"` form included — stop it being stored.
@@ -73,11 +78,15 @@ window.fetch = fetch;                   // now every request in the app is cache
   a response varying on a header you have not put in `varyHeaders` is left uncached rather
   than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
   That is the safe default working as intended — list them to opt in. The check runs
-  before *every* store, `cacheControl: false` included: variant correctness is not a
+  before *every* store, `honourCacheControl: false` included: variant correctness is not a
   freshness preference.
 * **A hit is a real `Response`** — status, status text, headers, body, `url` after a
   redirect and `redirected` are replayed exactly, so your code cannot tell the difference
   apart from the marker header.
+* **Every response says where it came from** — `response.fromBlazeCache` is `false` on a
+  network `MISS` and `true` on a `HIT`/`STALE`, cache bypasses included, so you can branch
+  without sniffing headers; `x-blaze-cache` carries the same information for the network
+  panel.
 * **Binary, `Blob` and chunked bodies are first-class** — the payload is buffered as raw
   bytes whether it arrived as a file, a `ReadableStream` or plain text, so an image
   replays byte-for-byte with its `content-type` intact and `blob().type`/`blob().size`
@@ -91,10 +100,10 @@ window.fetch = fetch;                   // now every request in the app is cache
   bytes — which breaks anything that measures a download. `HEAD` keeps its headers: no
   body was sent, so its `content-length` is what a GET *would* return.
 * **Failures behave like plain `fetch`** — a rejected network call still rejects; a cache
-  that cannot store a response never breaks the request that produced it. Reads, writes
-  and the `shouldCache` callback are all guarded: the first cache-layer failure is
-  announced once on the console, then the wrapper keeps working *without* the cache rather
-  than warning on every call.
+  that cannot store a response never breaks the request that produced it. Reads, writes,
+  the `key` callback and the `shouldCache` callback are all guarded: the first cache-layer
+  failure is announced once on the console, then the wrapper keeps working *without* the
+  cache rather than warning on every call.
 * **Cache activity is observable** — the wrapper reads with `cache.get` and writes with
   `cache.set`, so the shared cache's typed event system sees every request it serves:
 
@@ -113,7 +122,7 @@ window.fetch = fetch;                   // now every request in the app is cache
 const fetch = createBlazeFetch(cache, {
   ttlMs: 30_000,                        // number | (response, url, init) => number
   methods: ['GET'],                     // which methods are cacheable
-  cacheControl: true,                   // honour Cache-Control on request + response
+  honourCacheControl: true,             // honour Cache-Control (alias: cacheControl)
   staleWhileRevalidate: false,          // true | milliseconds — see below
   key: (url, init) => `${init.method} ${url}`,   // custom cache key
   shouldCache: (response) => response.ok,        // which responses are stored
@@ -128,7 +137,7 @@ const fetch = createBlazeFetch(cache, {
 | --- | --- | --- |
 | `ttlMs` | `60_000` | Freshness window. Overridden by a response `max-age`. |
 | `methods` | `['GET']` | Methods eligible for caching. |
-| `cacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. |
+| `honourCacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. `cacheControl` is an accepted alias. |
 | `staleWhileRevalidate` | `false` | Serve stale entries while refreshing. A number is the fallback window when the response omits the directive. |
 | `key` | method + URL + vary/body hash | Custom cache key. Supplying one also opts a body-carrying request into caching. |
 | `shouldCache` | `2xx` | Which responses are stored. |
@@ -144,6 +153,80 @@ await fetch('/api/users', { forceRefresh: true });  // bypass the cache read
 await fetch('/api/users', { cache: 'no-cache' });   // the standard spelling of the same
 await fetch('/api/users', { cache: 'no-store' });   // neither read nor write
 ```
+
+## Recommended configuration
+
+A solid starting point for a personalized API:
+
+```ts
+const fetch = createBlazeFetch(cache, {
+  ttlMs: 30_000,
+  methods: ['GET', 'HEAD'],
+  honourCacheControl: true,
+  varyHeaders: ['Authorization'],
+});
+```
+
+`ttlMs` is the freshness fallback (a response `max-age` still wins), `GET` and `HEAD` are
+the methods worth storing, `Cache-Control`/`Age` are obeyed on both sides, and every
+identity's `Authorization` value is hashed into its own key — so one user's response is
+never replayed to another.
+
+## Per-request options
+
+Every request may override the wrapper's defaults through `blazeCache` — or switch the
+cache off for that call entirely:
+
+```ts
+// bypass — neither read nor written; the network answers as usual
+await fetch('/api/users/1', { blazeCache: false });
+
+// custom TTL, tags and key for one request
+await fetch('/api/users/1', {
+  blazeCache: {
+    ttlMs: 30_000,
+    tags: ['user', 'user:1'],
+    key: 'user:1',
+    varyHeaders: ['Authorization'],
+    forceRefresh: true,          // skip the read; the fresh response is still stored
+    invalidateTags: ['todos'],   // dropped after the network responds
+  },
+});
+
+// invalidate after a mutation — the response itself is never cached
+await fetch('/api/todos', {
+  method: 'POST',
+  body: JSON.stringify({ text: 'x' }),
+  blazeCache: { invalidateTags: ['todos'] },
+});
+```
+
+| Override | Effect |
+| --- | --- |
+| `enabled` | `false` bypasses the read **and** the write for this call; `true` opts a method outside `methods` into caching. |
+| `ttlMs` | Freshness window for this response — a number or `(response, url, init) => number`. |
+| `tags` | Tags for this entry — an array or a function; replaces the wrapper's `tags`. |
+| `key` | Cache key as a string, or `(url, init) => string`. It owns the whole key, so it also opts a body-carrying request into caching. |
+| `varyHeaders` | Headers folded into this request's key (and checked against the response's `Vary`). |
+| `forceRefresh` | Skip the cache read; the fresh response still replaces the entry. |
+| `invalidateTags` | Tags dropped **after** the network responds — even when the request itself is never cached. Requires a cache with `invalidateTags`. |
+
+`invalidateTags` runs only after a *successful* network call (a failed request invalidates
+nothing) and before anything is stored, so the response to the mutation survives its own
+invalidation. The same drops are available from outside a request with
+`invalidateCacheTags(cache, ...tags)` — see [Invalidating](#invalidating).
+
+## HIT / MISS observability
+
+```ts
+const response = await fetch('/api/users');
+response.fromBlazeCache;               // false on a MISS, true on a HIT or STALE
+response.headers.get('x-blaze-cache'); // 'MISS' | 'HIT' | 'STALE' — same, for the network panel
+```
+
+Both are set on **every** response the wrapper returns — `blazeCache: false` bypasses
+included — so `fromBlazeCache` is always a boolean. `markerHeader` renames or removes the
+header; the boolean is unaffected by it.
 
 ## Stale-while-revalidate
 
@@ -171,6 +254,16 @@ Stored responses carry two tags, so they plug straight into the cache's tag API:
 cache.invalidateTags('fetch');                 // everything this wrapper stored
 cache.invalidateTags('get /api/users');        // one resource
 cache.set('get /api/users', /* … */);          // … or just overwrite it
+```
+
+A request can do the same to itself after a mutation with
+`blazeCache: { invalidateTags: [...] }` (see [Per-request options](#per-request-options)),
+and code outside any request has the exported helper:
+
+```ts
+import { invalidateCacheTags } from '@blaze-cache/fetch';
+
+invalidateCacheTags(cache, 'fetch', 'get /api/users'); // no-op without invalidateTags
 ```
 
 ## Custom keys

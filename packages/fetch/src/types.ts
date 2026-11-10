@@ -43,19 +43,106 @@ export interface FetchCacheRecord {
 }
 
 /**
- * `RequestInit` as accepted by the wrapper, plus one non-standard escape hatch.
+ * `RequestInit` as accepted by the wrapper, plus two non-standard escape hatches.
  *
- * Everything the platform defines keeps its meaning; {@link forceRefresh} is additive, and
- * the standard `cache: 'no-cache' | 'reload'` spellings do the same job if you prefer them.
+ * Everything the platform defines keeps its meaning; {@link forceRefresh} and
+ * {@link blazeCache} are additive, and the standard `cache: 'no-cache' | 'reload'`
+ * spellings do the same job as `forceRefresh` if you prefer them.
  */
 export interface BlazeFetchInit extends RequestInit {
   /**
    * Skip the cache **read** and go straight to the network. The fresh response still
    * replaces whatever was stored, so one forced refresh restores a `HIT` afterwards.
    *
-   * Standard equivalent: `cache: 'no-cache'`.
+   * Standard equivalent: `cache: 'no-cache'`; shorthand for
+   * `blazeCache: { forceRefresh: true }`.
    */
   forceRefresh?: boolean;
+
+  /**
+   * Per-request cache overrides — or `false` to bypass the cache entirely for this call.
+   *
+   * ```ts
+   * await fetch('/users/1', { blazeCache: { ttlMs: 30_000, tags: ['user', 'user:1'] } });
+   * await fetch('/users/1', { blazeCache: false }); // neither read nor written
+   * ```
+   *
+   * Non-standard, so it lives on `init` rather than on a `Request`: the network still
+   * receives the caller's original `input`/`init` unchanged, and a real `fetch` ignores
+   * the member it does not know.
+   */
+  blazeCache?: BlazeFetchRequestOptions | false;
+}
+
+/** Per-request overrides passed via `init.blazeCache`. All of them are optional. */
+export interface BlazeFetchRequestOptions {
+  /**
+   * Enable or disable caching for this request.
+   *
+   * `false` bypasses the cache read/write for this request (it still performs any
+   * {@link invalidateTags} after the network response). `true` opts a method *outside*
+   * {@link BlazeFetchOptions.methods} into caching. Omit to follow the wrapper defaults.
+   */
+  enabled?: boolean;
+
+  /**
+   * Freshness window for this request's cached response, in milliseconds.
+   *
+   * Overrides the wrapper-level `ttlMs`. Ignored when the response carries
+   * `Cache-Control: max-age` and Cache-Control honouring is on. `<= 0` means
+   * "do not store".
+   */
+  ttlMs?: number | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => number);
+
+  /**
+   * Tags attached to this request's stored response. Overrides the wrapper-level `tags`.
+   * The default (`['fetch', '<method> <url>']`) applies when neither is given.
+   */
+  tags?: readonly string[] | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => readonly string[]);
+
+  /**
+   * Cache key for this request. A string is used as-is; a function receives the resolved
+   * absolute `url` and the effective `init`. Overrides the wrapper-level `key`.
+   *
+   * Supplying it also opts a body-carrying request into caching — an explicit key is
+   * trusted to describe the body itself.
+   */
+  key?: string | ((url: string, init: BlazeFetchEffectiveInit) => string);
+
+  /**
+   * Request headers whose values participate in the cache key for this request.
+   * Overrides the wrapper-level {@link BlazeFetchOptions.varyHeaders}.
+   */
+  varyHeaders?: readonly string[];
+
+  /**
+   * Force a network round-trip, bypassing the cache read (the fresh response may still
+   * be stored, subject to normal rules). Shorthand for the top-level `forceRefresh`.
+   */
+  forceRefresh?: boolean;
+
+  /**
+   * Tags to invalidate on the cache **after** this request completes against the
+   * network (typically used on mutations: POST/PUT/PATCH/DELETE).
+   *
+   * Runs even when the request itself is never cached, and only after a *successful*
+   * network call — a failed request invalidates nothing. Requires a cache that
+   * implements `invalidateTags` (e.g. `BlazeCache` from `@blaze-cache/core`);
+   * silently ignored otherwise.
+   */
+  invalidateTags?: readonly string[];
+}
+
+/**
+ * A `Response` the wrapper returned, carrying its provenance.
+ *
+ * The extra field lets you branch without sniffing headers; the `x-blaze-cache` response
+ * header carries the same information for the network layer. It is set on **every**
+ * response the wrapper returns — cache bypasses included — so it is always a boolean.
+ */
+export interface CachedFetchResponse extends Response {
+  /** `true` when the response came from cache instead of the network. */
+  fromBlazeCache: boolean;
 }
 
 /**
@@ -88,9 +175,18 @@ export interface BlazeFetchEffectiveInit extends Omit<BlazeFetchInit, 'headers' 
  * window.fetch = blazeFetch;
  * ```
  */
-export type BlazeFetch = (input: RequestInfo | URL, init?: BlazeFetchInit) => Promise<Response>;
+export type BlazeFetch = (
+  input: RequestInfo | URL,
+  init?: BlazeFetchInit,
+) => Promise<CachedFetchResponse>;
 
-/** Options accepted by {@link createBlazeFetch}. All of them are optional. */
+/**
+ * Options accepted by {@link createBlazeFetch}. All of them are optional.
+ *
+ * Most can also be set for a single request through `init.blazeCache` — see
+ * {@link BlazeFetchRequestOptions} — which additionally offers `enabled` and
+ * `invalidateTags`.
+ */
 export interface BlazeFetchOptions {
   /**
    * The function performing the real network call. Defaults to the global `fetch`.
@@ -113,8 +209,9 @@ export interface BlazeFetchOptions {
    * HTTP methods eligible for caching. Default: `['GET']`.
    *
    * Pass `['GET', 'HEAD']` to cache `HEAD` too. Any other method always goes to the network
-   * and is never stored. Non-cacheable methods are also never coalesced with an identical
-   * in-flight request — replaying a side effect would be worse than repeating one.
+   * and is never stored — unless a single request opts itself in with
+   * `blazeCache: { enabled: true }`. Non-cacheable methods are also never coalesced with an
+   * identical in-flight request — replaying a side effect would be worse than repeating one.
    *
    * A method listed here is only stored (or coalesced) when its body can be folded into
    * the key (or a `key` callback describes it) — otherwise two different payloads to the
@@ -135,7 +232,11 @@ export interface BlazeFetchOptions {
    *
    * Set to `false` to treat `ttlMs` as the only authority. The response's `Vary` header is
    * *always* honoured (see {@link varyHeaders}) — variant correctness is not a preference.
+   *
+   * {@link cacheControl} is accepted as an alias; when both are given, this one wins.
    */
+  honourCacheControl?: boolean;
+  /** Alias for {@link honourCacheControl}. */
   cacheControl?: boolean;
 
   /**
@@ -208,6 +309,14 @@ export interface BlazeFetchOptions {
 export interface BlazeFetchCacheLike {
   get(key: string): FetchCacheRecord | undefined;
   set(key: string, value: FetchCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  /**
+   * Optional tag-based invalidation (e.g. `BlazeCache` from `@blaze-cache/core`).
+   *
+   * Optional so a minimal `Map` shim still satisfies the interface; used by per-request
+   * `blazeCache.invalidateTags` on mutations, and by the exported
+   * `invalidateCacheTags(cache, ...tags)` helper.
+   */
+  invalidateTags?(...tags: string[]): string[] | void;
 }
 
 /**
