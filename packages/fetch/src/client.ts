@@ -4,10 +4,12 @@ import { isRequest, normalizeInit, resolveMethod, resolveUrl } from './request.j
 import type {
   BlazeFetch,
   BlazeFetchCacheLike,
+  BlazeFetchRequestOptions,
   BlazeFetchEffectiveInit,
   BlazeFetchInit,
   BlazeFetchMarker,
   BlazeFetchOptions,
+  CachedFetchResponse,
   FetchCacheRecord,
 } from './types.js';
 
@@ -62,7 +64,8 @@ export function createBlazeFetch(
   const markerHeader =
     options.markerHeader === undefined ? DEFAULT_MARKER_HEADER : options.markerHeader;
   const methods = new Set((options.methods ?? DEFAULT_METHODS).map((method) => method.toUpperCase()));
-  const cacheControl = options.cacheControl ?? true;
+  // `honourCacheControl` is the axios-consistent spelling; `cacheControl` is its alias.
+  const honourCacheControl = options.honourCacheControl ?? options.cacheControl ?? true;
   const varyHeaders = options.varyHeaders ?? DEFAULT_VARY_HEADERS;
   const shouldCache = options.shouldCache ?? defaultShouldCache;
   const swr = options.staleWhileRevalidate ?? false;
@@ -93,10 +96,38 @@ export function createBlazeFetch(
     console.warn('[blaze-cache] cache layer failed; continuing without it', error);
   }
 
-  const keyOf = (url: string, init: BlazeFetchEffectiveInit): string =>
-    options.key ? options.key(url, init) : defaultCacheKey(url, init, varyHeaders);
+  const keyOf = (
+    url: string,
+    init: BlazeFetchEffectiveInit,
+    reqOpts: BlazeFetchRequestOptions | undefined,
+  ): string => {
+    if (typeof reqOpts?.key === 'string') return reqOpts.key;
+    if (typeof reqOpts?.key === 'function') return reqOpts.key(url, init);
+    return options.key
+      ? options.key(url, init)
+      : defaultCacheKey(url, init, reqOpts?.varyHeaders ?? varyHeaders);
+  };
 
-  async function dispatch(input: RequestInfo | URL, init: BlazeFetchInit): Promise<Response> {
+  /**
+   * Mutation invalidation: drops tagged entries after the network round-trip.
+   *
+   * Runs even when the request itself is never cacheable (a `POST` never is by default),
+   * and never when the cache has no `invalidateTags` — a structural `Map` shim simply
+   * does not support it. A cache that throws here is a cache-layer failure: warned once,
+   * never propagated into the caller's response.
+   */
+  const invalidateTags = (tags: readonly string[] | undefined): void => {
+    if (!tags || tags.length === 0) return;
+    if (typeof cache.invalidateTags !== 'function') return;
+    try {
+      cache.invalidateTags(...tags);
+    } catch (error) {
+      warnCacheFailure(error);
+    }
+  };
+
+  async function dispatch(input: RequestInfo | URL, init: BlazeFetchInit): Promise<CachedFetchResponse> {
+    const reqOpts = getRequestOptions(init);
     const method = resolveMethod(input, init);
     const url = resolveUrl(input);
     const request = normalizeInit(input, init, method);
@@ -112,20 +143,41 @@ export function createBlazeFetch(
     // own body is a `ReadableStream`, which no encoder can read — so a body-carrying
     // `Request` bypasses caching just like any other unencodable body.
     const carriedBody = request.body ?? (isRequest(input) ? input.body : undefined);
-    const ownsKey = typeof options.key === 'function';
+    const ownsKey =
+      typeof options.key === 'function' ||
+      typeof reqOpts?.key === 'string' ||
+      typeof reqOpts?.key === 'function';
     const bodyKeyed =
       carriedBody === undefined ||
       carriedBody === null ||
       ownsKey ||
       encodeRequestBody(carriedBody) !== undefined;
 
-    // Only a body the key can describe reaches `defaultCacheKey`, which refuses to
-    // approximate one rather than hash two different payloads onto the same entry.
-    const key = bodyKeyed ? keyOf(url, request) : '';
+    // Per-request `enabled: true` can opt a method in; `enabled: false` opts out entirely.
+    const enabled = reqOpts?.enabled ?? true;
+    const methodAllowed = methods.has(method) || reqOpts?.enabled === true;
+
+    // The key is only built when it can be trusted and may actually be used: an
+    // unencodable body never reaches `defaultCacheKey` (which would throw on it), a
+    // disabled request owes the key callback nothing — and a key callback that throws
+    // anyway is a cache-layer failure, costing this response its caching, never the
+    // response itself.
+    let cacheable = enabled && methodAllowed && bodyKeyed;
+    let key = '';
+    if (cacheable) {
+      try {
+        key = keyOf(url, request, reqOpts);
+      } catch (error) {
+        warnCacheFailure(error);
+        cacheable = false;
+      }
+    }
 
     // `init.cache` is the caller's instruction, `Cache-Control` is the server's; with
-    // `cacheControl: false` only the former is still obeyed.
-    const control = cacheControl ? parseCacheControl(request.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    // `honourCacheControl: false` only the former is still obeyed.
+    const control = honourCacheControl
+      ? parseCacheControl(request.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     const bypassWrite = control.noStore || request.cache === 'no-store';
     // A request `max-age=0` is, per RFC 9111 §5.2.2.1, a demand to revalidate before reuse.
     // This cache has no conditional requests, so the closest honest reading is a full
@@ -135,9 +187,9 @@ export function createBlazeFetch(
       control.noCache ||
       control.maxAgeMs === 0 ||
       init.forceRefresh === true ||
+      reqOpts?.forceRefresh === true ||
       request.cache === 'no-cache' ||
       request.cache === 'reload';
-    const cacheable = methods.has(method) && bodyKeyed;
 
     if (cacheable) {
       if (!bypassRead) {
@@ -216,6 +268,14 @@ export function createBlazeFetch(
       done();
       throw error;
     }
+    // Every network response admits where it came from from the moment it arrives, so even
+    // the `shouldCache`/`tags`/`ttlMs` callbacks see `fromBlazeCache: false`.
+    defineOwn(response, 'fromBlazeCache', false);
+
+    // Mutation invalidation: after the round-trip (a failed call invalidates nothing — the
+    // caller's data is unchanged), and before anything is stored, so a fresh entry written
+    // under the same tags survives the invalidation it triggered.
+    invalidateTags(reqOpts?.invalidateTags);
 
     let keep = false;
     if (leader) {
@@ -232,7 +292,7 @@ export function createBlazeFetch(
       // so nothing about this call's latency depends on the write, and a later read can
       // never race a half-written entry. The gate above, however, opens only once that
       // write has settled: that is what lets a joiner trust the cache it finds.
-      void store(response, key, url, request)
+      void store(response, key, url, request, reqOpts)
         .catch(warnCacheFailure)
         .finally(done);
     } else {
@@ -240,7 +300,8 @@ export function createBlazeFetch(
       done();
     }
 
-    // Marked last, so `shouldCache`/`tags`/`ttlMs` see exactly what the network sent.
+    // Marked last, so `shouldCache`/`tags`/`ttlMs` see exactly what the network sent
+    // (bar `fromBlazeCache`, which describes provenance and is set on arrival).
     return mark(response, 'MISS');
   }
 
@@ -283,11 +344,14 @@ export function createBlazeFetch(
     key: string,
     url: string,
     request: BlazeFetchEffectiveInit,
+    reqOpts: BlazeFetchRequestOptions | undefined,
   ): Promise<void> {
     // An opaque response exposes no status, headers or body: there is nothing to store.
     if (response.status === 0) return;
 
-    const control = cacheControl ? parseCacheControl(response.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = honourCacheControl
+      ? parseCacheControl(response.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     // `no-store` forbids storing; `no-cache` demands revalidation on every use, and this
     // cache has no conditional requests — so neither is worth an entry.
     if (control.noStore || control.noCache) return;
@@ -297,13 +361,13 @@ export function createBlazeFetch(
     // anything else would be keyed wrongly, and a wrong key replays the wrong variant —
     // another user's `Cookie`, another locale's `Accept-Language`. When we cannot key on a
     // header, the safe answer is not to cache at all. (Checked unconditionally, not only
-    // under `cacheControl`: variant correctness is not a freshness preference.)
-    if (!varyIsStorable(response.headers.get('Vary'), varyHeaders)) return;
+    // under `honourCacheControl`: variant correctness is not a freshness preference.)
+    // A per-request `varyHeaders` overrides the wrapper's for this entry.
+    if (!varyIsStorable(response.headers.get('Vary'), reqOpts?.varyHeaders ?? varyHeaders)) return;
 
-    const configured = options.ttlMs;
-    const ttl = typeof configured === 'function' ? configured(response, url, request) : (configured ?? DEFAULT_TTL_MS);
+    const ttl = resolveTtl(reqOpts?.ttlMs ?? options.ttlMs, response, url, request);
     const maxAge = control.maxAgeMs ?? ttl;
-    const age = cacheControl ? parseAgeMs(response.headers.get('Age')) : 0;
+    const age = honourCacheControl ? parseAgeMs(response.headers.get('Age')) : 0;
     const freshMs = maxAge - age;
     // Zero, negative or `NaN` means "keep nothing": already stale, or the caller opted out.
     if (!(freshMs > 0)) return;
@@ -315,7 +379,7 @@ export function createBlazeFetch(
     // freshness, so there is nothing it may serve "while revalidating".
     const staleMs = !swrEnabled || control.mustRevalidate
       ? 0
-      : cacheControl && control.staleWhileRevalidateMs !== undefined
+      : honourCacheControl && control.staleWhileRevalidateMs !== undefined
         ? control.staleWhileRevalidateMs
         : swrFallbackMs;
 
@@ -344,10 +408,16 @@ export function createBlazeFetch(
     };
 
     const totalMs = freshMs + staleMs;
+    // Per-request tags win over the wrapper's, and both over the default pair.
+    const reqTags = reqOpts?.tags;
+    const tagList =
+      (typeof reqTags === 'function' ? reqTags(response, url, request) : reqTags) ??
+      options.tags?.(response, url, request) ??
+      defaultTags(request.method, url);
     cache.set(key, record, {
       // `0` is how the core spells "never expires" — reached only via `ttlMs: Infinity`.
       ttlMs: Number.isFinite(totalMs) ? totalMs : 0,
-      tags: options.tags?.(response, url, request) ?? defaultTags(request.method, url),
+      tags: tagList,
     });
   }
 
@@ -365,7 +435,7 @@ export function createBlazeFetch(
   }
 
   /** Rebuilds a `Response` from a stored record, without touching cache statistics. */
-  function replay(record: FetchCacheRecord, marker: BlazeFetchMarker): Response {
+  function replay(record: FetchCacheRecord, marker: BlazeFetchMarker): CachedFetchResponse {
     const headers = headersFromRecord(record.headers);
     if (markerHeader !== false) headers.set(markerHeader, marker);
 
@@ -377,20 +447,29 @@ export function createBlazeFetch(
     // them so a hit carries the metadata of the network response it stands in for.
     defineOwn(response, 'url', record.url);
     defineOwn(response, 'redirected', record.redirected);
-    return response;
+    // Both `HIT` and `STALE` came out of the store — `STALE` merely also started a refresh.
+    defineOwn(response, 'fromBlazeCache', true);
+    return response as CachedFetchResponse;
   }
 
-  /** Stamps the marker on a network response, rebuilding it only if its headers refuse. */
-  function mark(response: Response, marker: BlazeFetchMarker): Response {
-    if (markerHeader === false) return response;
+  /**
+   * Stamps the marker on a network response, rebuilding it only if its headers refuse.
+   *
+   * Also stamps `fromBlazeCache`: `MISS` for anything that crossed the wire, `true` for a
+   * replay (which goes through {@link replay} instead).
+   */
+  function mark(response: Response, marker: BlazeFetchMarker): CachedFetchResponse {
+    const fromCache = marker !== 'MISS';
+    defineOwn(response, 'fromBlazeCache', fromCache);
+    if (markerHeader === false) return response as CachedFetchResponse;
     try {
       response.headers.set(markerHeader, marker);
-      return response;
+      return response as CachedFetchResponse;
     } catch {
       // Immutable headers (network responses in undici, `Response.redirect()`): rebuild so
       // the marker contract holds — the marker goes on the *rebuild*, since the original
       // refused it. Status 0 cannot be rebuilt at all: pass it through unmarked.
-      if (response.status === 0) return response;
+      if (response.status === 0) return response as CachedFetchResponse;
       const headers = new Headers(response.headers);
       headers.set(markerHeader, marker);
       const rebuilt = new Response(response.body, {
@@ -400,11 +479,38 @@ export function createBlazeFetch(
       });
       defineOwn(rebuilt, 'url', response.url);
       defineOwn(rebuilt, 'redirected', response.redirected);
-      return rebuilt;
+      defineOwn(rebuilt, 'fromBlazeCache', fromCache);
+      return rebuilt as CachedFetchResponse;
     }
   }
 
   return (input, init = {}) => dispatch(input, init);
+}
+
+/**
+ * `init.blazeCache` read once, at the top of `dispatch`.
+ *
+ * `false` collapses to "disabled for this request" — the shape a caller writes when they
+ * only mean *not this one* — so the rest of the dispatch reads a single type.
+ */
+function getRequestOptions(init: BlazeFetchInit): BlazeFetchRequestOptions | undefined {
+  return init.blazeCache === false ? { enabled: false } : init.blazeCache;
+}
+
+/**
+ * The configured freshness window for this response.
+ *
+ * `ttlMs` may be a callback, so it resolves per response; `Cache-Control: max-age` still
+ * wins afterwards when honouring is on (see `store`).
+ */
+function resolveTtl(
+  ttl: number | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => number) | undefined,
+  response: Response,
+  url: string,
+  init: BlazeFetchEffectiveInit,
+): number {
+  if (typeof ttl === 'function') return ttl(response, url, init);
+  return ttl ?? DEFAULT_TTL_MS;
 }
 
 /** Successful responses only. The {@link BlazeFetchOptions.methods} gate has already applied. */

@@ -18,6 +18,7 @@ import {
   createBlazeFetch,
   defaultCacheKey,
   fnv1a,
+  invalidateCacheTags,
   parseAgeMs,
   parseCacheControl,
   varyIsStorable,
@@ -1201,6 +1202,7 @@ describe('marker header', () => {
     const first = await fetch('/moved');
     assert.equal(first.status, 302, 'the response passes through untouched');
     assert.equal(first.headers.get('x-blaze-cache'), 'MISS', 'the marker survived the rebuild');
+    assert.equal(first.fromBlazeCache, false, '…and so did the provenance flag');
     assert.equal(calls, 1);
     assert.equal(cache.size(), 0, 'a 302 is not a cacheable status, so nothing was stored');
 
@@ -1217,6 +1219,7 @@ describe('marker header', () => {
     assert.equal(typeof varyIsStorable, 'function');
     assert.equal(typeof defaultCacheKey, 'function');
     assert.equal(typeof fnv1a, 'function');
+    assert.equal(typeof invalidateCacheTags, 'function');
   });
 });
 
@@ -1395,5 +1398,269 @@ describe('regressions', () => {
     assert.equal(calls.length, 2, 'a body-carrying Request is never coalesced or replayed');
     await delay(20);
     assert.deepEqual(cache.keys(), [], 'nor stored');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-request `blazeCache` options, HIT/MISS observability and mutation
+// invalidation — parity with the `@blaze-cache/axios` adapter.
+// ---------------------------------------------------------------------------
+
+describe('per-request blazeCache options', () => {
+  it('bypasses the cache when blazeCache is false or enabled is false', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork(() => ({ body: { n: 1 } }));
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 60_000 });
+
+    const off = await fetch('/a', { blazeCache: false });
+    const alsoOff = await fetch('/a', { blazeCache: { enabled: false } });
+
+    assert.equal(calls.length, 2, 'neither call consulted the cache');
+    assert.equal(off.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(off.fromBlazeCache, false, 'and it admits where it came from');
+    assert.equal(alsoOff.fromBlazeCache, false);
+    await delay(10); // give any (incorrect) background write time to land
+    assert.equal(cache.size(), 0, 'and nothing was stored');
+  });
+
+  it('overrides ttlMs per request', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url) => ({ body: { url } }));
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 60_000 });
+
+    await fetch('/t', { blazeCache: { ttlMs: 10 } });
+    const { record } = onlyRecord(cache);
+    assert.ok(
+      freshFor(record) <= 15,
+      `per-request ttlMs applied (stored ${freshFor(record)}ms, not the wrapper's 60000ms)`,
+    );
+
+    await delay(40);
+    await fetch('/t');
+    assert.equal(calls.length, 2, 'the short window expired and it refetched');
+  });
+
+  it('overrides tags per request (array and function forms)', async () => {
+    const cache = await makeCache();
+    const { net } = stubNetwork(() => ({ body: { ok: true } }));
+    const fetch = createTestFetch(cache, { fetch: net, tags: () => ['global'] });
+
+    await fetch('/tag', { blazeCache: { tags: ['user', 'user:1'] } });
+    assert.equal(cache.keysWithTag('user:1').length, 1, 'the array form landed');
+    assert.equal(cache.keysWithTag('fetch').length, 0, 'and replaced the default tags entirely');
+
+    await fetch('/tag2', { blazeCache: { tags: () => ['fn'] } });
+    assert.equal(cache.keysWithTag('fn').length, 1, 'the function form landed too');
+
+    await fetch('/tag3');
+    assert.equal(cache.keysWithTag('global').length, 1, 'the wrapper-level tag applies when the request has none');
+    assert.equal(cache.size(), 3, 'three resources, three entries');
+  });
+
+  it('overrides the cache key per request (string and function)', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url) => ({ body: { url } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    await fetch('/k', { blazeCache: { key: 'user:1' } });
+    const hit = await fetch('/k?other=1', { blazeCache: { key: 'user:1' } });
+    assert.equal(calls.length, 1, "the caller's key owns the whole key");
+    assert.equal(hit.fromBlazeCache, true);
+    assert.deepEqual(cache.keys(), ['user:1'], 'stored verbatim, under the caller’s spelling');
+
+    const withFn = createTestFetch(cache, { fetch: net });
+    await withFn('/f', { blazeCache: { key: (url, init) => `fn:${init.method}:${url}` } });
+    assert.equal(cache.has('fn:GET:/f'), true, 'the function form receives the effective request');
+  });
+
+  it('overrides varyHeaders per request', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index, headers) => ({
+      body: { tenant: headers.get('x-tenant') },
+    }));
+    // The wrapper folds nothing into its keys; each request opts its own header in.
+    const fetch = createTestFetch(cache, { fetch: net, varyHeaders: [] });
+    const perTenant = { blazeCache: { varyHeaders: ['x-tenant'] } };
+
+    await fetch('/t', { headers: { 'x-tenant': 'a' }, ...perTenant });
+    const again = await fetch('/t', { headers: { 'x-tenant': 'a' }, ...perTenant });
+    assert.equal(calls.length, 1, 'the same tenant hits');
+    assert.equal(again.fromBlazeCache, true);
+
+    const other = await fetch('/t', { headers: { 'x-tenant': 'b' }, ...perTenant });
+    assert.equal(calls.length, 2, 'a different tenant must miss');
+    assert.deepEqual(await other.json(), { tenant: 'b' }, '…and gets its own variant');
+    assert.equal(cache.size(), 2, 'two tenants occupy two keys');
+  });
+
+  it('forceRefresh bypasses the read but stores the fresh response', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 60_000 });
+
+    await fetch('/fr');
+    const forced = await fetch('/fr', { blazeCache: { forceRefresh: true } });
+    assert.equal(calls.length, 2, 'the forced call went to the network');
+    assert.equal(forced.fromBlazeCache, false, 'never served a HIT');
+    assert.deepEqual(await forced.json(), { version: 2 });
+
+    const hit = await fetch('/fr');
+    assert.equal(calls.length, 2, 'the fresh response replaced the entry');
+    assert.equal(hit.fromBlazeCache, true);
+    assert.deepEqual(await hit.json(), { version: 2 }, 'and that is what a later read gets');
+  });
+
+  it('enabled: true opts a method outside `methods` into caching', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { served: index } }));
+    const fetch = createTestFetch(cache, { fetch: net }); // methods: ['GET'] by default
+
+    const first = await fetch('/p', { method: 'POST', body: '{}', blazeCache: { enabled: true } });
+    const hit = await fetch('/p', { method: 'POST', body: '{}', blazeCache: { enabled: true } });
+
+    assert.equal(first.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'the opted-in POST was stored');
+    assert.equal(hit.fromBlazeCache, true);
+    assert.equal(calls.length, 1, 'and replayed instead of refetched');
+  });
+});
+
+describe('mutation invalidation', () => {
+  it('invalidates tags after a mutation request', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({
+      body: url === '/todos' ? { list: index } : { ok: true },
+    }));
+    const fetch = createTestFetch(cache, { fetch: net, tags: () => ['todos'] });
+
+    await fetch('/todos');
+    const hit = await fetch('/todos');
+    assert.equal(hit.fromBlazeCache, true, 'the list is cached');
+    assert.equal(cache.size(), 1);
+
+    const created = await fetch('/todos-create', {
+      method: 'POST',
+      body: JSON.stringify({ text: 'x' }),
+      blazeCache: { invalidateTags: ['todos'] },
+    });
+    assert.equal(created.fromBlazeCache, false, 'the mutation itself is never cached');
+    assert.equal(created.headers.get('x-blaze-cache'), 'MISS');
+    assert.equal(cache.size(), 0, 'todos invalidated after the mutation');
+
+    const fresh = await fetch('/todos');
+    assert.equal(fresh.fromBlazeCache, false, 'the list had to be refetched');
+    assert.equal(calls.length, 3, 'one list fetch, one mutation, one refetch');
+    assert.deepEqual(await fresh.json(), { list: 3 }, '…with the post-mutation payload');
+  });
+
+  it('invalidateTags is a no-op when the cache lacks invalidateTags', async () => {
+    const store = new Map();
+    const cache = {
+      get: (key) => store.get(key),
+      set: (key, value) => {
+        store.set(key, value);
+      },
+    };
+    const { net, calls } = stubNetwork(() => ({ status: 201, body: { ok: true } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const res = await fetch('/m', {
+      method: 'POST',
+      body: '{}',
+      blazeCache: { invalidateTags: ['x'] },
+    });
+
+    assert.equal(res.status, 201, 'a Map shim without invalidateTags never fails the request');
+    assert.equal(res.fromBlazeCache, false);
+    assert.equal(calls.length, 1);
+  });
+
+  it('invalidateCacheTags helper invalidates when supported', async () => {
+    const cache = await makeCache();
+    const { net } = stubNetwork(() => ({ body: { ok: true } }));
+    const fetch = createTestFetch(cache, { fetch: net, tags: () => ['z'] });
+
+    await fetch('/z');
+    assert.equal(cache.size(), 1);
+
+    invalidateCacheTags(cache, 'z');
+    assert.equal(cache.size(), 0, 'the helper drops what the tag names');
+    invalidateCacheTags({}); // no-op
+    invalidateCacheTags(null, 'z'); // no-op
+  });
+});
+
+describe('HIT/MISS observability', () => {
+  it('flags every response with fromBlazeCache', async () => {
+    const cache = await makeCache();
+    const { net } = stubNetwork(() => ({ body: { ok: true } }));
+    const fetch = createTestFetch(cache, { fetch: net });
+
+    const miss = await fetch('/o');
+    assert.equal(miss.fromBlazeCache, false, 'a network response admits it');
+    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
+
+    const hit = await fetch('/o');
+    assert.equal(hit.fromBlazeCache, true, 'a replay is flagged for the caller');
+    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(hit, 'fromBlazeCache'),
+      true,
+      'as an own property of the response',
+    );
+  });
+
+  it('flags a STALE response as from the cache', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, index) => ({ body: { version: index } }));
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 150, staleWhileRevalidate: 500 });
+
+    await fetch('/s');
+    await delay(250); // fresh window elapsed, stale window wide open
+    const stale = await fetch('/s');
+    assert.equal(stale.headers.get('x-blaze-cache'), 'STALE');
+    assert.equal(stale.fromBlazeCache, true, 'served from the store, not the wire');
+    assert.equal(calls.length, 2, 'with a refresh already under way');
+
+    await delay(50); // …and it landed, well inside the rewritten fresh window
+    const refreshed = await fetch('/s');
+    assert.equal(refreshed.headers.get('x-blaze-cache'), 'HIT');
+    assert.equal(refreshed.fromBlazeCache, true);
+    assert.equal(calls.length, 2, 'exactly one refresh per key');
+    assert.deepEqual(await refreshed.json(), { version: 2 }, 'the refreshed payload');
+  });
+});
+
+describe('honourCacheControl', () => {
+  it('can be disabled under either spelling, and the preferred one wins', async () => {
+    const spec = { body: { n: 1 }, headers: { 'cache-control': 'no-store, max-age=1' } };
+
+    // `cacheControl` (the alias): the server's `no-store` is ignored, ttlMs decides.
+    const cache = await makeCache();
+    const { net } = stubNetwork(() => spec);
+    const aliased = createTestFetch(cache, { fetch: net, ttlMs: 60_000, cacheControl: false });
+    await aliased('/x');
+    const aliasHit = await aliased('/x');
+    assert.equal(aliasHit.fromBlazeCache, true, 'server no-store ignored when cacheControl is false');
+
+    // `honourCacheControl` (the axios-consistent spelling): the same behaviour.
+    const cache2 = await makeCache();
+    const preferred = createTestFetch(cache2, { fetch: net, ttlMs: 60_000, honourCacheControl: false });
+    await preferred('/x');
+    const preferredHit = await preferred('/x');
+    assert.equal(preferredHit.fromBlazeCache, true, 'honourCacheControl works the same way');
+
+    // Both given: `honourCacheControl` wins, so honouring is back on.
+    const cache3 = await makeCache();
+    const both = createTestFetch(cache3, {
+      fetch: net,
+      ttlMs: 60_000,
+      cacheControl: false,
+      honourCacheControl: true,
+    });
+    await both('/x');
+    const bothHit = await both('/x');
+    assert.equal(bothHit.fromBlazeCache, false, 'honourCacheControl wins over its alias');
+    assert.equal(cache3.size(), 0, '…so the server’s no-store was obeyed after all');
   });
 });

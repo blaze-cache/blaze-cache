@@ -15,6 +15,7 @@
  *
  * const response = await fetch('/api/users');
  * response.headers.get('x-blaze-cache'); // 'MISS', then 'HIT'
+ * response.fromBlazeCache;               // false, then true
  * ```
  *
  * @packageDocumentation
@@ -31,8 +32,26 @@ export type {
   BlazeFetch,
   BlazeFetchCacheLike,
   BlazeFetchEffectiveInit,
+  BlazeFetchRequestOptions,
   BlazeFetchInit,
   BlazeFetchMarker,
   BlazeFetchOptions,
+  CachedFetchResponse,
   FetchCacheRecord,
 } from './types.js';
+
+/**
+ * Invalidate tags on a cache that supports it (e.g. `BlazeCache` from
+ * `@blaze-cache/core`). A no-op when the cache has no `invalidateTags` method.
+ *
+ * ```ts
+ * invalidateCacheTags(cache, 'todos'); // after a mutation, from outside a request
+ * ```
+ */
+export function invalidateCacheTags(
+  cache: { invalidateTags?(...tags: string[]): unknown } | undefined | null,
+  ...tags: string[]
+): void {
+  if (!cache || tags.length === 0) return;
+  if (typeof cache.invalidateTags === 'function') cache.invalidateTags(...tags);
+}

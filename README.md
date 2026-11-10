@@ -534,6 +534,7 @@ const cachedFetch = createBlazeFetch(cache, { ttlMs: 30_000 });
 
 const response = await cachedFetch('/api/users/42');
 response.headers.get('x-blaze-cache');   // 'HIT' | 'MISS' | 'STALE'
+response.fromBlazeCache;                  // true on a HIT / STALE
 await response.json();
 ```
 
@@ -594,6 +595,12 @@ Behaviour worth knowing:
   `transfer-encoding` are dropped and `content-length` is corrected to the stored size —
   otherwise a hit would claim the *compressed* length for decoded bytes.
 * `markerHeader` renames `x-blaze-cache` or switches it off (`markerHeader: false`).
+* Requests tune the cache per call through `blazeCache`: `blazeCache: false` bypasses the
+  read *and* the write, while `{ enabled, ttlMs, tags, key, varyHeaders, forceRefresh,
+  invalidateTags }` overrides a single request — a mutation can drop related tags after
+  its own response lands (`invalidateCacheTags(cache, ...tags)` does the same from
+  outside). Every response also carries `fromBlazeCache` — `false` on a network MISS,
+  `true` on a HIT or STALE — alongside the marker header.
 
 Full option reference: [`packages/fetch`](packages/fetch).
 
