@@ -590,3 +590,48 @@ describe('resilience (ofetch)', () => {
     assert.equal(warnings.length, 1);
   });
 });
+
+describe('regressions (ofetch)', () => {
+  it('never replays one origin\'s response for another (undisclosed instance baseURL)', async () => {
+    const cache = await makeCache();
+    const alpha = stubNetwork(() => ({ body: { servedBy: 'ALPHA' } }));
+    const beta = stubNetwork(() => ({ body: { servedBy: 'BETA' } }));
+    // The `baseURL` lives in each ofetch instance's `defaults`, which ofetch keeps in a
+    // closure it never exposes — blazeOfetch receives no `baseURL` hint, exactly the shape
+    // that used to key both origins onto the one relative URL they have in common.
+    const apiA = blazeOfetch(
+      createFetch({ fetch: alpha.net, defaults: { baseURL: 'https://alpha.example.com' } }),
+      cache,
+      { ttlMs: TTL_MS },
+    );
+    const apiB = blazeOfetch(
+      createFetch({ fetch: beta.net, defaults: { baseURL: 'https://beta.example.com' } }),
+      cache,
+      { ttlMs: TTL_MS },
+    );
+
+    const first = await settle(apiA('/users'));
+    const second = await settle(apiB('/users'));
+
+    assert.deepEqual(first, { servedBy: 'ALPHA' }, 'alpha is served by alpha');
+    assert.deepEqual(second, { servedBy: 'BETA' }, 'the beta call must reach beta, not replay alpha');
+    assert.equal(alpha.calls.length, 1, 'alpha hit its own network once');
+    assert.equal(beta.calls.length, 1, 'beta hit its own network once');
+
+    const third = await settle(apiA('/users'));
+    assert.deepEqual(third, { servedBy: 'ALPHA' }, 'alpha still serves its own cached response');
+    assert.equal(alpha.calls.length, 1, 'and the repeat is a HIT');
+
+    await delay(20); // both fire-and-forget writes settle
+    assert.equal(cache.size(), 2, 'each origin occupies its own entry');
+    const keys = cache.keys();
+    assert.ok(
+      keys.some((key) => key.includes('https://alpha.example.com/users')),
+      `alpha stored under its own origin, got ${JSON.stringify(keys)}`,
+    );
+    assert.ok(
+      keys.some((key) => key.includes('https://beta.example.com/users')),
+      `beta stored under its own origin, got ${JSON.stringify(keys)}`,
+    );
+  });
+});
