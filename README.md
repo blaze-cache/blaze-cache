@@ -690,9 +690,9 @@ What you get:
   (including per-field `no-cache="…"`) stop storage. `Vary` is always honoured.
 * The wrapped instance keeps ofetch's full API — call it directly for parsed data, `.raw()`
   for the `FetchResponse` (with the `x-blaze-cache` marker), `.native` for the underlying
-  fetch, and `.create()` for derived instances (which remain cached). An instance's own
-  `baseURL`, which ofetch keeps hidden in a closure, is learned from the first response
-  instead.
+  fetch, and `.create()` for derived instances (which remain cached, with their options
+  applied to *both* the request and the cache key — an instance's own `baseURL`, which
+  ofetch keeps hidden in a closure, is learned from the first response instead).
 * No stale-while-revalidate here. For SWR (with an `STALE` marker) use
   [`@blaze-cache/fetch`](#fetch).
 

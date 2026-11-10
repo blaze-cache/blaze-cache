@@ -83,7 +83,7 @@ export interface BlazeOfetchKeyContext {
   method: string;
   /** Final URL after `baseURL` and `query`/`params` resolution. */
   url: string;
-  /** Request headers (a `Headers` instance). */
+  /** Request headers (a `Headers` instance), including this instance's default headers. */
   headers: Headers;
 }
 
