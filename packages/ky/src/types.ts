@@ -79,7 +79,9 @@ export interface BlazeKyCacheOptions {
    * HTTP methods eligible for caching. Default: `['GET']`.
    *
    * Pass `['GET', 'HEAD']` to cache `HEAD` too. Any other method always goes to the network
-   * and is never stored.
+   * and is never stored. A method listed here is only stored when its body can be folded
+   * into the key (or a `key` callback describes it) — otherwise two different payloads to
+   * the same URL would share one entry.
    */
   methods?: readonly string[];
 
@@ -101,10 +103,13 @@ export interface BlazeKyCacheOptions {
    * Builds the cache key. Receives the ky `Request` — final URL (after `prefixUrl`/
    * `baseUrl` and `searchParams`), normalized method and merged headers.
    *
-   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} —
-   * {@link defaultCacheKey} is that default, so you can wrap it and only change the parts
-   * you care about. Replacing the key replaces **everything** the default included, so
-   * include the method yourself when caching more than one method.
+   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} and of the
+   * request body — {@link defaultCacheKey} is that default, so you can wrap it and only
+   * change the parts you care about. Replacing the key replaces **everything** the default
+   * included, so include the method yourself when caching more than one method — and the
+   * body too, if you cache a method that carries one. Supplying `key` also opts a
+   * body-carrying request into caching that would otherwise be skipped as unkeyable (ky
+   * hands hooks a stream body the default key cannot read).
    */
   key?: (request: Request) => string;
 

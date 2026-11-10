@@ -682,4 +682,45 @@ describe('regressions (ofetch)', () => {
     await delay(20);
     assert.equal(cache.size(), 2, 'two identities occupy two entries');
   });
+
+  it('keys an opted-in POST by its body: two payloads, two entries', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork((url, callNumber) => ({ body: { served: callNumber } }));
+    const api = blazeOfetch(createFetch({ fetch: net }), cache, {
+      ttlMs: TTL_MS,
+      methods: ['GET', 'POST'],
+    });
+
+    const first = await settle(api(USERS, { method: 'POST', body: { id: 1 } }));
+    const second = await settle(api(USERS, { method: 'POST', body: { id: 2 } }));
+    const repeat = await settle(api(USERS, { method: 'POST', body: { id: 1 } }));
+
+    assert.deepEqual(first, { served: 1 }, 'the first payload is served');
+    assert.deepEqual(second, { served: 2 }, 'a different payload must never replay the first response');
+    assert.equal(calls.length, 2, 'the second payload went to the network');
+    assert.deepEqual(repeat, { served: 1 }, 'the same payload still hits');
+    assert.equal(calls.length, 2, 'the repeat did not');
+
+    await delay(20);
+    assert.equal(cache.size(), 2, 'two payloads occupy two entries');
+  });
+
+  it('never stores an opted-in POST whose body cannot be folded into the key', async () => {
+    const cache = await makeCache();
+    const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
+    const api = blazeOfetch(createFetch({ fetch: net }), cache, {
+      ttlMs: TTL_MS,
+      methods: ['GET', 'POST'],
+    });
+    // Raw bytes: `JSON.stringify` renders them as the bare `'{}'`, which would collapse
+    // every byte body onto one key — so nothing at all may be stored for them.
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+
+    await settle(api(USERS, { method: 'POST', body: bytes }));
+    await settle(api(USERS, { method: 'POST', body: bytes }));
+
+    assert.equal(calls.length, 2, 'an unkeyable body always reaches the network');
+    await delay(20);
+    assert.deepEqual(cache.keys(), [], 'and nothing that cannot be keyed is ever stored');
+  });
 });

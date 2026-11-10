@@ -599,6 +599,51 @@ for (const { label, ky, prefix } of versions) {
       assert.equal(cache.size(), 2, 'the auth header the user hook added was folded into the key');
     });
   });
+
+  describe(`regressions (${label})`, () => {
+    it('never stores a body-carrying request ky hands us as a stream', async () => {
+      const cache = await makeCache();
+      const { net, calls } = stubNetwork((url, callNumber) => ({ body: { served: callNumber } }));
+      const api = hookApi(cache, net, { methods: ['GET', 'POST'] });
+
+      const first = await settle(api.post(USERS, { json: { id: 1 } }).json());
+      const second = await settle(api.post(USERS, { json: { id: 2 } }).json());
+
+      assert.deepEqual(first, { served: 1 }, 'the first payload is served');
+      assert.deepEqual(
+        second,
+        { served: 2 },
+        'a different payload must never replay the first response',
+      );
+      assert.equal(calls.length, 2, 'both payloads went to the network');
+      await delay(20);
+      assert.equal(
+        cache.size(),
+        0,
+        'a body the key cannot read (a Request stream) is never stored',
+      );
+    });
+
+    it('lets a caller-supplied key opt a body-carrying POST into caching', async () => {
+      const cache = await makeCache();
+      const { net, calls } = stubNetwork((url, callNumber) => ({ body: { served: callNumber } }));
+      // Supplying `key` means the caller claims to describe the whole key — including any
+      // body — so the adapter trusts it instead of refusing to cache the request.
+      const api = hookApi(cache, net, {
+        methods: ['GET', 'POST'],
+        key: (request) => `custom:${request.url}`,
+      });
+
+      const first = await settle(api.post(USERS, { json: { id: 1 } }).json());
+      await delay(20);
+      assert.equal(cache.size(), 1, 'the custom key opts the request into caching');
+      assert.deepEqual(first, { served: 1 });
+
+      const second = await settle(api.post(USERS, { json: { id: 2 } }).json());
+      assert.equal(calls.length, 1, 'and under that key the next request is a HIT');
+      assert.deepEqual(second, { served: 1 }, '…replayed from the entry that key names');
+    });
+  });
 }
 
 /** `createBlazeKy` is bound to whatever `ky` resolves to — tested once, on the default (v1). */

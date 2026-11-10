@@ -115,6 +115,10 @@ export interface BlazeFetchOptions {
    * Pass `['GET', 'HEAD']` to cache `HEAD` too. Any other method always goes to the network
    * and is never stored. Non-cacheable methods are also never coalesced with an identical
    * in-flight request — replaying a side effect would be worse than repeating one.
+   *
+   * A method listed here is only stored (or coalesced) when its body can be folded into
+   * the key (or a `key` callback describes it) — otherwise two different payloads to the
+   * same URL would share one entry.
    */
   methods?: readonly string[];
 
@@ -153,10 +157,12 @@ export interface BlazeFetchOptions {
    * Builds the cache key. Receives the resolved absolute `url` and the effective `init`
    * (see {@link BlazeFetchEffectiveInit}).
    *
-   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} — {@link defaultCacheKey}
-   * is that default, so you can wrap it and only change the parts you care about. Replacing
-   * the key replaces **everything** the default included, so include `init.method` yourself
-   * when caching more than one method.
+   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} and of the request
+   * body — {@link defaultCacheKey} is that default, so you can wrap it and only change the
+   * parts you care about. Replacing the key replaces **everything** the default included,
+   * so include `init.method` yourself when caching more than one method — and the body too,
+   * if you cache a method that carries one. Supplying `key` also opts a body-carrying
+   * request into caching that would otherwise be skipped as unkeyable.
    */
   key?: (url: string, init: BlazeFetchEffectiveInit) => string;
 

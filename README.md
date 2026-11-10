@@ -497,6 +497,11 @@ Behaviour worth knowing:
   two requests differing only in those params no longer collide. Order is preserved for
   `URLSearchParams` (axios sends it verbatim) and ignored for `FormData` parts and `Map`
   keys.
+* A request body folds into the key as well: an opted-in `POST` with two different
+  payloads occupies two entries instead of replaying one response for the other. A body
+  the key cannot read (raw bytes, a stream) leaves the request uncached rather than
+  guessed at — the same "unknown ⇒ do not store" rule `Vary` follows — unless a `key`
+  callback describes it.
 * Freshness is enforced by the adapter, not trusted from the store: every record carries
   the deadline it was written with, so a store that never expires anything (a plain `Map`
   shim qualifies) still cannot replay a stale entry.
@@ -627,7 +632,8 @@ await api('users/42'); // HIT  — replayed from cache, x-blaze-cache: HIT
 What you get:
 
 * Custom keys are `key: (request) => string`; the default is `defaultCacheKey` (method +
-  URL + a hash of `varyHeaders`), exported from `@blaze-cache/ky` — call it to look an
+  URL + a hash of `varyHeaders` and the request body), exported from `@blaze-cache/ky` —
+  call it to look an
   entry up yourself, or supply your own `key`. Tags are
   `tags: (response, request) => readonly string[]` and TTL is
   `ttlMs: number | (response, request) => number`; `markerHeader`, `varyHeaders`,
@@ -679,8 +685,9 @@ await api.raw('/users/42');  // HIT  — FetchResponse with x-blaze-cache: HIT
 
 What you get:
 
-* Custom keys are `key: ({ method, url, headers, ... }) => string`; the default is
-  method + resolved URL (after `baseURL`/`query`) plus a hash of `varyHeaders`, exported as
+* Custom keys are `key: ({ method, url, headers, body, ... }) => string`; the default is
+  method + resolved URL (after `baseURL`/`query`) plus a hash of `varyHeaders` and the
+  request body, exported as
   `defaultCacheKey`. Tags are `tags: (response, ctx) => readonly string[]` and TTL is
   `ttlMs: number | (response, ctx) => number`; `markerHeader`, `varyHeaders`,
   `shouldCache`, and `cacheControl` behave like the other HTTP adapters.

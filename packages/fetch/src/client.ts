@@ -1,5 +1,5 @@
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey } from './key.js';
+import { defaultCacheKey, encodeRequestBody } from './key.js';
 import { isRequest, normalizeInit, resolveMethod, resolveUrl } from './request.js';
 import type {
   BlazeFetch,
@@ -100,7 +100,28 @@ export function createBlazeFetch(
     const method = resolveMethod(input, init);
     const url = resolveUrl(input);
     const request = normalizeInit(input, init, method);
-    const key = keyOf(url, request);
+
+    // A body that cannot be folded into the key would make every request carrying one
+    // share a single entry — a `POST` with two payloads would occupy one entry and the
+    // first response would be replayed for the second. Refusing to cache costs one extra
+    // request; a wrong hit hands one caller another caller's response, so the asymmetry
+    // decides it. A caller-supplied `key` owns the whole key, so it is trusted to describe
+    // the body itself.
+    //
+    // The body may sit on the `init` or on a `Request` input (`init` winning); a `Request`'s
+    // own body is a `ReadableStream`, which no encoder can read — so a body-carrying
+    // `Request` bypasses caching just like any other unencodable body.
+    const carriedBody = request.body ?? (isRequest(input) ? input.body : undefined);
+    const ownsKey = typeof options.key === 'function';
+    const bodyKeyed =
+      carriedBody === undefined ||
+      carriedBody === null ||
+      ownsKey ||
+      encodeRequestBody(carriedBody) !== undefined;
+
+    // Only a body the key can describe reaches `defaultCacheKey`, which refuses to
+    // approximate one rather than hash two different payloads onto the same entry.
+    const key = bodyKeyed ? keyOf(url, request) : '';
 
     // `init.cache` is the caller's instruction, `Cache-Control` is the server's; with
     // `cacheControl: false` only the former is still obeyed.
@@ -116,7 +137,7 @@ export function createBlazeFetch(
       init.forceRefresh === true ||
       request.cache === 'no-cache' ||
       request.cache === 'reload';
-    const cacheable = methods.has(method);
+    const cacheable = methods.has(method) && bodyKeyed;
 
     if (cacheable) {
       if (!bypassRead) {

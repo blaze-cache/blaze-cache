@@ -69,7 +69,11 @@ const users = await api.get('users').json();
 ## Behaviour
 
 * **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
-  else always goes to the network and is never stored.
+  else always goes to the network and is never stored. A method you *do* list is only
+  stored when its body can be folded into the cache key — two different payloads to the
+  same URL must never share an entry — but ky hands its hooks a `Request` whose body is a
+  stream, which the key cannot read: a body-carrying request therefore bypasses the cache
+  unless you supply a `key` callback that describes it.
 * **Only successful responses are stored** — the default `shouldCache` keeps `2xx`;
   replace it to widen or narrow that. A cached non-`2xx` (reachable with a custom
   `shouldCache`) still throws ky's `HTTPError` on replay exactly like the network one.
@@ -143,7 +147,7 @@ const hooks = blazeKyHook(cache, {
 | `ttlMs` | `60_000` | Freshness window. Overridden by a response `max-age`. |
 | `methods` | `['GET']` | Methods eligible for caching. |
 | `cacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. |
-| `key` | method + URL + vary hash | Custom cache key. |
+| `key` | method + URL + vary/body hash | Custom cache key. Supplying one also opts a body-carrying request into caching. |
 | `shouldCache` | `2xx` | Which responses are stored. |
 | `tags` | `['ky', '<method> <url>']` | Tags for `cache.invalidateTags(...)`. |
 | `varyHeaders` | `['authorization']` | Request headers folded into the default key. |
@@ -176,7 +180,7 @@ import { blazeKyHook, defaultCacheKey } from '@blaze-cache/ky';
 const api = ky.extend({
   hooks: {
     ...blazeKyHook(cache, {
-      // Keep the default (method + URL + vary hash) and add a version prefix:
+      // Keep the default (method + URL + vary/body hash) and add a version prefix:
       key: (request) => `v2:${defaultCacheKey(request, ['authorization'])}`,
     }),
   },

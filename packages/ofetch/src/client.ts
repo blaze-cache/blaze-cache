@@ -2,7 +2,7 @@ import { withBase, withQuery } from 'ufo';
 import type { $Fetch, FetchOptions, FetchResponse } from 'ofetch';
 
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey, isAbsoluteUrl } from './key.js';
+import { defaultCacheKey, encodeRequestBody, hasRequestBody, isAbsoluteUrl } from './key.js';
 import type {
   BlazeOfetchCacheLike,
   BlazeOfetchInstance,
@@ -120,15 +120,6 @@ export function blazeOfetch(
     console.warn('[blaze-cache] cache layer failed; continuing without it', error);
   }
 
-  function read(key: string): OfetchCacheRecord | undefined {
-    try {
-      return cache.get(key);
-    } catch (error) {
-      warnCacheFailure(error);
-      return undefined;
-    }
-  }
-
   /**
    * Reported once when a response could not be keyed at all — i.e. when the instance
    * resolved an origin this wrapper never saw and could not recover it from the response.
@@ -142,6 +133,15 @@ export function blazeOfetch(
       '[blaze-cache] could not determine the full request URL, so this response was not stored; ' +
         'pass `baseURL` to blazeOfetch to make the key origin-specific',
     );
+  }
+
+  function read(key: string): OfetchCacheRecord | undefined {
+    try {
+      return cache.get(key);
+    } catch (error) {
+      warnCacheFailure(error);
+      return undefined;
+    }
   }
 
   /**
@@ -190,11 +190,16 @@ export function blazeOfetch(
       typeof request !== 'string' && 'headers' in request ? (request as Request).headers : undefined,
       opts.headers as HeadersInit | undefined,
     );
-    return { request, options: opts, method, url, headers };
+    const body =
+      opts.body ??
+      (typeof request !== 'string' && 'body' in request ? (request as Request).body : undefined);
+    return { request, options: opts, method, url, headers, body };
   }
 
   function keyOf(ctx: BlazeOfetchKeyContext): string {
-    return options.key ? options.key(ctx) : defaultCacheKey(ctx.method, ctx.url, ctx.headers, varyHeaders);
+    return options.key
+      ? options.key(ctx)
+      : defaultCacheKey(ctx.method, ctx.url, ctx.headers, varyHeaders, ctx.body);
   }
 
   /**
@@ -307,14 +312,27 @@ export function blazeOfetch(
     }
 
     const control = cacheControl ? parseCacheControl(ctx.headers.get('Cache-Control')) : NO_DIRECTIVES;
-    const bypassRead =
+    const requestCache = (callOpts as { cache?: string }).cache;
+    let bypassRead =
       control.noStore ||
       control.noCache ||
       control.maxAgeMs === 0 ||
-      (callOpts as { cache?: string }).cache === 'no-store' ||
-      (callOpts as { cache?: string }).cache === 'no-cache' ||
-      (callOpts as { cache?: string }).cache === 'reload';
-    const bypassWrite = control.noStore || (callOpts as { cache?: string }).cache === 'no-store';
+      requestCache === 'no-store' ||
+      requestCache === 'no-cache' ||
+      requestCache === 'reload';
+    let bypassWrite = control.noStore || requestCache === 'no-store';
+
+    // A body that cannot be folded into the key would make every request carrying one
+    // share a single entry, replaying the first response for all the rest. A caller-supplied
+    // `key` owns the whole key, so it is trusted to describe the body itself.
+    if (
+      typeof options.key !== 'function' &&
+      hasRequestBody(ctx.body) &&
+      encodeRequestBody(ctx.body) === undefined
+    ) {
+      bypassRead = true;
+      bypassWrite = true;
+    }
 
     // --- read ---
     // The key is only safe to build once the URL names its own origin. A relative url here
@@ -336,7 +354,7 @@ export function blazeOfetch(
           }
         }
         if (isRecord(record)) {
-          if ((callOpts as { cache?: string }).cache !== 'force-cache' && Date.now() > record.freshUntil) {
+          if (requestCache !== 'force-cache' && Date.now() > record.freshUntil) {
             try { cache.delete?.(key); } catch (error) { warnCacheFailure(error); }
           } else {
             return replay(record, 'HIT', wantRaw) as T | FetchResponse<T>;

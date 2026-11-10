@@ -138,7 +138,57 @@ function stringifyParams(value: unknown): string | undefined {
   }
 }
 
-/** Default cache key: method + URL, plus a hash of the params and the `vary` headers. */
+/**
+ * The request body as a stable, injective string for the cache key — or `undefined` when
+ * the body **cannot** be encoded and the request must therefore stay uncached.
+ *
+ * A body that reaches the key wrong is worse than no cached body at all: two different
+ * payloads would hash onto one entry and the first response would be replayed for the
+ * second. So anything whose content this function cannot actually read is refused rather
+ * than approximated:
+ *
+ * * a stream, a `Blob`/`File` or raw bytes have no readable own properties — the canonical
+ *   serialisation renders each as the bare `'{}'`, which would collapse *every* such body
+ *   onto *one* key;
+ * * an object that serialises to `'{}'` for any other reason (a class instance keeping its
+ *   data in private fields, an empty object) carries nothing to tell bodies apart by;
+ * * a circular structure throws out of `JSON.stringify`.
+ *
+ * Ordering follows {@link stringifyParams} — keys sorted, values through `toJSON` — so the
+ * encoding stays stable across calls. That stability matters more here than elsewhere: a
+ * body that hashed differently on every call would simply never hit, while one that hashed
+ * the same for two different payloads would hand one caller another caller's response.
+ */
+export function encodeRequestBody(data: unknown): string | undefined {
+  if (data === undefined || data === null) return ''; // no body
+
+  if (
+    typeof data === 'string' ||
+    typeof data === 'number' ||
+    typeof data === 'boolean' ||
+    typeof data === 'bigint'
+  ) {
+    return stringifyParams(data);
+  }
+  if (typeof data !== 'object') return undefined; // function, symbol, ...
+  // Raw bytes: refused rather than hashed, because a 32-bit digest over caller-supplied
+  // bytes is a collision surface this key does not need to open.
+  if (ArrayBuffer.isView(data) || data instanceof ArrayBuffer) return undefined;
+
+  const json = stringifyParams(data);
+  if (json === undefined) return undefined;
+  if (json === '{}') return undefined; // no enumerable content — see the doc comment above
+  return json;
+}
+
+/**
+ * Separator between the hashed key components: a raw NUL, which `JSON.stringify` never
+ * emits unescaped (it writes a six-character escape instead), so no params or body value
+ * can be crafted to straddle the boundary and impersonate the other component.
+ */
+const COMPONENT_SEPARATOR = String.fromCharCode(0);
+
+/** Default cache key: method + URL, plus a hash of the params, the `vary` headers and the body. */
 export function defaultCacheKey(
   config: InternalAxiosRequestConfig,
   varyHeaders: readonly string[],
@@ -155,5 +205,16 @@ export function defaultCacheKey(
     varyHeaders.map((header) => readHeader(config.headers, header) ?? ''),
   );
 
-  return `${method} ${url}?${fnv1a(`${params} ${vary}`)}`;
+  // A body-carrying method can only be keyed by its body too — `POST /orders` with two
+  // different payloads is two different requests, and without this they would share one
+  // entry and the first response would be replayed for the second.
+  const carriesBody = config.data !== undefined && config.data !== null;
+  const encodedBody = carriesBody ? encodeRequestBody(config.data) : undefined;
+  if (carriesBody && encodedBody === undefined) {
+    throw new Error('[blaze-cache] this request body cannot be encoded into a cache key');
+  }
+
+  const payload =
+    encodedBody === undefined ? `${params} ${vary}` : `${params} ${vary}${COMPONENT_SEPARATOR}${encodedBody}`;
+  return `${method} ${url}?${fnv1a(payload)}`;
 }

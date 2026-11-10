@@ -105,6 +105,10 @@ export interface BlazeAxiosCacheOptions {
    *
    * Applied before {@link shouldCache}. Per-request `blazeCache.enabled = true` can
    * still cache a method outside this list when paired with a permissive `shouldCache`.
+   *
+   * Such a request is only stored if its body can be folded into the key (or a `key`
+   * callback is supplied that describes it) — otherwise two different payloads to the
+   * same URL would share one entry.
    */
   methods?: readonly string[];
 
@@ -134,8 +138,12 @@ export interface BlazeAxiosCacheOptions {
   /**
    * Builds the cache key. Receives the final (post-interceptor) config.
    *
-   * The default hashes the method, URL, params and the {@link varyHeaders} values, keeping
-   * secrets such as bearer tokens out of stored keys.
+   * The default hashes the method, URL, params, the {@link varyHeaders} values and the
+   * request body, keeping secrets such as bearer tokens out of stored keys.
+   *
+   * Supplying this replaces **all** of that, so a key for a body-carrying method must
+   * describe the body itself — the adapter trusts an explicit key and skips the check it
+   * would otherwise apply.
    */
   key?: (config: InternalAxiosRequestConfig) => string;
 

@@ -116,6 +116,11 @@ await api.get('/users/1', {
   one key. Each is now flattened into a stable string of its actual entries: order
   preserved for `URLSearchParams` (axios sends it verbatim), order ignored for
   `FormData` parts and `Map` keys.
+* **A request body folds into the key too** — an opted-in `POST` with two different
+  payloads occupies two entries instead of replaying one response for the other. A body
+  the key cannot read (raw bytes, a stream, anything serialising to the bare `'{}'`)
+  leaves that request uncached rather than guessed at — the same "unknown ⇒ do not store"
+  rule `Vary` follows — unless a `key` callback describes it.
 * **Replayed headers describe the stored body, not the wire** — axios decodes the body
   for you (and drops `content-encoding`), so `transfer-encoding` goes too and
   `content-length` is corrected to the payload's real size. A live request answered with
@@ -123,7 +128,9 @@ await api.get('/users/1', {
   contradicts `data.byteLength`. Bodyless responses (HEAD) keep theirs: there the headers
   describe the body a GET *would* return.
 * Only responses that pass `validateStatus` are stored; by default the cache keeps
-  `GET` and `HEAD` requests answering `2xx` (`methods: ['GET', 'HEAD']`).
+  `GET` and `HEAD` requests answering `2xx` (`methods: ['GET', 'HEAD']`). A method you
+  cache beyond those is stored only when its body can be folded into the key (or a `key`
+  callback describes it).
 * **HIT/MISS observability** — `response.fromBlazeCache` is `true` on cache hits and
   `false` on network responses, and the `x-blaze-cache` header is set to `HIT`/`MISS`
   (configurable via `markerHeader`, or `false` to disable). Core cache `hit`/`miss`/`set`

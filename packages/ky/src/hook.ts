@@ -1,5 +1,5 @@
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey } from './key.js';
+import { defaultCacheKey, encodeRequestBody } from './key.js';
 import type {
   BlazeKyAfterResponseHook,
   BlazeKyBeforeRequestHook,
@@ -107,6 +107,25 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     options.key ? options.key(request) : defaultCacheKey(request, varyHeaders);
 
   /**
+   * Whether this request's body can be folded into the cache key at all.
+   *
+   * A body that cannot be read would make every request carrying one share a single entry —
+   * a `POST` with two payloads would occupy one entry and the first response would be
+   * replayed for the second. Refusing to cache costs one extra request; a wrong hit hands
+   * one caller another caller's response, so the asymmetry decides it: unknown ⇒ do not
+   * store, the same rule `varyIsStorable` applies to unlisted headers.
+   *
+   * ky's hooks see `Request.body` as a `ReadableStream` whenever the request carries one —
+   * never readable, so a body-carrying ky request bypasses the cache. A caller-supplied
+   * `key` owns the whole key, so it is trusted to describe the body itself.
+   */
+  const bodyKeyed = (request: Request): boolean =>
+    typeof options.key === 'function' ||
+    request.body === null ||
+    request.body === undefined ||
+    encodeRequestBody(request.body) !== undefined;
+
+  /**
    * `cache.get`, guarded: a cache-layer failure reads as a plain miss — the request falls
    * through to the network instead of failing over a broken cache.
    */
@@ -137,6 +156,10 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
       request.cache === 'no-cache' ||
       request.cache === 'reload';
     if (bypassRead) return undefined;
+    // A body that cannot be keyed means this request never occupies a trustworthy entry —
+    // reading one could replay another payload's response, so the read is skipped (the
+    // write side below is gated the same way).
+    if (!bodyKeyed(request)) return undefined;
 
     const key = keyOf(request);
     let record = read(key);
@@ -182,7 +205,7 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     // (`no-cache`, `max-age=0`, `reload`) skip the read but still refresh the entry.
     const bypassWrite = control.noStore || request.cache === 'no-store';
 
-    if (!bypassWrite && methods.has(request.method.toUpperCase())) {
+    if (!bypassWrite && methods.has(request.method.toUpperCase()) && bodyKeyed(request)) {
       // The response's own `Vary` gates the store: `Vary: *` is never cacheable, and a
       // response varying on a header outside `varyHeaders` would be replayed to callers
       // who differ in exactly that header — see `varyIsStorable` for why "unknown ⇒ do
