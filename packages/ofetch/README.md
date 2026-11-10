@@ -58,7 +58,10 @@ const users = await api('/users');
 ## Behaviour
 
 * **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
-  else always goes to the network and is never stored.
+  else always goes to the network and is never stored. A method you *do* list is only
+  stored when its body can be folded into the cache key — two different payloads to the
+  same URL must never share an entry — so a body the key cannot read (a stream, raw bytes)
+  leaves that request uncached unless you supply a `key` callback that describes it.
 * **Only successful responses are stored** — the default `shouldCache` keeps `2xx`;
   replace it to widen or narrow that. A response `shouldCache` rejects is still returned
   (or throws, if ofetch would throw for that status) — it is simply not cached.
@@ -116,7 +119,7 @@ const api = blazeOfetch(ofetch, cache, {
 | `ttlMs` | `60_000` | Freshness window. Overridden by a response `max-age`. |
 | `methods` | `['GET']` | Methods eligible for caching. |
 | `cacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. |
-| `key` | method + resolved URL + vary hash | Custom cache key (receives `{ request, options, method, url, headers }`). |
+| `key` | method + resolved URL + vary/body hash | Custom cache key (receives `{ request, options, method, url, headers, body }`). |
 | `shouldCache` | `2xx` | Which responses are stored. |
 | `tags` | `['ofetch', '<method> <url>']` | Tags for `cache.invalidateTags(...)`. |
 | `varyHeaders` | `['authorization']` | Request headers folded into the default key. |
@@ -141,9 +144,14 @@ invalidate together.
 import { blazeOfetch, defaultCacheKey } from '@blaze-cache/ofetch';
 
 const api = blazeOfetch(ofetch, cache, {
-  key: (ctx) => `v2:${defaultCacheKey(ctx.method, ctx.url, ctx.headers, ['authorization'])}`,
+  key: (ctx) =>
+    `v2:${defaultCacheKey(ctx.method, ctx.url, ctx.headers, ['authorization'], ctx.body)}`,
 });
 ```
+
+Supplying `key` replaces **everything** the default included — method, URL, vary hash and
+body — and opts a body-carrying request into caching that the adapter would otherwise skip
+as unkeyable, so the callback must describe the body itself.
 
 ## Testing
 

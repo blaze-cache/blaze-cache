@@ -1179,3 +1179,68 @@ describe('observability', () => {
     assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
   });
 });
+
+describe('regressions (axios)', () => {
+  it('keys an opted-in POST by its body: two payloads, two entries', async () => {
+    const cache = await makeCache();
+    const calls = [];
+    // Echoes the payload it received, so a replay of the wrong response is visible.
+    const adapter = async (config) => {
+      calls.push(config);
+      return {
+        data: { payload: config.data },
+        status: 200,
+        statusText: '200',
+        headers: { 'content-type': 'application/json' },
+        config,
+        request: {},
+      };
+    };
+    const blaze = blazeAdapter({ cache, adapter, methods: ['GET', 'POST'] });
+
+    const first = await blaze({
+      method: 'post',
+      url: '/orders',
+      data: { id: 1 },
+      headers: new AxiosHeaders(),
+    });
+    const second = await blaze({
+      method: 'post',
+      url: '/orders',
+      data: { id: 2 },
+      headers: new AxiosHeaders(),
+    });
+    const repeat = await blaze({
+      method: 'post',
+      url: '/orders',
+      data: { id: 1 },
+      headers: new AxiosHeaders(),
+    });
+
+    assert.deepEqual(first.data, { payload: { id: 1 } }, 'the first payload is served');
+    assert.deepEqual(
+      second.data,
+      { payload: { id: 2 } },
+      'a different payload must never replay the first response',
+    );
+    assert.equal(calls.length, 2, 'the second payload went to the network');
+    assert.equal(repeat.headers.get('x-blaze-cache'), 'HIT', 'the same payload still hits');
+    assert.equal(calls.length, 2, 'the repeat did not');
+    assert.equal(cache.size(), 2, 'two payloads occupy two entries');
+  });
+
+  it('never stores an opted-in POST whose body cannot be folded into the key', async () => {
+    const cache = await makeCache();
+    const { adapter, calls } = stubNetwork({ '/blob': { status: 200, data: { ok: true } } });
+    const blaze = blazeAdapter({ cache, adapter, methods: ['GET', 'POST'] });
+    // Raw bytes: the canonical serialisation renders them as the bare `'{}'`, which would
+    // collapse every byte body onto one key — so nothing at all may be stored for them.
+    const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+
+    await blaze({ method: 'post', url: '/blob', data: bytes, headers: new AxiosHeaders() });
+    await blaze({ method: 'post', url: '/blob', data: bytes, headers: new AxiosHeaders() });
+
+    assert.equal(calls.length, 2, 'an unkeyable body always reaches the network');
+    assert.deepEqual(cache.keys(), [], 'and nothing that cannot be keyed is ever stored');
+  });
+});

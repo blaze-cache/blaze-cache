@@ -46,7 +46,11 @@ window.fetch = fetch;                   // now every request in the app is cache
 ## Behaviour
 
 * **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
-  else (including errors from uncached methods) always goes to the network.
+  else (including errors from uncached methods) always goes to the network. A method you
+  *do* list is only stored (or coalesced) when its body can be folded into the cache key —
+  two different payloads to the same URL must never share an entry — so a body the key
+  cannot read (a stream, a `Blob`, raw bytes) leaves that request uncached unless you
+  supply a `key` callback that describes it.
 * **`Cache-Control` is honoured on both sides** when `cacheControl` is on (the default):
   on the request, `no-store`/`no-cache` and `max-age=0` skip the read; on the response,
   `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache` — the per-field
@@ -126,7 +130,7 @@ const fetch = createBlazeFetch(cache, {
 | `methods` | `['GET']` | Methods eligible for caching. |
 | `cacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. |
 | `staleWhileRevalidate` | `false` | Serve stale entries while refreshing. A number is the fallback window when the response omits the directive. |
-| `key` | method + URL + vary hash | Custom cache key. |
+| `key` | method + URL + vary/body hash | Custom cache key. Supplying one also opts a body-carrying request into caching. |
 | `shouldCache` | `2xx` | Which responses are stored. |
 | `tags` | `['fetch', '<method> <url>']` | Tags for `cache.invalidateTags(...)`. |
 | `varyHeaders` | `['authorization']` | Request headers folded into the default key. |
@@ -175,7 +179,7 @@ cache.set('get /api/users', /* … */);          // … or just overwrite it
 import { createBlazeFetch, defaultCacheKey } from '@blaze-cache/fetch';
 
 const fetch = createBlazeFetch(cache, {
-  // Keep the default (method + URL + vary hash) and add a version prefix:
+  // Keep the default (method + URL + vary/body hash) and add a version prefix:
   key: (url, init) => `v2:${defaultCacheKey(url, init, ['authorization'])}`,
 });
 ```

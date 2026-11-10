@@ -8,7 +8,7 @@ import type {
 } from 'axios';
 
 import { NO_DIRECTIVES, parseAgeMs, parseCacheControl, varyIsStorable } from './cache-control.js';
-import { defaultCacheKey, resolveRequestUrl } from './key.js';
+import { defaultCacheKey, encodeRequestBody, resolveRequestUrl } from './key.js';
 import { readHeader, toAxiosHeaders, toPlainHeaders } from './headers.js';
 import type {
   AxiosCacheRecord,
@@ -80,7 +80,25 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
     const methods = globalMethods;
     // Per-request `enabled: true` can opt a method in; `enabled: false` opts out entirely.
     const methodAllowed = methods.has(method) || reqOpts?.enabled === true;
-    const cacheable = enabled && methodAllowed && config.responseType !== 'stream';
+
+    // A body that cannot be folded into the key would make every request carrying one
+    // share a single entry — `POST /orders` with two payloads would occupy one entry and
+    // the first response would be replayed for the second. Refusing to cache costs one
+    // extra request; a wrong hit hands one caller another caller's response, so the
+    // asymmetry decides it. A caller-supplied `key` owns the whole key, so it is trusted
+    // to describe the body itself.
+    const ownsKey =
+      typeof options.key === 'function' ||
+      typeof reqOpts?.key === 'string' ||
+      typeof reqOpts?.key === 'function';
+    const bodyKeyed =
+      config.data === undefined ||
+      config.data === null ||
+      ownsKey ||
+      encodeRequestBody(config.data) !== undefined;
+
+    const cacheable =
+      enabled && methodAllowed && config.responseType !== 'stream' && bodyKeyed;
 
     const varyHeaders = reqOpts?.varyHeaders ?? globalVaryHeaders;
     const keyOf = (): string => {

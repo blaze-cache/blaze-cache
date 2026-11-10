@@ -85,6 +85,14 @@ export interface BlazeOfetchKeyContext {
   url: string;
   /** Request headers (a `Headers` instance), including this instance's default headers. */
   headers: Headers;
+  /**
+   * Request body, if the call carries one — `undefined`/`null` when it does not.
+   *
+   * The default key folds this into the hash so two payloads to the same URL occupy two
+   * entries. A body it cannot encode (a stream, a `Blob`) leaves the request uncached
+   * unless you supply {@link BlazeOfetchOptions.key} and describe the body yourself.
+   */
+  body?: unknown;
 }
 
 /** Options accepted by {@link blazeOfetch} and {@link createBlazeOfetch}. All optional. */
@@ -124,9 +132,10 @@ export interface BlazeOfetchOptions {
    * Builds the cache key. Receives the resolved request identity (final URL after `baseURL`/
    * `query` resolution, normalized method and merged headers).
    *
-   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} —
-   * {@link defaultCacheKey} implements that default. Replacing the key replaces **everything**
-   * the default included, so include the method yourself when caching more than one method.
+   * The default is `"<method> <url>"` plus a hash of {@link varyHeaders} and of the request
+   * body — {@link defaultCacheKey} implements that default. Replacing the key replaces
+   * **everything** the default included, so include the method yourself when caching more
+   * than one method — and the body too, if you cache a method that carries one.
    */
   key?: (context: BlazeOfetchKeyContext) => string;
 
