@@ -11,6 +11,7 @@ import type {
   BlazeSWRCacheLike,
   BlazeSWRMiddlewareOptions,
   BlazeSWRRecord,
+  BlazeSWRTags,
 } from './types.js';
 
 /** How long written entries survive in the Blaze Cache (SWR owns in-session freshness). */
@@ -18,10 +19,15 @@ export const DEFAULT_TTL_MS = 86_400_000;
 /** Default tag, so `cache.invalidateTags('swr')` purges everything this package wrote. */
 export const DEFAULT_TAGS: readonly string[] = ['swr'];
 
-/** The `cache.set` stamp one write goes out with: resolved options, never partial. */
+/**
+ * The `cache.set` stamp one write goes out with: the resolved `ttlMs`, and the `tags`
+ * option — a resolver among them, still pending until the fetched data exists to be
+ * handed to it. `any` on the resolver's data, the same erasure `Middleware` applies to
+ * the fetcher's: the hook's declared `Data` and SWR's own never meet at this layer.
+ */
 interface ResolvedStamp {
   ttlMs: number;
-  tags: readonly string[];
+  tags: BlazeSWRTags<any>;
 }
 
 /**
@@ -32,12 +38,16 @@ interface ResolvedStamp {
  * the key happens at the call site: inside a captured closure TypeScript would have to
  * assume the parameter changed since the null check.
  *
- * Failures propagate untouched — SWR keeps its own error state, and the cache only ever
- * holds data that a fetcher actually returned. `undefined` is skipped: SWR reads it as
- * "no data", so there is nothing worth stamping a TTL onto. The raw result goes into a
+ * Fetch failures propagate untouched — SWR keeps its own error state, and the cache only
+ * ever holds data that a fetcher actually returned. `undefined` is skipped: SWR reads it
+ * as "no data", so there is nothing worth stamping a TTL onto. The raw result goes into a
  * {@link BlazeSWRRecord} envelope, so hydration can tell this package's writes apart from
  * foreign values on a shared cache (see {@link readBlazeSWRRecord}); the fetcher itself
  * still resolves with the bare result, exactly as the caller's fetcher would.
+ *
+ * Cache-side failures are guarded the other way round: a `tags` resolver or a `cache.set`
+ * that throws cannot take the fetched data with it — the write is skipped, one warning
+ * says so, and the result resolves as if the cache were never there.
  */
 function persistingFetcher<Data>(
   fetcher: BareFetcher<Data>,
@@ -48,8 +58,15 @@ function persistingFetcher<Data>(
   return async (...args: any[]) => {
     const data = await fetcher(...args);
     if (data !== undefined) {
-      const record: BlazeSWRRecord<Data> = { kind: 'swr', data, storedAt: Date.now() };
-      cache.set(key, record, stamp);
+      try {
+        // A `tags` resolver gets the same argument the fetcher just received — the
+        // resolved key, never the hash it is filed under.
+        const tags = typeof stamp.tags === 'function' ? stamp.tags(args[0], data) : stamp.tags;
+        const record: BlazeSWRRecord<Data> = { kind: 'swr', data, storedAt: Date.now() };
+        cache.set(key, record, { ttlMs: stamp.ttlMs, tags });
+      } catch (error) {
+        console.warn('[blaze-cache] storing the response failed — it is returned unstored', error);
+      }
     }
     return data;
   };
@@ -65,16 +82,22 @@ function persistingFetcher<Data>(
  * | mount / revalidate | SWR runs its own revalidation as usual (`revalidateIfStale` still applies), so the fetcher runs in the background exactly like plain `useSWR` |
  * | fetch success | the result is written to the Blaze Cache under the SWR-serialized key, stamped with `ttlMs`/`tags` |
  * | fetch failure | ignored by the cache — errors live in SWR, data lives in Blaze |
+ * | cache failure | never fatal — a read that throws seeds nothing (warned once), a write that throws returns the data unwritten (warned per write) |
  *
  * The seeded entry is deliberately **not** treated as fresh: SWR's `fallbackData` carries
  * no timestamp, so `revalidateIfStale` (on by default) still revalidates on mount. Set
  * `revalidateOnMount: false` or `revalidateIfStale: false` when a cache hit should skip
  * the network entirely.
  *
+ * `forceRefresh: true` (per call, or once on the middleware) inverts the first row: the
+ * persisted entry is not read at all, and `revalidateOnMount` is forced to `true` so the
+ * fetcher runs regardless of what this call or the provider would otherwise decide —
+ * while the write still happens, so the next mount starts from the fresh result.
+ *
  * Precedence for what wins the first paint: a caller-supplied `fallbackData`, then an
  * entry in a provider-level `fallback` map, then the Blaze Cache. Precedence for the
- * write stamp: `ttlMs`/`tags` on the current options, then the middleware's own
- * options, then {@link DEFAULT_TTL_MS}/{@link DEFAULT_TAGS}.
+ * write stamp and `forceRefresh`: the current call's options, then the middleware's own
+ * options, then {@link DEFAULT_TTL_MS}/{@link DEFAULT_TAGS}/no forced refresh.
  *
  * A paused key (`null`/`undefined`/`false`, or a lazy key resolving to one) reads and
  * writes nothing — {@link resolveBlazeKey} maps those to `null` and the middleware passes
@@ -103,31 +126,29 @@ function persistingFetcher<Data>(
  * @param cache   The Blaze Cache (or anything {@link BlazeSWRCacheLike}-shaped).
  * @param options The Blaze-side stamp for writes; per-call options still override it.
  */
-export function blazeSWRMiddleware(
+export function blazeSWRMiddleware<Data = unknown>(
   cache: BlazeSWRCacheLike,
-  options: BlazeSWRMiddlewareOptions = {},
+  options: BlazeSWRMiddlewareOptions<Data> = {},
 ): Middleware {
   return (useSWRNext) => (key, fetcher, config) => {
     const blazeKey = resolveBlazeKey(key);
 
-    // Per-call `ttlMs`/`tags` ride in the SWR config (SWR merges unknown options through),
-    // then the middleware's own options, then the package defaults.
+    // Per-call `ttlMs`/`tags`/`forceRefresh` ride in the SWR config (SWR merges unknown
+    // options through), then the middleware's own options, then the package defaults.
+    const callOptions = config as SWRConfiguration & BlazeSWRMiddlewareOptions<Data>;
     const stamp: ResolvedStamp = {
-      ttlMs:
-        (config as SWRConfiguration & BlazeSWRMiddlewareOptions).ttlMs ??
-        options.ttlMs ??
-        DEFAULT_TTL_MS,
-      tags:
-        (config as SWRConfiguration & BlazeSWRMiddlewareOptions).tags ??
-        options.tags ??
-        DEFAULT_TAGS,
+      ttlMs: callOptions.ttlMs ?? options.ttlMs ?? DEFAULT_TTL_MS,
+      tags: callOptions.tags ?? options.tags ?? DEFAULT_TAGS,
     };
+    const forceRefresh = callOptions.forceRefresh ?? options.forceRefresh ?? false;
 
     // Hydration: `peek` first so renders never move the hit rate or nudge eviction —
     // a recording `get` stays the fallback for caches that predate it. Only this
     // package's own envelope seeds the UI; a foreign value under a colliding key reads
-    // as a miss rather than being handed to the component as `data`.
-    const data = blazeKey === null ? undefined : readBlazeSWRRecord(cache, blazeKey);
+    // as a miss rather than being handed to the component as `data`. `forceRefresh`
+    // skips the read entirely — the persisted entry must not quiet this mount.
+    const data =
+      blazeKey === null || forceRefresh ? undefined : readBlazeSWRRecord(cache, blazeKey);
 
     // Caller-supplied fallbacks stay authoritative: `fallbackData` directly, or a
     // provider-level `fallback` entry for this exact key. Blaze only fills the gap.
@@ -135,10 +156,16 @@ export function blazeSWRMiddleware(
       config.fallbackData !== undefined ||
       (blazeKey !== null && config.fallback?.[blazeKey] !== undefined);
 
+    // A forced refresh has to actually fetch: with nothing seeded, SWR needs
+    // `revalidateOnMount` — and it must win even over an explicit `false` (from this call
+    // or the provider), because skipping the read is only honest if the network runs. The
+    // branches cannot overlap: `data` is undefined whenever `forceRefresh` is set.
     const nextConfig =
       data !== undefined && !callerFallback
         ? ({ ...config, fallbackData: data } as SWRConfiguration)
-        : config;
+        : forceRefresh && blazeKey !== null
+          ? ({ ...config, revalidateOnMount: true } as SWRConfiguration)
+          : config;
 
     const nextFetcher =
       fetcher !== null && blazeKey !== null

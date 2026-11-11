@@ -1,5 +1,8 @@
 import type { BlazeSWRCacheLike, BlazeSWRRecord } from './types.js';
 
+/** One warning for the life of the module — the read runs on every render. */
+let warned = false;
+
 /**
  * Reads `key` and returns the record's data **only when the value is one this package
  * wrote** — the hydration gate.
@@ -12,13 +15,24 @@ import type { BlazeSWRCacheLike, BlazeSWRRecord } from './types.js';
  * component as `data`.
  *
  * Read with `peek` when the cache has one — a render must not move the hit rate or nudge
- * eviction — falling back to `get` for caches that predate it.
+ * eviction — falling back to `get` for caches that predate it. A cache that *throws* here
+ * reads as the miss it then is: the hook fetches as plain `useSWR` would, the render
+ * lives, and one console warning says so.
  */
 export function readBlazeSWRRecord<Data = unknown>(
   cache: BlazeSWRCacheLike,
   key: string,
 ): Data | undefined {
-  const value = cache.peek ? cache.peek(key) : cache.get(key);
+  let value: unknown;
+  try {
+    value = cache.peek ? cache.peek(key) : cache.get(key);
+  } catch (error) {
+    if (!warned) {
+      warned = true;
+      console.warn('[blaze-cache] reading from the cache failed — hydrating without it', error);
+    }
+    return undefined;
+  }
   return isBlazeSWRRecord<Data>(value) ? value.data : undefined;
 }
 

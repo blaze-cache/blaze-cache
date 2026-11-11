@@ -25,12 +25,16 @@ const wasmBytes = await readFile(
   new URL('../../core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url),
 );
 
+/** What the mocked `useSWR` was last called with — filled by every hook call below. */
+const captured = {};
+
 describe('useBlazeSWR option plumbing', () => {
   it('passes the per-call stamp into the config SWR merges provider values into', async () => {
-    let captured;
     mock.module('swr', {
       defaultExport: (key, fetcher, config) => {
-        captured = { key, fetcher, config };
+        captured.key = key;
+        captured.fetcher = fetcher;
+        captured.config = config;
         return {
           data: undefined,
           error: undefined,
@@ -53,10 +57,29 @@ describe('useBlazeSWR option plumbing', () => {
       revalidateOnFocus: false,
     });
 
-    assert.ok(captured, 'the hook reached useSWR');
+    assert.ok(captured.config, 'the hook reached useSWR');
     assert.equal(captured.config.ttlMs, 5_000, 'the per-call ttlMs is in the SWR config');
     assert.deepEqual(captured.config.tags, ['call'], 'the per-call tags are in the SWR config');
     assert.equal(captured.config.revalidateOnFocus, false, 'ordinary SWR options pass through');
+    assert.equal(typeof captured.config.use[0], 'function', 'the Blaze middleware is installed');
+
+    await cache.dispose();
+  });
+
+  it('carries forceRefresh and a tags resolver into that same config', async () => {
+    // Same module instance as above — already linked against the mock — so a second
+    // import is enough; no new mock, no real `swr` anywhere in this process.
+    const { useBlazeSWR } = await import('@blaze-cache/swr');
+    const cache = await createCache({ wasm: wasmBytes, persistence: false });
+    const tags = (key, data) => ['user', `user:${data.id}`];
+
+    useBlazeSWR(cache, '/api/users/7', async () => ({ id: 7 }), {
+      forceRefresh: true,
+      tags,
+    });
+
+    assert.equal(captured.config.forceRefresh, true, 'forceRefresh is in the SWR config');
+    assert.equal(captured.config.tags, tags, 'a tags resolver passes through untouched');
     assert.equal(typeof captured.config.use[0], 'function', 'the Blaze middleware is installed');
 
     await cache.dispose();
