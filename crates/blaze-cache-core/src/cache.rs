@@ -541,12 +541,14 @@ where
             .ttl_opt()
             .filter(|ttl| !ttl.is_zero())
             .and_then(|ttl| Instant::now().checked_add(ttl));
-        let new_tag_ids = self
-            .tags
-            .intern_all(options.tags_ref().iter().map(String::as_str));
 
         let previous = match existing {
             Some(idx) => {
+                // An overwrite never grows the index, so nothing can be swept away here:
+                // the ids interned now are exactly the ones the node ends up keeping.
+                let new_tag_ids = self
+                    .tags
+                    .intern_all(options.tags_ref().iter().map(String::as_str));
                 let (old_expires_at, old_tag_ids) = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
                     let old_expires_at = node.expires_at;
@@ -580,6 +582,14 @@ where
                 // Make room *before* publishing the node: a write must never be able to
                 // evict the entry it just created.
                 while self.index.len() >= self.capacity && self.evict_one().is_some() {}
+                // …and intern the tags only *after* that sweep. Dropping a tag's last
+                // member forgets the tag outright, so an id resolved beforehand would point
+                // at a tag that no longer exists: `attach` would silently no-op and the new
+                // entry would keep dangling ids it could never be invalidated by. Re-resolving
+                // here either finds the tag still alive or recreates it fresh.
+                let new_tag_ids = self
+                    .tags
+                    .intern_all(options.tags_ref().iter().map(String::as_str));
                 let node = Node::new(key.clone(), value, expires_at, new_tag_ids.clone());
                 let idx = match self.free.pop() {
                     Some(idx) => {
