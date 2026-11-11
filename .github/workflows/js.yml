@@ -36,21 +36,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to the commit SHA, with the release in a
+      # trailing comment — tags are mutable, SHAs are not (dependabot updates both).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # pnpm's version comes from `packageManager` in package.json — nothing to pin twice.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
 
       # Builds the wasm crate: every package test runs against `packages/core/pkg`.
       - name: Install Rust (stable, per rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch tip
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # Download the release binary ourselves instead of using jetli/wasm-pack-action@v0.4.0:
       # that action `rename`s the binary out of /tmp, and on this runner /tmp sits on a
@@ -59,9 +61,14 @@ jobs:
       - name: Install wasm-pack
         env:
           WASM_PACK_VERSION: v0.15.0
+          # Pin the artifact too, not just the version: this is the sha256 of the
+          # x86_64-unknown-linux-musl release tarball, hashed locally before pinning.
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
         run: |
-          curl -sSfL "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C /tmp
+          curl -sSfL -o /tmp/wasm-pack.tar.gz \
+            "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_PACK_SHA256}  /tmp/wasm-pack.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/wasm-pack.tar.gz -C /tmp
           install -m 755 "/tmp/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" \
             "$HOME/.cargo/bin/wasm-pack"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -87,26 +94,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install Rust (stable, per rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch tip
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install wasm-pack
         env:
           WASM_PACK_VERSION: v0.15.0
+          # Pin the artifact too, not just the version: this is the sha256 of the
+          # x86_64-unknown-linux-musl release tarball, hashed locally before pinning.
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
         run: |
-          curl -sSfL "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C /tmp
+          curl -sSfL -o /tmp/wasm-pack.tar.gz \
+            "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_PACK_SHA256}  /tmp/wasm-pack.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/wasm-pack.tar.gz -C /tmp
           install -m 755 "/tmp/wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" \
             "$HOME/.cargo/bin/wasm-pack"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
