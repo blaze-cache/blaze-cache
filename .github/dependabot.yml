@@ -1,0 +1,21 @@
+# Automated dependency updates — this is what would have opened a PR for the
+# follow-redirects CVE (GHSA-mrwp-f3q8-3g9p) instead of leaving it to an audit.
+#
+# For github-actions, dependabot re-pins the commit SHAs in .github/workflows
+# and bumps the version in the trailing comment alongside each SHA.
+version: 2
+updates:
+  - package-ecosystem: npm # reads pnpm-lock.yaml at the workspace root
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

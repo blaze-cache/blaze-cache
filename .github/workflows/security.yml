@@ -1,0 +1,96 @@
+# Supply-chain gates: secrets in history, vulnerable npm/cargo dependencies.
+#
+# Three independent checks, all read-only against public data:
+#
+#   secrets  — gitleaks over the full git history (hence fetch-depth: 0).
+#   npm      — pnpm audit against the registry advisory DB. No install step: it
+#              reads pnpm-lock.yaml directly (verified locally: exit 0 clean).
+#   cargo    — rustsec/audit-check against the RustSec advisory DB. On the
+#              nightly schedule it files an issue per new advisory; on PRs it
+#              just fails the check. Fork PRs can't get a check written (token
+#              is read-only there) — findings still land in the job log.
+#
+# Every downloaded binary is pinned by version *and* sha256; third-party
+# actions are pinned by commit SHA with the version in a trailing comment —
+# that comment is what .github/dependabot.yml re-pins on its weekly update.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly, 04:41 UTC — off the hour, like js.yml's cron.
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes older runs pointless — cancel them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # gitleaks scans the whole history, not just the checked-out snapshot.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          # sha256 of gitleaks_8.30.1_linux_x64.tar.gz: upstream checksums.txt,
+          # independently re-hashed locally before pinning.
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # --redact keeps matched secret material out of the job log.
+      - name: scan history for secrets
+        run: gitleaks git . --redact --no-banner
+
+  npm:
+    name: pnpm audit (npm advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # Gate at high: info/low/moderate advisories shouldn't fail an unrelated
+      # PR — same reasoning as the live-suite isolation in js.yml. A registry
+      # outage fails the job, but it would fail pnpm install in js.yml anyway.
+      - name: audit npm dependencies
+        run: pnpm audit --audit-level high
+
+  cargo:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: write # file the result as a check on push/PR
+      issues: write # nightly runs open an issue per new advisory
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -925,7 +925,9 @@ examples/
 benchmarks/
   cache/                 pnpm bench — blaze adapters vs React Query and SWR
 .github/
+  dependabot.yml         weekly update PRs: npm, cargo, and the pinned action SHAs
   workflows/             rust.yml (fmt, clippy, tests) + js.yml (offline on PR, live nightly)
+                         + security.yml (gitleaks, pnpm audit, cargo audit)
 ```
 
 ## Development
@@ -978,6 +980,11 @@ package resolves `@blaze-cache/core` through its built declarations, so `core` g
 [`.github/workflows/js.yml`](.github/workflows/js.yml) mirrors that split — the offline
 suites gate every push and PR, the live ones run on a nightly cron and on manual
 dispatch, so a third-party outage can never fail an unrelated PR.
+[`.github/workflows/security.yml`](.github/workflows/security.yml) runs the supply-chain
+gates on the same triggers — gitleaks over the full history, `pnpm audit`, and
+`cargo audit` — with downloaded binaries pinned by sha256 and third-party actions by
+commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) opens the weekly
+update PRs for dependencies and those pins.
 
 ## Benchmarks
 
