@@ -43,7 +43,9 @@ describe('useBlazeSWR option plumbing', () => {
           mutate: () => {},
         };
       },
-      namedExports: { unstable_serialize },
+      // `unstable_serialize` for the key module, `mutate` for `invalidateBlazeSWR` —
+      // both are value imports of the package under test.
+      namedExports: { unstable_serialize, mutate: async () => undefined },
     });
 
     // First import in this process — its `swr` links resolve against the mock above.
