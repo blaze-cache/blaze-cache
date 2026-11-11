@@ -27,23 +27,28 @@ import type { BlazeSWRCacheLike, BlazeSWROptions } from './types.js';
  *   It governs *cross-session* freshness; SWR's own options keep governing *in-session*
  *   freshness.
  * * `tags` — attached to every write, so `cache.invalidateTags('todos')` purges them.
+ *   A function is resolved at write time from the key and the fetched data:
+ *   `tags: (key, data) => ['user', \`user:${data.id}\`]`.
+ * * `forceRefresh` — skip the persisted entry and fetch anyway; the result is still
+ *   written back, so the next mount starts from it.
  *
  * Any other middleware in `options.use` composes normally; this one is placed first so
  * it seeds the config and wraps the fetcher before they transform either.
  *
- * Invalidating by tag (the fetcher runs again on the next mount; SWR's in-memory copy
- * keeps its own lifecycle, so revalidate it too when it must change on the spot):
+ * Invalidating by tag — `invalidateBlazeSWR` purges every entry this package wrote under
+ * the tag *and* revalidates the mounted hooks in one call (`cache.invalidateTags` is the
+ * raw equivalent: it reaches the whole shared tag namespace, and leaves SWR's in-memory
+ * copy to you):
  *
  * ```ts
- * cache.invalidateTags('todos');
- * mutate('/api/todos'); // SWR's own revalidation for the mounted hook
+ * await invalidateBlazeSWR(cache, 'todos');
  * ```
  *
  * @param cache   The Blaze Cache (or anything {@link BlazeSWRCacheLike}-shaped).
  * @param key     The SWR key — string, tuple, object, or a lazy function; `null` pauses.
  * @param fetcher The fetcher; omit it (or pass `null`) to use a global one or for
  *                client-side state — the cache is still read, nothing is written.
- * @param options Normal SWR options plus `ttlMs`/`tags`.
+ * @param options Normal SWR options plus `ttlMs`/`tags`/`forceRefresh`.
  */
 export function useBlazeSWR<
   Data = any,
@@ -58,12 +63,20 @@ export function useBlazeSWR<
   const { use, ...swrOptions } = options;
 
   return useSWR(key, fetcher, {
-    // `ttlMs`/`tags` deliberately stay *in* the config: SWR merges an `SWRConfig`
-    // provider's values into it too, and hook-level options win that merge — so a
-    // per-call stamp reaches the middleware's `config.ttlMs ?? options.ttlMs ?? default`
-    // read as the highest precedence. Stripping them into the middleware's own options
-    // would invert that: the provider's config value would then shadow the per-call one.
+    // `ttlMs`/`tags`/`forceRefresh` deliberately stay *in* the config: SWR merges an
+    // `SWRConfig` provider's values into it too, and hook-level options win that merge —
+    // so a per-call stamp reaches the middleware's `config.ttlMs ?? options.ttlMs ??
+    // default` read as the highest precedence. Stripping them into the middleware's own
+    // options would invert that: the provider's config value would then shadow the
+    // per-call one.
     ...swrOptions,
-    use: [blazeSWRMiddleware(cache, { ttlMs: options.ttlMs, tags: options.tags }), ...(use ?? [])],
+    use: [
+      blazeSWRMiddleware<Data>(cache, {
+        ttlMs: options.ttlMs,
+        tags: options.tags,
+        forceRefresh: options.forceRefresh,
+      }),
+      ...(use ?? []),
+    ],
   }) as SWRResponse<Data, Error>;
 }
