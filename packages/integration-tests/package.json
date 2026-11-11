@@ -16,6 +16,6 @@
     "@blaze-cache/react-query": "workspace:*",
     "@blaze-cache/swr": "workspace:*",
     "axios": "^1.21.0",
-    "ky": "^1.14.3"
+    "ky": "^2.2.0"
   }
 }

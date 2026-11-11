@@ -13,7 +13,7 @@
   "dependencies": {
     "@blaze-cache/core": "workspace:*",
     "@blaze-cache/ky": "workspace:*",
-    "ky": "^1.14.3",
+    "ky": "^2.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
