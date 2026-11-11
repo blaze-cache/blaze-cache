@@ -220,6 +220,27 @@ fn rewriting_an_entry_replaces_its_tags() {
 }
 
 #[test]
+fn a_tagged_write_that_forces_an_eviction_keeps_its_own_tags() {
+    // The capacity sweep runs *before* the new node is published, and dropping a tag's last
+    // member forgets the tag outright. Interning the ids before that sweep therefore handed
+    // `attach` an id whose tag no longer existed — a silent no-op that left the new entry
+    // carrying dangling ids it could never be invalidated by.
+    let mut cache = Cache::new(1);
+    cache.insert_with("a", 1, EntryOptions::new().tag("hot"));
+    cache.insert_with("b", 2, EntryOptions::new().tag("hot")); // evicts `a`, the last `hot`
+
+    assert_eq!(keys_of(&cache), vec!["b"]);
+    assert_eq!(cache.tags_of("b"), Some(vec!["hot".to_owned()]));
+    assert!(cache.has_tag("b", "hot"));
+    assert_eq!(tagged_keys(&cache, "hot"), vec!["b"]);
+
+    assert_eq!(cache.invalidate_tags(["hot"]), vec!["b"]);
+    assert!(cache.is_empty());
+    // The forgotten tag must not leak either.
+    assert!(cache.keys_with_tag("hot").is_empty());
+}
+
+#[test]
 fn entries_expose_ttl_and_tags_for_persistence() {
     let mut cache = Cache::new(4);
     cache.insert_with(
