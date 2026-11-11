@@ -4,3 +4,8 @@ packages:
   - "benchmarks/*"
 allowBuilds:
   esbuild: true
+overrides:
+  # CVE-2026-116689 (GHSA-mrwp-f3q8-3g9p): follow-redirects <1.16.2 leaks
+  # sensitive headers on cross-realm sensitiveHeaders. Transitive via axios;
+  # pnpm 11 ignores package.json#pnpm.overrides (pnpm/pnpm#11536), so it lives here.
+  follow-redirects: "^1.16.3"
