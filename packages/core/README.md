@@ -95,6 +95,52 @@ with the wasm memory — and overlapping `dispose()` calls share one teardown, s
 is freed exactly once. The full design notes live in the
 [repository README](https://github.com/blaze-cache/blaze-cache#events).
 
+## Subscriptions
+
+`subscribe` is the value-oriented front end of [Events](#events): hand it a key, a list of
+keys or a tag and a callback, and it runs that callback with the **current value** every
+time the cache changes one of them. Each call returns its own stop function, and nothing is
+registered until the first one.
+
+```ts
+const stop = cache.subscribe('user:42', (user, change) => {
+  console.log(change.type, user);      // 'set' → the new value, 'delete' → undefined
+});
+
+const stopMany = cache.subscribeMany(['a', 'b'], (key, value, change) => {
+  console.log(key, value, change.type);
+});
+
+const stopTag = cache.subscribeTag('user', ({ tag, keys, change }) => {
+  console.log(tag, keys, change.type); // 'user', ['user:42'], 'invalidate'
+});
+
+stop(); stopMany(); stopTag();         // idempotent — also safe from inside a listener
+```
+
+* **`value` is what the cache holds now** — the new value after `set`, the unchanged one
+  after `touch`, and `undefined` after `delete`, `evict`, `expire`, `invalidate`, `prune`
+  or `clear`. For `evict`/`expire` the dropped reference is still on `change.value`.
+* **Reads never wake a subscriber** — `hit`/`miss` are not part of a subscription at all,
+  so `get`, `peek`, `has`, `ttl` … cost a subscription nothing.
+* **Tag subscriptions know what the raw events cannot** — a removal carries no tags, so the
+  layer keeps a per-tag mirror of the live keys carrying it and attributes `delete`,
+  `evict`, `expire`, `invalidate`, `prune` and `clear` to the tags they actually hit.
+* **Subscriptions switch on the drop log**, exactly like an `evict`/`expire` listener: the
+  Rust core only records the entries it drops by itself while somebody is waiting for them,
+  and the last stop function switches it back off.
+* **`{ once: true }`** fires a single time and unsubscribes itself.
+* **A subscriber that throws is isolated** — logged with `console.error`, the mutation
+  stands, and the remaining subscribers still run. One that unsubscribes mid-notification
+  (through its own handle, or because a `once` sibling fired) is never visited for that
+  event.
+* **All of it is opt-in** — with no subscription the layer does not exist. The first call
+  attaches eight typed listeners and snapshots the live keys; while a subscription lives, a
+  write crosses the boundary once more to re-read that key's tags (and only when a tag
+  subscription exists), and reads back a value only for keys somebody subscribed to.
+  Releasing the last subscription detaches everything again. `cache.off()` clears *event*
+  listeners only — live subscriptions re-bind their own immediately.
+
 ## Good to know
 
 * **The `.wasm` ships inside this package** — no CDN setup. If your bundler
@@ -126,12 +172,13 @@ is freed exactly once. The full design notes live in the
   number back.
 * **Events cost nothing when unused** — with no listeners the bus is a size check per
   operation, and the Rust core's drop log stays off until somebody asks for
-  `evict`/`expire` (see [Events](#events)).
+  `evict`/`expire`, or subscribes to a key or a tag (see [Events](#events) and
+  [Subscriptions](#subscriptions)).
 
 ## Documentation
 
-Setup, persistence, eviction, tags, events and the full API are documented in the
-[repository README](https://github.com/blaze-cache/blaze-cache#readme).
+Setup, persistence, eviction, tags, events, subscriptions and the full API are documented
+in the [repository README](https://github.com/blaze-cache/blaze-cache#readme).
 
 ## License
 

@@ -365,6 +365,59 @@ mid-delivery only hears later ones. A pending `once` listener is cancellable the
 Legacy code that used the original `on(listener)` keeps working: that form *is* the
 wildcard now, so such listeners additionally see `hit`/`miss`/`evict`/`expire`.
 
+### Subscriptions
+
+`subscribe` is the value-oriented front end of [Events](#events): instead of an event
+union you hand it a key, a list of keys or a tag, and it calls you back with the **current
+value**. Every call returns its own stop function, and nothing is registered until the
+first one:
+
+```ts
+const stop = cache.subscribe('user:42', (user, change) => {
+  console.log(change.type, user);      // 'set' → the new value, 'delete' → undefined
+});
+
+const stopMany = cache.subscribeMany(['a', 'b'], (key, value, change) => {
+  console.log(key, value, change.type);
+});
+
+const stopTag = cache.subscribeTag('user', ({ tag, keys, change }) => {
+  console.log(tag, keys, change.type); // 'user', ['user:42'], 'invalidate'
+});
+
+stop(); stopMany(); stopTag();         // idempotent — also safe from inside a listener
+```
+
+`value` is what the cache holds *now*: the new value after `set`, the unchanged one after
+`touch`, and `undefined` after `delete`, `evict`, `expire`, `invalidate`, `prune` or
+`clear` — for `evict`/`expire` the dropped reference is still on `change.value`. The second
+argument is the mutation itself, so a listener can tell a renewal from a replacement
+without a second lookup.
+
+`hit`/`miss` are not part of a subscription at all: a lookup never wakes one. That is the
+point of the split — the event union stays complete for tooling and persistence, while a
+subscription only ever fires for something that changed.
+
+Tag subscriptions are the part the raw events cannot express on their own. A removal
+carries no tags, so the layer keeps a per-tag mirror of the live keys carrying it and
+attributes `delete`, `evict`, `expire`, `invalidate`, `prune` and `clear` to the tags they
+actually hit — including entries dropped by a capacity sweep or by a TTL that ran out.
+
+Delivery follows the event system exactly: synchronous, a throwing subscriber logged with
+`console.error` and skipped (the mutation stands, the others run), a snapshot re-checked
+before every call so one that stops mid-notification is never visited, and `{ once: true }`
+fires once then unsubscribes itself. `cache.off()` clears *event* listeners only — live
+subscriptions re-bind their own immediately — while releasing the last subscription
+detaches the layer completely.
+
+Everything is opt-in. With no subscription the layer does not exist: `get`/`set` are
+untouched and the hot path is exactly what it was. The first call attaches eight typed
+listeners and snapshots the live keys; from then on a write crosses the boundary once more
+to re-read that key's tags (and only while a tag subscription is live) and reads back a
+value only for keys somebody subscribed to. Like an `evict`/`expire` listener, a
+subscription switches the core's drop log on, so evictions really are reported — the last
+stop function switches it back off.
+
 ### API at a glance
 
 `createCache(options)` accepts `capacity`, `persistence` and `wasm` (see
@@ -395,6 +448,8 @@ miss, no eviction state, no event.
 | **Observe** | `on(type, listener)` / `on(listener)` | subscribe (typed / wildcard); returns unsubscribe |
 | | `once(…)` | the same, listener removed as it fires |
 | | `off()` / `off(type)` / `off(type, listener)` / `off(listener)` | removes listeners without the handle |
+| | `subscribe(key, fn)` / `subscribeMany(keys, fn)` | current value per changed key; returns stop |
+| | `subscribeTag(tag, fn)` | `{ tag, keys, change }` per tag hit; returns stop |
 | **Persist** | `flush()` | awaits the pending write-through queue |
 | | `dispose()` | flushes, frees the wasm memory, drops every listener |
 
