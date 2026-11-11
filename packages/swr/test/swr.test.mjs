@@ -21,6 +21,7 @@ import {
   blazeSWRMiddleware,
   DEFAULT_TAGS,
   DEFAULT_TTL_MS,
+  invalidateBlazeSWR,
   isBlazeSWRRecord,
   readBlazeSWRRecord,
   resolveBlazeKey,
@@ -85,6 +86,7 @@ describe('module surface', () => {
     assert.equal(typeof blazeSWRMiddleware, 'function');
     assert.equal(typeof resolveBlazeKey, 'function');
     assert.equal(typeof useBlazeSWR, 'function');
+    assert.equal(typeof invalidateBlazeSWR, 'function');
     assert.equal(typeof isBlazeSWRRecord, 'function');
     assert.equal(typeof readBlazeSWRRecord, 'function');
     assert.equal(DEFAULT_TTL_MS, 86_400_000);
@@ -374,5 +376,335 @@ describe('persistence', () => {
 
     assert.deepEqual(cache.invalidateTags('todos'), ['/api/todos']);
     assert.equal(cache.has('/api/todos'), false);
+  });
+
+  it('round-trips through a persistence adapter: one session writes, the next paints', async () => {
+    // A `CachePersistence` over a plain Map — the whole contract the IndexedDB adapter
+    // also satisfies, with nothing but JavaScript between the two sessions.
+    const rows = new Map();
+    const adapter = {
+      load: async () => [...rows.values()],
+      save: async (records) => {
+        for (const record of records) rows.set(record.key, record);
+      },
+      remove: async (keys) => {
+        for (const key of keys) rows.delete(key);
+      },
+      clear: async () => rows.clear(),
+      keys: async () => [...rows.keys()],
+    };
+
+    const first = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    const session = runMiddleware(first, { tags: ['todos'] }, '/api/todos', async () => [{ id: 1 }]);
+    await session.fetcher('/api/todos');
+    await first.dispose(); // flush + teardown — the row is on its way to the adapter
+
+    const second = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+    try {
+      const { config } = runMiddleware(second, {}, '/api/todos', () => 'fetch');
+      assert.deepEqual(config.fallbackData, [{ id: 1 }], 'the next session paints from storage');
+      assert.deepEqual(second.entry('/api/todos').tags, ['todos'], 'and the stamp survived');
+    } finally {
+      await second.dispose();
+    }
+  });
+});
+
+describe('forceRefresh', () => {
+  it('skips hydration and guarantees the fetcher runs', async () => {
+    const cache = await makeCache();
+    cache.set('/api/todos', swrRecord([{ id: 1 }]));
+
+    const { config } = runMiddleware(cache, {}, '/api/todos', () => 'fetch', {
+      forceRefresh: true,
+    });
+    assert.equal('fallbackData' in config, false, 'the persisted entry was not seeded');
+    assert.equal(config.revalidateOnMount, true, 'revalidation is guaranteed');
+  });
+
+  it('wins over an explicit revalidateOnMount: false — the flag exists to fetch', async () => {
+    const cache = await makeCache();
+
+    const { config } = runMiddleware(cache, {}, '/api/todos', () => 'fetch', {
+      forceRefresh: true,
+      revalidateOnMount: false,
+    });
+    assert.equal(config.revalidateOnMount, true);
+  });
+
+  it('still writes the result back — skip the read, keep the write', async () => {
+    const cache = await makeCache();
+    cache.set('/api/todos', swrRecord([{ id: 1 }]));
+
+    const { fetcher } = runMiddleware(cache, {}, '/api/todos', async () => [{ id: 2 }], {
+      forceRefresh: true,
+    });
+    await fetcher('/api/todos');
+
+    assert.deepEqual(cache.get('/api/todos').data, [{ id: 2 }], 'the fresh result replaced the old');
+  });
+
+  it('leaves a caller-supplied fallbackData authoritative', async () => {
+    const cache = await makeCache();
+    cache.set('/api/todos', swrRecord([{ id: 1 }]));
+
+    const { config } = runMiddleware(cache, {}, '/api/todos', () => 'fetch', {
+      forceRefresh: true,
+      fallbackData: 'caller',
+    });
+    assert.equal(config.fallbackData, 'caller');
+    assert.equal(config.revalidateOnMount, true, 'the fetch still runs');
+  });
+
+  it('per-call config beats the middleware’s own forceRefresh', async () => {
+    const cache = await makeCache();
+    cache.set('/api/todos', swrRecord([{ id: 1 }]));
+
+    const { config } = runMiddleware(cache, { forceRefresh: true }, '/api/todos', () => 'fetch', {
+      forceRefresh: false,
+    });
+    assert.deepEqual(config.fallbackData, [{ id: 1 }], 'an explicit false keeps hydration');
+    assert.equal(config.revalidateOnMount, undefined, 'and no forced revalidation');
+  });
+
+  it('works middleware-wide, without a per-call flag', async () => {
+    const cache = await makeCache();
+    cache.set('/api/todos', swrRecord([{ id: 1 }]));
+
+    const { config } = runMiddleware(cache, { forceRefresh: true }, '/api/todos', () => 'fetch');
+    assert.equal('fallbackData' in config, false);
+    assert.equal(config.revalidateOnMount, true);
+  });
+
+  it('leaves a paused key’s config untouched', () => {
+    const spy = spyCache();
+    const fetcher = () => 'fetch';
+    const original = { dedupingInterval: 5_000 };
+
+    const captured = runMiddleware(spy, { forceRefresh: true }, null, fetcher, original);
+    assert.equal(captured.config, original, 'no config was rebuilt for a paused key');
+    assert.equal(spy.peeks, 0);
+    assert.equal(captured.fetcher, fetcher);
+  });
+});
+
+describe('tags resolvers', () => {
+  it('resolves at write time with the key and data the fetcher received', async () => {
+    const cache = await makeCache();
+    const seen = [];
+    const { fetcher } = runMiddleware(
+      cache,
+      {
+        tags: (key, data) => {
+          seen.push([key, data]);
+          return ['user', `user:${data.id}`];
+        },
+      },
+      '/api/users/7',
+      async () => ({ id: 7 }),
+    );
+
+    await fetcher('/api/users/7');
+
+    assert.deepEqual(seen, [['/api/users/7', { id: 7 }]], 'the resolver saw the fetcher’s arguments');
+    assert.deepEqual(cache.entry('/api/users/7').tags, ['user', 'user:7']);
+  });
+
+  it('per-call tags beat the middleware’s resolver', async () => {
+    const cache = await makeCache();
+    const middlewareResolver = () => ['middleware'];
+    const { fetcher } = runMiddleware(
+      cache,
+      { tags: middlewareResolver },
+      '/api/todos',
+      async () => 'data',
+      { tags: ['call'] },
+    );
+
+    await fetcher('/api/todos');
+    assert.deepEqual(cache.entry('/api/todos').tags, ['call']);
+  });
+
+  it('a throwing resolver skips the write but never the data', async () => {
+    const cache = await makeCache();
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const { fetcher } = runMiddleware(
+        cache,
+        {
+          tags: () => {
+            throw new Error('resolver exploded');
+          },
+        },
+        '/api/todos',
+        async () => 'data',
+      );
+
+      assert.equal(await fetcher('/api/todos'), 'data', 'the fetched data resolved untouched');
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(cache.has('/api/todos'), false, 'nothing was written');
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0][0]), /storing the response failed/);
+  });
+});
+
+describe('cache-layer failures', () => {
+  it('a throwing read hydrates nothing — one warning for the life of the module', () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const cache = {
+        get() {
+          throw new Error('read failed');
+        },
+        peek() {
+          throw new Error('read failed');
+        },
+        set() {},
+      };
+
+      const first = runMiddleware(cache, {}, '/api/todos', () => 'fetch');
+      const second = runMiddleware(cache, {}, '/api/todos', () => 'fetch');
+      assert.equal('fallbackData' in first.config, false, 'the first render fetches instead');
+      assert.equal('fallbackData' in second.config, false, 'and so does every later one');
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1, 'a warning per render would drown the console');
+    assert.match(String(warnings[0][0]), /reading from the cache failed/);
+  });
+
+  it('a throwing write returns the fetched data unstored', async () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const cache = {
+        get() {},
+        peek() {},
+        set() {
+          throw new Error('quota exceeded');
+        },
+      };
+      const { fetcher } = runMiddleware(cache, {}, '/api/todos', async () => 'data');
+
+      assert.equal(await fetcher('/api/todos'), 'data', 'the cache failure never reached SWR');
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0][0]), /storing the response failed/);
+  });
+});
+
+describe('invalidateBlazeSWR', () => {
+  it('purges this package’s records under the tag — foreign entries survive', async () => {
+    const cache = await makeCache();
+    const todos = runMiddleware(cache, { tags: ['todos'] }, '/api/todos', async () => 'mine');
+    await todos.fetcher('/api/todos');
+    const profile = runMiddleware(cache, { tags: ['profile'] }, '/api/profile', async () => 'p');
+    await profile.fetcher('/api/profile');
+    // Another integration's record wearing the *same* tag: not this package's to delete.
+    cache.set(
+      '/api/foreign',
+      { status: 200, data: { source: 'axios' }, storedAt: Date.now() },
+      { tags: ['todos'] },
+    );
+
+    const removed = await invalidateBlazeSWR(cache, 'todos');
+
+    assert.deepEqual(removed, ['/api/todos']);
+    assert.equal(cache.has('/api/todos'), false);
+    assert.equal(cache.has('/api/foreign'), true, 'the foreign record was left alone');
+    assert.equal(cache.has('/api/profile'), true, 'a record without the tag was left alone');
+  });
+
+  it('purges every SWR record — and only those — when no tag is given', async () => {
+    const cache = await makeCache();
+    const a = runMiddleware(cache, {}, '/api/a', async () => 1);
+    await a.fetcher('/api/a');
+    const b = runMiddleware(cache, {}, '/api/b', async () => 2);
+    await b.fetcher('/api/b');
+    cache.set('/api/foreign', { raw: true }, { tags: ['swr'] });
+
+    const removed = await invalidateBlazeSWR(cache);
+
+    assert.deepEqual([...removed].sort(), ['/api/a', '/api/b']);
+    assert.equal(cache.has('/api/foreign'), true, 'the foreign value was left alone');
+  });
+
+  it('notifies SWR about exactly the purged keys', async () => {
+    const cache = await makeCache();
+    const a = runMiddleware(cache, { tags: ['todos'] }, '/api/a', async () => 1);
+    await a.fetcher('/api/a');
+    const b = runMiddleware(cache, { tags: ['todos'] }, '/api/b', async () => 2);
+    await b.fetcher('/api/b');
+    const other = runMiddleware(cache, { tags: ['profile'] }, '/api/profile', async () => 3);
+    await other.fetcher('/api/profile');
+
+    const notified = [];
+    const removed = await invalidateBlazeSWR(cache, 'todos', {
+      mutate: async (key) => {
+        notified.push(key);
+      },
+    });
+
+    assert.equal(removed.length, 2);
+    assert.deepEqual(notified, removed, 'the same keys, in the same order — nothing else');
+    assert.ok(!notified.includes('/api/profile'));
+  });
+
+  it('accepts options without tags — purge all, custom mutate', async () => {
+    const cache = await makeCache();
+    const a = runMiddleware(cache, {}, '/api/a', async () => 1);
+    await a.fetcher('/api/a');
+
+    const notified = [];
+    const removed = await invalidateBlazeSWR(cache, {
+      mutate: async (key) => {
+        notified.push(key);
+      },
+    });
+
+    assert.deepEqual(removed, ['/api/a']);
+    assert.deepEqual(notified, ['/api/a']);
+    assert.equal(cache.has('/api/a'), false);
+  });
+
+  it('refuses to run when the cache cannot be enumerated', async () => {
+    const cache = { get() {}, peek() {}, set() {}, delete() {} };
+
+    await assert.rejects(() => invalidateBlazeSWR(cache, 'todos'), /entries\(\)/);
+  });
+
+  it('refuses — before deleting anything — when the cache cannot delete', async () => {
+    const cache = {
+      get() {},
+      peek() {},
+      set() {},
+      entries() {
+        return [{ key: 'k', value: swrRecord('v'), ttlMs: null, tags: ['todos'] }];
+      },
+      // no `delete`
+    };
+
+    await assert.rejects(() => invalidateBlazeSWR(cache, 'todos'), /delete\(\)/);
+  });
+
+  it('the default mutate path is safe with no hooks mounted', async () => {
+    const cache = await makeCache();
+    const a = runMiddleware(cache, {}, '/api/a', async () => 1);
+    await a.fetcher('/api/a');
+
+    // No options: the real `swr` global mutate runs against a key nothing subscribes to.
+    assert.deepEqual(await invalidateBlazeSWR(cache, 'swr'), ['/api/a']);
   });
 });
