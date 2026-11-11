@@ -46,6 +46,10 @@ for that key) always wins over the cache.
   imperative `cache.get` / `cache.set` / `cache.delete`.
 * Successful fetches are written to the shared cache; failed fetches are not — errors
   stay in SWR, data crosses into Blaze.
+* The cache layer never takes a fetch down with it: a hydration read that throws seeds
+  nothing (the hook fetches as plain `useSWR` would, with one console warning), and a
+  write that throws — or a `tags` resolver that does — returns the data unwritten,
+  warned and otherwise uninterrupted.
 * An `undefined` result is skipped too: SWR reads it as "no data", so there is nothing
   to stamp a TTL onto.
 * What is written is an **envelope** — `{ kind: 'swr', data, storedAt }` — and hydration
@@ -66,24 +70,25 @@ for that key) always wins over the cache.
 
 ## API
 
-Both entry points take `(cache, …, options?)` — the cache first, then the usual SWR
-arguments, then normal SWR options plus the Blaze-side stamp (`ttlMs`/`tags`).
+The entry points take `(cache, …, options?)` — the cache first, then the usual SWR
+arguments, then normal SWR options plus the Blaze-side stamp (`ttlMs`/`tags`/`forceRefresh`).
 
 | Export | What it does |
 | --- | --- |
 | `useBlazeSWR` | `useSWR` seeded from the cache, persisting successful fetches. |
 | `blazeSWRMiddleware` | The same behaviour as a plain SWR middleware, for `SWRConfig` or an existing `useSWR`. |
+| `invalidateBlazeSWR` | Purge this package's entries by tag — foreign records on a shared cache survive — and revalidate the hooks that showed them. |
 | `resolveBlazeKey` | The key an SWR `key` is filed under in the Blaze Cache (`null` when paused). |
 | `readBlazeSWRRecord` | The gated hydration read: `key`'s data, but only when the value is this package's own envelope. |
 | `isBlazeSWRRecord` | The envelope shape check `readBlazeSWRRecord` uses. |
 | `DEFAULT_TTL_MS` / `DEFAULT_TAGS` | The write stamp used when nothing is given: 24 h, `['swr']`. |
-| `BlazeSWROptions` / `BlazeSWRMiddlewareOptions` / `BlazeSWRCacheLike` / `BlazeSWRRecord` | The option, cache and record types. |
+| `BlazeSWROptions` / `BlazeSWRMiddlewareOptions` / `BlazeSWRCacheLike` / `BlazeSWRRecord` / `BlazeSWRTags` / `InvalidateBlazeSWROptions` | The option, cache, record and tag types. |
 
-Precedence for the write stamp: the current `useSWR`/`useBlazeSWR` options, then the
-middleware's own options, then the defaults. `useBlazeSWR` keeps `ttlMs`/`tags` in the
-SWR config it hands to `useSWR` rather than stripping them out, so a hook-level stamp
-also wins an `SWRConfig` provider's merged values — a provider default can never shadow
-a per-call one.
+Precedence for the write stamp and `forceRefresh`: the current `useSWR`/`useBlazeSWR`
+options, then the middleware's own options, then the defaults. `useBlazeSWR` keeps
+`ttlMs`/`tags`/`forceRefresh` in the SWR config it hands to `useSWR` rather than
+stripping them out, so a hook-level stamp also wins an `SWRConfig` provider's merged
+values — a provider default can never shadow a per-call one.
 
 ## Example usage
 
@@ -110,6 +115,15 @@ is still read, nothing is written:
 const { data } = useBlazeSWR(cache, 'theme', null, { fallbackData: 'dark' });
 ```
 
+`tags` may also be a function, resolved at write time from the key and the fetched data
+— for tags only a successful fetch can be responsible for:
+
+```tsx
+const { data } = useBlazeSWR(cache, '/api/users/7', fetchUser, {
+  tags: (key, data) => ['user', `user:${data.id}`],
+});
+```
+
 ### `blazeSWRMiddleware` — one middleware for a whole tree
 
 ```tsx
@@ -130,14 +144,51 @@ const { data } = useSWR('/api/todos', fetcher, {
 });
 ```
 
+### `forceRefresh` — skip the paint, hit the network
+
+```tsx
+const { data } = useBlazeSWR(cache, '/api/todos', fetchTodos, {
+  tags: ['todos'],
+  forceRefresh: true,
+});
+// no persisted seed — the fetcher runs immediately, and the result is still written
+// back, so the next mount starts from it
+```
+
+For a key that must be current *right now* — a pull-to-refresh, a view opened after a
+mutation elsewhere: the persisted entry is not read, `revalidateOnMount` is forced so the
+fetch runs even where this call or the provider would quiet it (the flag beats an
+explicit `revalidateOnMount: false` — skipping the read is only honest if the network
+runs), and the write still happens. Skip the read, keep the write — the same rule as
+axios/fetch's `forceRefresh`. Caller `fallbackData` and provider `fallback` keep their
+own precedence: they only stop *Blaze* from seeding, never the caller.
+
 ### Invalidating by tag
 
 ```ts
 // Writes carry tags…
 const { data } = useBlazeSWR(cache, '/api/todos', fetchTodos, { tags: ['todos'] });
 
-// …so a mutation that changes the list purges every persisted copy —
-// including ones from earlier sessions:
+// …so a mutation that changes the list purges every persisted copy — including ones
+// from earlier sessions — and revalidates the hooks that were showing the old one:
+await invalidateBlazeSWR(cache, 'todos');
+```
+
+`invalidateBlazeSWR` only ever touches this package's `{ kind: 'swr' }` envelopes: on a
+cache shared with `@blaze-cache/axios` / `@blaze-cache/fetch` /
+`@blaze-cache/react-query`, an entry another integration wrote — even one wearing the
+same tag — survives. It returns the purged keys. Hooks under a *custom* `SWRConfig`
+provider need that provider's mutator:
+
+```ts
+const { mutate } = useSWRConfig();
+await invalidateBlazeSWR(cache, 'todos', { mutate });
+```
+
+The raw equivalent reaches the whole shared tag namespace and leaves SWR's in-memory
+copy to you:
+
+```ts
 cache.invalidateTags('todos');
 mutate('/api/todos'); // SWR's own revalidation for the mounted hook
 ```
