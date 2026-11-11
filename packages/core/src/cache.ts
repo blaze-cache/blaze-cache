@@ -5,13 +5,18 @@ import type {
   CacheEvent,
   CacheEventListener,
   CacheEventType,
+  CacheKeySubscriber,
   CacheListener,
+  CacheManySubscriber,
   CacheStats,
+  CacheSubscribeOptions,
+  CacheTagSubscriber,
   SetManyEntry,
   SetOptions,
   TouchOptions,
 } from './types.js';
 import { CacheEventBus } from './events.js';
+import { CacheSubscriptions } from './reactivity.js';
 import { initBlazeWasm, keyScratch, WasmCache } from './wasm.js';
 import type { WasmInitInput } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
@@ -198,6 +203,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   #disposePromise: Promise<void> | null = null;
   /** Consecutive failed flushes per dirty key; a key that keeps failing is dropped, not queued forever. */
   #failedFlushes = new Map<string, number>();
+  /**
+   * The reactivity layer behind {@link BlazeCache.subscribe} and friends — `null` until the
+   * first subscription, so a cache nobody subscribes to never allocates it and never pays
+   * for it. Created once and reused: an empty layer is a detached layer.
+   */
+  #subs: CacheSubscriptions<V> | null = null;
 
   private constructor(wasm: WasmCache) {
     this.#wasm = wasm;
@@ -596,6 +607,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    *
    * Calling it with something that is not registered is a no-op. Releasing the last
    * `evict`/`expire`-interested listener also switches the core's drop log off.
+   *
+   * It clears **event** listeners only: any live {@link BlazeCache.subscribe} /
+   * `subscribeTag` / `subscribeMany` registration re-binds its own internal listeners
+   * immediately afterwards, so a sledgehammer `off()` cannot silently kill a subscription.
+   * Releasing a subscription still goes through the handle `subscribe` returned.
    */
   off(): void;
   off(type: CacheEventType): void;
@@ -608,6 +624,104 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (typeOrListener === undefined) this.#events.off();
     else if (listener === undefined) this.#events.off(typeOrListener as any);
     else this.#events.off(typeOrListener as CacheEventType, listener);
+    // `off()` can only ever reach the layer's listeners *through* the bus, so this is the
+    // one place that has to put them back. A no-op with nothing subscribed.
+    this.#subs?.rebind();
+  }
+
+  /**
+   * Watches one key and runs `listener` with its **current value** every time the cache
+   * changes it. Returns the unsubscribe function — idempotent, and safe to call from
+   * inside the listener itself.
+   *
+   * This is the value-oriented front end of the event system: no `hit`/`miss`, no wildcard,
+   * just the key you asked for. `value` is what the cache holds *now* — the new value after
+   * `set`, the unchanged one after `touch`, and `undefined` after `delete`, `evict`,
+   * `expire`, `invalidate`, `prune` or `clear` (for `evict`/`expire` the dropped reference
+   * is still on `change.value`). The second argument is the mutation itself, so a listener
+   * can tell a renewal from a replacement without a second lookup.
+   *
+   * Everything is opt-in: with no subscription the layer does not exist and `get`/`set`
+   * are untouched. The first call attaches eight typed listeners to the event bus and
+   * snapshots the live keys; while a subscription lives, a write crosses the boundary once
+   * more to re-read that key's tags — and only when a {@link BlazeCache.subscribeTag}
+   * subscription exists. A listener that throws is isolated: the failure is logged with
+   * `console.error`, the mutation stands, and the other subscribers still run.
+   *
+   * @example
+   * ```ts
+   * const stop = cache.subscribe('user:42', (user, change) => {
+   *   if (change.type === 'delete') console.log('gone');
+   *   else console.log(change.type, user);
+   * });
+   *
+   * const stopOnce = cache.subscribe('ready', (v) => console.log('first change', v), { once: true });
+   *
+   * stop();
+   * stopOnce(); // already fired — a no-op
+   * ```
+   */
+  subscribe(
+    key: string,
+    listener: CacheKeySubscriber<V>,
+    options?: CacheSubscribeOptions,
+  ): () => void {
+    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribe(key, listener, options);
+  }
+
+  /**
+   * Watches several keys with one listener, which is told **which** key changed:
+   * `(key, value, change)`. Duplicates collapse, an empty list subscribes to nothing (it
+   * never attaches and returns a no-op handle), and everything else — opt-in cost, error
+   * isolation, the `once` option — matches {@link BlazeCache.subscribe}.
+   *
+   * @example
+   * ```ts
+   * const stop = cache.subscribeMany(['a', 'b'], (key, value, change) => {
+   *   console.log(`${key} is now`, value, `after a ${change.type}`);
+   * });
+   * ```
+   */
+  subscribeMany(
+    keys: string[],
+    listener: CacheManySubscriber<V>,
+    options?: CacheSubscribeOptions,
+  ): () => void {
+    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeMany(
+      keys,
+      listener,
+      options,
+    );
+  }
+
+  /**
+   * Watches one tag and runs `listener` whenever an entry carrying it changes — including
+   * entries removed by an unrelated `invalidateTags` call, an eviction or a TTL that ran
+   * out, which is the part the raw events cannot tell you on their own.
+   *
+   * The listener receives `{ tag, keys, change }`: the tag that woke it, the keys of *that
+   * tag* the mutation touched (a write reports the key that entered or stayed in the tag,
+   * a removal reports the keys that left it), and the mutation itself. Keys are attributed
+   * from a per-tag mirror the layer keeps while anybody watches, so removals need no extra
+   * lookup. Opt-in cost, error isolation and `once` match {@link BlazeCache.subscribe}.
+   *
+   * @example
+   * ```ts
+   * const stop = cache.subscribeTag('user', ({ keys, change }) => {
+   *   console.log(change.type, keys);   // 'invalidate', ['user:42', 'user:43']
+   * });
+   * ```
+   */
+  subscribeTag(
+    tag: string,
+    listener: CacheTagSubscriber<V>,
+    options?: CacheSubscribeOptions,
+  ): () => void {
+    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeTag(
+      tag,
+      listener,
+      options,
+    );
   }
 
   /**
@@ -666,6 +780,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
         this.#timer = null;
       }
       for (const unbind of this.#unbind.splice(0)) unbind();
+      this.#subs?.dispose(); // drops the subscription layer's listeners and mirrors
       this.#events.clear(); // the change hook skips the wasm sync (`#disposed` is already true)
       this.#dropTracking = false;
       try {

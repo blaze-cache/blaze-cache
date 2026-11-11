@@ -167,6 +167,60 @@ export type CacheEventListener<V = any, K extends CacheEventType = CacheEventTyp
 export type CacheListener = (change: CacheChange) => void;
 
 /**
+ * The mutation a subscription reports — the event union minus the read events
+ * (`hit`/`miss`), so a subscriber only ever wakes for something that actually changed the
+ * cache.
+ *
+ * `evict`/`expire` carry the dropped entry's live reference (exactly what `get` would have
+ * returned a moment earlier); every other member is the very object the event system emits.
+ */
+export type CacheMutation<V = any> = CacheEventMap<V>[Exclude<CacheEventType, 'hit' | 'miss'>];
+
+/**
+ * What a {@link BlazeCache.subscribeTag} listener receives: which tag woke it, which of its
+ * keys the mutation touched, and the mutation itself.
+ */
+export interface CacheTagChange<V = any> {
+  /** The tag that was subscribed to. */
+  tag: string;
+  /** The keys that carried `tag` and were hit by `change` — never empty. */
+  keys: string[];
+  /** What happened; narrow on `change.type` for the per-mutation fields. */
+  change: CacheMutation<V>;
+}
+
+/**
+ * A {@link BlazeCache.subscribe} listener: the key's current value, then what changed it.
+ *
+ * `value` is `undefined` once the change removed the entry (or it expired) — the event
+ * that removed it is the second argument, and for `evict`/`expire` its `value` field still
+ * holds the dropped reference.
+ */
+export type CacheKeySubscriber<V = any> = (
+  value: V | undefined,
+  change: CacheMutation<V>,
+) => void;
+
+/** A {@link BlazeCache.subscribeMany} listener: which key, its value, then what changed. */
+export type CacheManySubscriber<V = any> = (
+  key: string,
+  value: V | undefined,
+  change: CacheMutation<V>,
+) => void;
+
+/** A {@link BlazeCache.subscribeTag} listener. */
+export type CacheTagSubscriber<V = any> = (info: CacheTagChange<V>) => void;
+
+/** Options shared by `subscribe` / `subscribeMany` / `subscribeTag`. */
+export interface CacheSubscribeOptions {
+  /**
+   * Fire at most once and then unsubscribe automatically — the handle the call returns
+   * simply becomes a no-op, exactly like {@link BlazeCache.once}.
+   */
+  once?: boolean;
+}
+
+/**
  * The structural contract the Axios adapter and the React Query integration program against.
  *
  * They accept any object with these methods — the concrete {@link BlazeCache}, or a wrapper
