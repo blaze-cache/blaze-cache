@@ -20,6 +20,7 @@ import {
   createCache,
   indexedDbPersistence,
   initBlazeWasm,
+  loadBlazeWasm,
   safeStableStringify,
   stableStringify,
   wasmUrl,
@@ -55,6 +56,7 @@ describe('module surface', () => {
     assert.equal(typeof createCache, 'function');
     assert.equal(typeof BlazeCache, 'function');
     assert.equal(typeof initBlazeWasm, 'function');
+    assert.equal(typeof loadBlazeWasm, 'function');
     assert.equal(typeof indexedDbPersistence, 'function');
 
     assert.equal(DEFAULT_CAPACITY, 500);
