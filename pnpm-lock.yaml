@@ -45,8 +45,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       axios:
-        specifier: ^1.20.0
-        version: 1.20.0
+        specifier: ^1.21.0
+        version: 1.21.0
       react:
         specifier: ^19.0.0
         version: 19.3.1
@@ -256,8 +256,8 @@ importers:
         version: link:../core
     devDependencies:
       axios:
-        specifier: ^1.11.0
-        version: 1.20.0
+        specifier: ^1.21.0
+        version: 1.21.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -299,8 +299,8 @@ importers:
         specifier: workspace:*
         version: link:../swr
       axios:
-        specifier: ^1.11.0
-        version: 1.20.0
+        specifier: ^1.21.0
+        version: 1.21.0
       ky:
         specifier: ^1.14.3
         version: 1.14.3
@@ -822,8 +822,8 @@ packages:
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
 
-  axios@1.20.0:
-    resolution: {integrity: sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==}
+  axios@1.21.0:
+    resolution: {integrity: sha512-YCzXMB53Q9PZBsh7yN7wtapit4WepwcHS2fP8QhGsBxSz5YtgYobV7GGlWlAJi+RxfU77GQTQi2DSLUma42EYA==}
 
   baseline-browser-mapping@2.11.30:
     resolution: {integrity: sha512-YJs6Pz17RMNv8HoyKREtCY38E3BV1nPkWVmIb+XN1uHC1Vqt3KZCH/uJH9ZKRoiKb/icZ6tvehyee6RZNbFfRA==}
@@ -1499,7 +1499,7 @@ snapshots:
 
   asynckit@0.4.0: {}
 
-  axios@1.20.0:
+  axios@1.21.0:
     dependencies:
       follow-redirects: 1.16.3
       form-data: 4.0.6
