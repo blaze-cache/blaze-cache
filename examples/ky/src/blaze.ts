@@ -6,14 +6,15 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
 /**
  * One cache, one ky instance.
  *
- * The wasm binary is passed explicitly with a bundler URL import — that keeps the path
- * correct after dependency pre-bundling, which is where `import.meta.url` relative paths
- * usually break. Omitting `wasm` works too when the package is not pre-bundled.
+ * The wasm binary is passed explicitly with `wasmUrl` (a bundler URL import) — that keeps
+ * the path correct after dependency pre-bundling, which is where `import.meta.url`
+ * relative paths usually break. Without pre-bundling you could omit it entirely and take
+ * the default load.
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
   persistence: { namespace: 'blaze-example-ky', flushDelayMs: 250 },
-  wasm: wasmUrl,
+  wasmUrl,
 });
 
 /**

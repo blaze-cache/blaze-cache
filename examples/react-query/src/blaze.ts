@@ -9,11 +9,14 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
  * The mirror is what paints the first render after a reload — entries under the `todos`
  * query key survive in IndexedDB and are restored with their original `dataUpdatedAt`, so
  * TanStack still refetches in the background exactly as usual.
+ *
+ * The wasm binary is passed explicitly with `wasmUrl` (a bundler URL import) so the path
+ * survives dependency pre-bundling.
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
   persistence: { namespace: 'blaze-example-react-query', flushDelayMs: 250 },
-  wasm: wasmUrl,
+  wasmUrl,
 });
 
 export const queryClient = createBlazeQueryClient({

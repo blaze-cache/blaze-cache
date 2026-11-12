@@ -4,9 +4,10 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
-    // The package ships plain ESM with an explicit `?url` import for the wasm binary; leaving
-    // it out of the pre-bundle keeps `import.meta.url` meaningful if you rely on the
-    // zero-config default instead.
+    // This example relies on the zero-config default — the package fetches the wasm binary
+    // relative to its own module URL. Vite's pre-bundle would rewrite `import.meta.url` and
+    // break that resolution, so `@blaze-cache/core` is left out of it here. (Prefer an
+    // explicit `wasmUrl` if you do pre-bundle dependencies.)
     exclude: ['@blaze-cache/core'],
   },
   server: {
