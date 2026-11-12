@@ -42,7 +42,7 @@ pnpm --filter blaze-cache-example-fetch dev
 const cache = await createCache({
   capacity: 500,
   persistence: { namespace: 'blaze-example-fetch', flushDelayMs: 250 },
-  wasm: wasmUrl,
+  wasmUrl,
 });
 
 export const blazeFetch = createBlazeFetch(cache, {

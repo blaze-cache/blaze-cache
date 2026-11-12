@@ -77,8 +77,8 @@ npm 7+ and pnpm install peers automatically; yarn classic users need them explic
 Three things to know up front:
 
 * **Nothing extra to download.** The `.wasm` binary ships inside `@blaze-cache/core` —
-  no CDN configuration, no separate asset package. [Bundler setup](#bundler-setup) shows
-  how your bundler resolves it.
+  no CDN configuration, no separate asset package. [Loading the wasm](#loading-the-wasm)
+  shows how your bundler resolves it.
 * **Types are bundled — no `@types/*` to install.** Every package ships its own `.d.ts`
   through `exports.types`, so `tsc` and editors resolve them under any `moduleResolution`.
   There is no `@types/blaze-cache/*` and none is needed; skip `@types/axios` too (it is a
@@ -98,19 +98,26 @@ Wire the cache once at your entry point, then share it with every integration.
 ```ts
 // src/blaze.ts
 import { createCache } from '@blaze-cache/core';
-import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
 
 export const cache = await createCache({
   capacity: 1000,
   persistence: { namespace: 'my-app' },
-  wasm: wasmUrl,
 });
 ```
 
-Top-level `await` is fine in any ESM module: the wasm is instantiated during `create`, so
-every `get`/`set` after it resolves is synchronous. If your bundler does not pre-bundle
-dependencies you can drop `wasm` entirely — the package then resolves the binary relative
-to its own module URL (see [Bundler setup](#bundler-setup)).
+That is the whole default path: the package fetches the `.wasm` shipped inside itself,
+streams it into `WebAssembly.instantiateStreaming` when the server allows it, and reuses
+one load for every `createCache()` on the page. Top-level `await` is fine in any ESM
+module: the wasm is instantiated during `create`, so every `get`/`set` after it resolves
+is synchronous. Only when the binary lives somewhere else do you say so — pass
+`wasmUrl` (see [Loading the wasm](#loading-the-wasm)):
+
+```ts
+export const cache = await createCache({
+  capacity: 1000,
+  wasmUrl: '/assets/blaze_cache_wasm_bg.wasm',
+});
+```
 
 With `persistence` enabled, `create` hydrates from IndexedDB before it resolves, so data
 written by the previous session is readable on the very next line. A row that no longer
@@ -422,8 +429,9 @@ stop function switches it back off.
 
 ### API at a glance
 
-`createCache(options)` accepts `capacity`, `persistence` and `wasm` (see
-[Setup](#1-create-the-cache) and [Bundler setup](#bundler-setup)); everything else below
+`createCache(options)` accepts `capacity`, `persistence` and one wasm source —
+`wasmUrl`, `module` or `instantiate` (see [Setup](#1-create-the-cache) and
+[Loading the wasm](#loading-the-wasm)); everything else below
 is a method on the returned cache. Reads that record nothing are marked ⊘ — no hit, no
 miss, no eviction state, no event.
 
@@ -881,26 +889,164 @@ pins all of the above. It found six conflicts along the way — cross-purging pu
 shape-blind reads and deletes, an unscoped resource tag — each since fixed in its package
 and now asserted positively here.
 
-## Bundler setup
+## Loading the wasm
 
-The wasm binary ships inside `@blaze-cache/core`. Point at it explicitly with your
-bundler's URL import — this stays correct after dependency pre-bundling:
+`createCache()` loads the `.wasm` binary exactly once per page, no matter how many caches
+you create. The load is explicit and async — there is no synchronous creation path, and
+nothing is inlined as base64.
+
+### Default: let the package resolve it
+
+With no source option, the package fetches the binary shipped inside `@blaze-cache/core`,
+resolved relative to its own module URL. Bundlers rewrite `new URL('…', import.meta.url)`
+into an emitted asset, so **Vite needs no configuration at all** — this is the happy path:
 
 ```ts
-import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
+import { createCache } from '@blaze-cache/core';
 
-await createCache({ wasm: wasmUrl });
+const cache = await createCache({ capacity: 1000 });
 ```
+
+The fetch prefers `WebAssembly.instantiateStreaming` and falls back to
+`arrayBuffer()` + `WebAssembly.instantiate` when streaming is unavailable or the server
+does not send `Content-Type: application/wasm` (slower, but still correct).
+
+Concurrent `createCache()` calls share one in-flight load: three simultaneous calls cost
+one download and one compile, not three.
+
+> **Pre-bundling caveat.** Some bundlers (Vite's dev pre-bundle, webpack's dependency
+> handling) rewrite `import.meta.url`, which breaks the relative resolution. If your
+> bundler pre-bundles dependencies, either exclude `@blaze-cache/core` from pre-bundling
+> (as every example here does) or pass an explicit `wasmUrl` below.
+
+### Explicit URL: `wasmUrl`
+
+Point at the binary wherever it actually lives — a `public/` asset path, a CDN, another
+origin, a signed path:
+
+```ts
+// the file sits in public/, served at /assets/blaze_cache_wasm_bg.wasm
+import { createCache } from '@blaze-cache/core';
+
+const cache = await createCache({
+  capacity: 1000,
+  wasmUrl: '/assets/blaze_cache_wasm_bg.wasm',
+});
+```
+
+To ship it there, copy it out of the package once — with Vite:
+
+```ts
+// vite.config.ts
+import { viteStaticCopy } from 'vite-plugin-static-copy';
+
+export default defineConfig({
+  plugins: [
+    viteStaticCopy({
+      targets: [
+        {
+          src: 'node_modules/@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm',
+          dest: 'assets',
+        },
+      ],
+    }),
+  ],
+});
+```
+
+…or with webpack, emit it through the standard asset modules:
+
+```ts
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.wasm$/,
+        type: 'asset/resource',
+        generator: { filename: 'assets/[name][ext]' },
+      },
+    ],
+  },
+};
+```
+
+**Next.js** runs `createCache` in the browser only — `wasmUrl` is the supported route:
+either serve the binary from `public/` (see above) or let webpack emit it and pass the
+resulting public path. Do not import the `.wasm` on the server; Node/SSR is deliberately
+out of scope.
+
+**CDN / CSP.** The same option covers an asset on another origin or behind a signed URL.
+Under a strict `Content-Security-Policy`, add `script-src-elem`/`worker-src` allowances
+for wasm as your policy requires; a `wasm-unsafe-eval` source is the usual grant. The
+package never requires a Service Worker.
+
+### Precompiled: `module`
+
+Skip fetch and compile entirely with a `WebAssembly.Module` you already hold — a warm
+`WebAssembly.compileStream`, a service worker, a test fixture:
+
+```ts
+const module = await WebAssembly.compile(
+  await (await fetch('/assets/blaze_cache_wasm_bg.wasm')).arrayBuffer(),
+);
+
+const cache = await createCache({ capacity: 1000, module });
+```
+
+### Custom loader: `instantiate`
+
+The full escape hatch: a fetch that needs auth headers or retries, bytes already in
+memory. Resolve to the **source** the loader should instantiate from — a URL, a `Request`
+or `Response`, raw bytes, or a precompiled `Module`:
+
+```ts
+const cache = await createCache({
+  capacity: 1000,
+  instantiate: async () =>
+    (await fetch('/assets/blaze_cache_wasm_bg.wasm', {
+      headers: { authorization: `Bearer ${token}` },
+    })).arrayBuffer(),
+});
+```
+
+The package still does the linking, streaming instantiation and one-time registration —
+that part cannot be taken over, because wasm-bindgen's generated glue owns the import
+object and must create the instance itself. For the same reason the hook must not resolve
+to a `WebAssembly.Instance` or to an object's exports; doing so throws an error that says
+why.
+
+### Choosing a source
+
+| Option | Use it when |
+| --- | --- |
+| *(none)* | Default — Vite and any bundler that does not pre-bundle dependencies |
+| `wasmUrl` | Public asset path, CDN, Next.js, or pre-bundled dependencies |
+| `module` | You already hold a compiled `WebAssembly.Module` |
+| `instantiate` | The fetch itself needs custom logic (auth, retries, in-memory bytes) |
+
+Pass **at most one** — two at once throws a `TypeError` rather than silently picking one.
+Failures are explicit: a wrong path reports the HTTP status and the URL, an unreachable
+server reports the fetch error (kept on `error.cause`), and corrupt bytes report the
+compile failure — each with what to try instead.
+
+### Bundler import table
+
+When you do point at the binary yourself, every bundler's URL import works:
 
 | Bundler | Import |
 | --- | --- |
-| Vite | `?url` (shown above) |
+| Vite | `wasmUrl: '/assets/blaze_cache_wasm_bg.wasm'` (after copying it to `public/`) |
 | webpack 5 | `new URL('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url)` |
-| Next.js / others | `?url` via `serverComponentsExternalPackages`, or serve the file yourself |
+| Next.js | `wasmUrl` with a `public/` asset — browser only |
 
-If your bundler does **not** pre-bundle dependencies (or you exclude
-`@blaze-cache/core` from pre-bundling, as the examples do), omitting `wasm`
-also works: the package resolves the binary relative to its own module URL.
+Or pass pre-read bytes directly, which is what the Node test suites do (Node cannot
+`fetch()` a `file:` URL):
+
+```ts
+const wasm = await readFile(new URL('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm', ...));
+await createCache({ wasm });
+```
 
 ## Repository layout
 

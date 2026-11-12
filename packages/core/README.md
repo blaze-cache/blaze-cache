@@ -143,14 +143,24 @@ stop(); stopMany(); stopTag();         // idempotent — also safe from inside a
 
 ## Good to know
 
-* **The `.wasm` ships inside this package** — no CDN setup. If your bundler
-  pre-bundles dependencies, point at it explicitly:
+* **The `.wasm` ships inside this package** — no CDN setup, no separate asset download.
+  `createCache` fetches it relative to the package's own module, streams it in, and does
+  it once per page even when several caches are created at once. Under Vite this needs no
+  configuration at all.
+
+  When the binary lives somewhere else — a `public/` asset path, a CDN, Next.js, or a
+  bundler that pre-bundles dependencies — say so explicitly:
 
   ```ts
-  import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
-
-  const cache = await createCache({ wasm: wasmUrl });
+  // a file you copied to public/, served at /assets/blaze_cache_wasm_bg.wasm
+  const cache = await createCache({ capacity: 1000, wasmUrl: '/assets/blaze_cache_wasm_bg.wasm' });
   ```
+
+  Two further overrides cover the rest: `module` for a precompiled `WebAssembly.Module`
+  (no fetch, no compile), and `instantiate` for a custom loader that resolves to a source
+  — a URL, a `Request`/`Response`, bytes, or a `Module`. Pass at most one of the three;
+  two at once throws a `TypeError`. Failures name the URL or step that failed and keep the
+  original error on `cause`.
 
 * **Types are bundled** — no `@types/*` packages to install.
 * **ESM only, browser only.** Node/SSR targets are out of scope by design.
