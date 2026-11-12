@@ -17,8 +17,8 @@ import type {
 } from './types.js';
 import { CacheEventBus } from './events.js';
 import { CacheSubscriptions } from './reactivity.js';
-import { initBlazeWasm, keyScratch, WasmCache } from './wasm.js';
-import type { WasmInitInput } from './wasm.js';
+import { loadBlazeWasm, keyScratch, WasmCache } from './wasm.js';
+import type { WasmLoadOptions } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
 import type { CachePersistence, IndexedDbOptions, PersistedRecord } from './persistence/types.js';
 
@@ -58,7 +58,7 @@ export interface IndexedDbPersistenceOptions extends IndexedDbOptions {
 }
 
 /** Options accepted by {@link BlazeCache.create}. */
-export interface BlazeCacheOptions {
+export interface BlazeCacheOptions extends WasmLoadOptions {
   /**
    * Maximum number of entries kept in memory. The wasm binding normalises it before it is
    * ever used: below `1` clamps up, above `1_000_000` clamps down, and a non-finite value
@@ -75,14 +75,10 @@ export interface BlazeCacheOptions {
    * * `{ adapter, ... }` — any {@link CachePersistence} implementation.
    */
   persistence?: false | CachePersistenceOptions | IndexedDbPersistenceOptions;
-  /**
-   * How the `.wasm` binary is fetched and instantiated.
-   *
-   * Defaults to the binary shipped next to this package. Override it to serve the module
-   * from a CDN, or to pass pre-read bytes (as the Node smoke tests do).
-   */
-  wasm?: WasmInitInput;
 }
+
+/** The options {@link createCache} takes — an alias for {@link BlazeCacheOptions}. */
+export type CreateCacheOptions = BlazeCacheOptions;
 
 /**
  * The client-side cache: WebAssembly storage and eviction, optional write-through persistence.
@@ -218,11 +214,16 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   /**
    * Loads the wasm module, builds the cache and — if requested — hydrates it from storage.
    *
+   * The binary comes from the one source option given ({@link WasmLoadOptions.wasmUrl},
+   * {@link WasmLoadOptions.module} or {@link WasmLoadOptions.instantiate}), or from the
+   * asset shipped with this package when none is. Loading happens once per page: concurrent
+   * `create()` calls share one download and one instantiation.
+   *
    * Storage failures (blocked IndexedDB, quota, private mode) degrade to memory-only with a
    * console warning instead of rejecting.
    */
   static async create<V = any>(options: BlazeCacheOptions = {}): Promise<BlazeCache<V>> {
-    await initBlazeWasm(options.wasm);
+    await loadBlazeWasm(options);
     const cache = new BlazeCache<V>(new WasmCache(options.capacity ?? DEFAULT_CAPACITY));
     await cache.#setupPersistence(options.persistence);
     return cache;
