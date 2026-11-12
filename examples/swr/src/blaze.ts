@@ -7,11 +7,14 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
  *
  * The hook hands the persisted value to SWR as `fallbackData`, so the first paint after a
  * reload comes from IndexedDB while SWR revalidates in the background like plain `useSWR`.
+ *
+ * The wasm binary is passed explicitly with `wasmUrl` (a bundler URL import) so the path
+ * survives dependency pre-bundling.
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
   persistence: { namespace: 'blaze-example-swr', flushDelayMs: 250 },
-  wasm: wasmUrl,
+  wasmUrl,
 });
 
 export async function fetchTodosPayload(): Promise<{
