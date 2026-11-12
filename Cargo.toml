@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0-beta.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/blaze-cache/blaze-cache"
@@ -19,8 +19,8 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal crates
-blaze-cache-core = { path = "crates/blaze-cache-core", version = "0.3.0" }
-blaze-cache-wasm = { path = "crates/blaze-cache-wasm", version = "0.3.0" }
+blaze-cache-core = { path = "crates/blaze-cache-core", version = "0.4.0-beta.0" }
+blaze-cache-wasm = { path = "crates/blaze-cache-wasm", version = "0.4.0-beta.0" }
 
 # Clock that works on both native and `wasm32-unknown-unknown` (`std::time::Instant` panics
 # on the wasm target, `web_time::Instant` does not).
