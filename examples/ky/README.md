@@ -52,7 +52,7 @@ const cache = await createCache({
 });
 
 export const api = createBlazeKy(cache, {
-  prefixUrl: '/',           // ky v1 spelling; use baseUrl on ky v2
+  baseUrl: '/',             // ky v2 spelling; ky v1 calls this `prefixUrl`
   ttlMs: 15_000,
   varyHeaders: ['authorization', 'origin'],
 });

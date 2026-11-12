@@ -6,8 +6,9 @@
  * exactly once" is a real assertion about the cache — and each marker-header check is paired
  * with a look *inside* the store, so a green run means the payload really landed there.
  *
- * Almost the whole suite runs **twice**: once on ky v1 and once on ky v2 (installed under
- * the `ky2` alias), whose hook signatures differ completely. The exceptions run once each:
+ * Almost the whole suite runs **twice**: once on ky v1 (installed under the `ky1` alias)
+ * and once on ky v2 — the `ky` this package resolves to — whose hook signatures differ
+ * completely. The exceptions run once each:
  * `createBlazeKy` — bound to whatever `ky` resolves to in the consumer's app — and the pure
  * `parseCacheControl` checks, which never see a ky at all.
  *
@@ -18,8 +19,8 @@ import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import kyV1 from 'ky';
-import kyV2 from 'ky2';
+import kyV1 from 'ky1';
+import kyV2 from 'ky';
 
 import { createCache } from '@blaze-cache/core';
 import { blazeKyHook, createBlazeKy, defaultCacheKey, parseCacheControl } from '@blaze-cache/ky';
@@ -646,13 +647,13 @@ for (const { label, ky, prefix } of versions) {
   });
 }
 
-/** `createBlazeKy` is bound to whatever `ky` resolves to — tested once, on the default (v1). */
+/** `createBlazeKy` is bound to whatever `ky` resolves to — tested once, on the default (v2). */
 describe('createBlazeKy', () => {
-  it('passes ky options through and caches (with prefixUrl)', async () => {
+  it('passes ky options through and caches (with baseUrl)', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ body: { users: [1] } }));
     const api = createBlazeKy(cache, {
-      prefixUrl: 'https://api.example.com',
+      baseUrl: 'https://api.example.com',
       fetch: net,
       ttlMs: TTL_MS,
     });
