@@ -36,6 +36,8 @@ pnpm --filter blaze-cache-example-core dev
 ## What it wires up
 
 `src/blaze.ts` creates one `BlazeCache<string>` with 100 entries of capacity, persisted to
-IndexedDB (`namespace: 'blaze-example-core'`, 250 ms debounce), reading the wasm binary through
-a bundler `?url` import. `src/App.tsx` renders the playground and subscribes to every cache
-event with `cache.on(...)`.
+IndexedDB (`namespace: 'blaze-example-core'`, 250 ms debounce), loading the wasm binary
+through the package's zero-config default — no `?url` import, the binary ships inside
+`@blaze-cache/core` and is fetched relative to the package's own module (which is why
+`vite.config.ts` keeps the package out of the pre-bundle). `src/App.tsx` renders the
+playground and subscribes to every cache event with `cache.on(...)`.

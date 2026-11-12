@@ -42,7 +42,7 @@ pnpm --filter blaze-cache-example-axios dev
 const cache = await createCache({
   capacity: 500,
   persistence: { namespace: 'blaze-example-axios', flushDelayMs: 250 },
-  wasm: wasmUrl,
+  wasmUrl,
 });
 
 const api = axios.create({ baseURL: '/' });
