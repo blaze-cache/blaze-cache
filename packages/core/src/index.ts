@@ -16,10 +16,10 @@
  */
 
 export { BlazeCache, createCache, DEFAULT_CAPACITY, DEFAULT_FLUSH_DELAY_MS, DEFAULT_MAX_RECORDS } from './cache.js';
-export type { BlazeCacheOptions, CachePersistenceOptions, IndexedDbPersistenceOptions } from './cache.js';
+export type { BlazeCacheOptions, CachePersistenceOptions, CreateCacheOptions, IndexedDbPersistenceOptions } from './cache.js';
 
-export { initBlazeWasm, wasmUrl } from './wasm.js';
-export type { WasmInitInput } from './wasm.js';
+export { initBlazeWasm, loadBlazeWasm, wasmUrl } from './wasm.js';
+export type { WasmInitInput, WasmLoadOptions, WasmSource } from './wasm.js';
 
 export { indexedDbPersistence } from './persistence/indexeddb.js';
 export type { CachePersistence, IndexedDbOptions, PersistedRecord } from './persistence/types.js';
