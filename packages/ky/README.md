@@ -59,7 +59,7 @@ passes through:
 import { createBlazeKy } from '@blaze-cache/ky';
 
 const api = createBlazeKy(cache, {
-  prefixUrl: 'https://api.example.com',   // ky v1; ky v2 spells this `baseUrl`
+  baseUrl: 'https://api.example.com',     // ky v2; ky v1 spells this `prefixUrl`
   ttlMs: 30_000,
 });
 

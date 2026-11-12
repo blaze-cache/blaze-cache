@@ -19,7 +19,7 @@ export const cache: BlazeCache = await createCache({
 /**
  * ky with the Blaze adapter built in — the `createBlazeKy` helper form.
  *
- * `prefixUrl: '/'` keeps the demo same-origin; use `baseUrl` instead on ky v2. GET
+ * `baseUrl: '/'` keeps the demo same-origin (ky v1 spells this `prefixUrl`). GET
  * responses stay fresh for 15 seconds and carry the default tags (`ky` and
  * `get <method> <url>`), so one `cache.invalidateTags('ky')` drops every cached response
  * this instance stored.
@@ -29,7 +29,7 @@ export const cache: BlazeCache = await createCache({
  * on, so without it the demo would be a permanent MISS.
  */
 export const api = createBlazeKy(cache, {
-  prefixUrl: '/',
+  baseUrl: '/',
   ttlMs: 15_000,
   varyHeaders: ['authorization', 'origin'],
 });
