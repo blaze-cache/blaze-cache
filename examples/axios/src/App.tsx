@@ -65,6 +65,12 @@ export default function App() {
         const data = response.data;
         const ms = performance.now() - started;
 
+        // A payload that isn't the expected shape (a proxy answering with HTML, a dev
+        // server without the mock API) must not crash the render — treat it as a failure.
+        if (!data || !Array.isArray(data.items)) {
+          throw new Error('GET /api/todos did not return a todos payload');
+        }
+
         setTodos(data);
         setMarker(nextMarker);
         pushLog({

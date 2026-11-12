@@ -66,6 +66,12 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use(fakeApi());
       },
+      // `vite preview` serves `dist/` without the dev middleware above, so the fake API has
+      // to be registered here too — otherwise `/api/*` falls through to index.html and the
+      // demo reads HTML as if it were JSON.
+      configurePreviewServer(server) {
+        server.middlewares.use(fakeApi());
+      },
     },
   ],
   optimizeDeps: {
