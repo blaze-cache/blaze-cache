@@ -1,6 +1,6 @@
 import type { BlazeCache } from '@blaze-cache/core';
 import type { Hooks as KyHooks, Options as KyOptions } from 'ky';
-import type { Hooks as Ky2Hooks } from 'ky2';
+import type { Hooks as Ky1Hooks } from 'ky1';
 
 /**
  * Value written on the `x-blaze-cache` response header by every response the adapter
@@ -158,7 +158,7 @@ export interface BlazeKyCacheOptions {
  * * **ky v2** — a single `{request, options, retryCount}` state object.
  *
  * The adapter's hooks are typed against the union so the same function satisfies
- * {@link KyHooks.BeforeRequestHook} and {@link Ky2Hooks.BeforeRequestHook} both, and pick
+ * {@link Ky1Hooks.BeforeRequestHook} and {@link KyHooks.BeforeRequestHook} both, and pick
  * the right shape at runtime by testing the first argument (see the asserts at the bottom
  * of this file — they are checked against both ky majors at build time).
  */
@@ -220,19 +220,19 @@ type Assert<T extends true> = T;
 
 type KyBeforeRequestHook = NonNullable<KyHooks['beforeRequest']>[number];
 type KyAfterResponseHook = NonNullable<KyHooks['afterResponse']>[number];
-type Ky2BeforeRequestHook = NonNullable<Ky2Hooks['beforeRequest']>[number];
-type Ky2AfterResponseHook = NonNullable<Ky2Hooks['afterResponse']>[number];
+type Ky1BeforeRequestHook = NonNullable<Ky1Hooks['beforeRequest']>[number];
+type Ky1AfterResponseHook = NonNullable<Ky1Hooks['afterResponse']>[number];
 
 type HooksFitKyV1 = Assert<
-  BlazeKyBeforeRequestHook extends KyBeforeRequestHook ? true : false
+  BlazeKyBeforeRequestHook extends Ky1BeforeRequestHook ? true : false
 > ;
 type HooksFitKyV1After = Assert<
-  BlazeKyAfterResponseHook extends KyAfterResponseHook ? true : false
+  BlazeKyAfterResponseHook extends Ky1AfterResponseHook ? true : false
 > ;
 type HooksFitKyV2 = Assert<
-  BlazeKyBeforeRequestHook extends Ky2BeforeRequestHook ? true : false
+  BlazeKyBeforeRequestHook extends KyBeforeRequestHook ? true : false
 > ;
 type HooksFitKyV2After = Assert<
-  BlazeKyAfterResponseHook extends Ky2AfterResponseHook ? true : false
+  BlazeKyAfterResponseHook extends KyAfterResponseHook ? true : false
 > ;
 type CoreCacheSatisfies = Assert<BlazeCache extends BlazeKyCacheLike ? true : false>;

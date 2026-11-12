@@ -673,14 +673,14 @@ const cache = await BlazeCache.create({ wasmSource });
 
 // hook style — any ky you already have
 const api = ky.extend({
-  prefixUrl: 'https://api.example.com/v1',
+  baseUrl: 'https://api.example.com/v1',
   headers: { authorization: 'Bearer k' },
   hooks: blazeKyHook(cache, { varyHeaders: ['authorization'], tags: () => ['v1'] }),
 });
 
 // helper style — one call, cache options folded into the same options object
 const api2 = createBlazeKy(cache, {
-  prefixUrl: 'https://api.example.com/v1',
+  baseUrl: 'https://api.example.com/v1',
   headers: { authorization: 'Bearer k' },
   ttlMs: 30_000,
   tags: () => ['v1'],
