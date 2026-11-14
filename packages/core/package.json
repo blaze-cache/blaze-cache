@@ -49,6 +49,7 @@
     "prepublishOnly": "pnpm run build && node -e \"require('fs').accessSync('pkg/blaze_cache_wasm_bg.wasm')\""
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.8",
     "typescript": "^5.9.3"
   }
 }
