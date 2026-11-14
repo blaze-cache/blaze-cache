@@ -31,6 +31,52 @@ cache.invalidateTags('user:42');   // removes it, synchronously, and syncs Index
 Reads and writes are **synchronous**: the wasm module is instantiated once during
 `create`, so the hot path never allocates a `Promise`.
 
+## Contents
+
+- [Packages](#packages)
+- [Installation](#installation)
+- [Setup](#setup)
+  - [1. Create the cache](#1-create-the-cache)
+  - [2. Cache HTTP responses (optional)](#2-cache-http-responses-optional)
+  - [3. Mirror TanStack Query (optional)](#3-mirror-tanstack-query-optional)
+  - [4. Read through it](#4-read-through-it)
+  - [Teardown](#teardown)
+- [Why Wasm](#why-wasm)
+- [Core concepts](#core-concepts)
+  - [TTLs](#ttls)
+  - [Tags](#tags)
+  - [Eviction](#eviction)
+  - [Introspection](#introspection)
+  - [Values](#values)
+  - [Stats](#stats)
+  - [Events](#events)
+  - [Subscriptions](#subscriptions)
+  - [API at a glance](#api-at-a-glance)
+- [Persistence](#persistence)
+  - [The control API: `cache.persistence`](#the-control-api-cachepersistence)
+  - [Accounts and logout/login](#accounts-and-logoutlogin)
+  - [Schema versioning](#schema-versioning)
+  - [Multiple tabs](#multiple-tabs)
+- Integrations
+  - [axios](#axios)
+  - [fetch](#fetch)
+  - [ky](#ky)
+  - [ofetch](#ofetch)
+  - [TanStack Query](#tanstack-query)
+    - [Full API](#full-api)
+    - [Round trip](#round-trip)
+- [Sharing one cache](#sharing-one-cache)
+- [Loading the wasm](#loading-the-wasm)
+  - [Default: let the package resolve it](#default-let-the-package-resolve-it)
+  - [Explicit URL: `wasmUrl`](#explicit-url-wasmurl)
+  - [Precompiled: `module`](#precompiled-module)
+  - [Custom loader: `instantiate`](#custom-loader-instantiate)
+  - [Choosing a source](#choosing-a-source)
+  - [Bundler import table](#bundler-import-table)
+- [Repository layout](#repository-layout)
+- [Development](#development)
+- [Benchmarks](#benchmarks)
+
 ## Packages
 
 | Package | Purpose |
@@ -1266,15 +1312,3 @@ its key (and deadline, and tags) into linear memory. React Query and SWR win the
 are asked to do the least: no capacity, no TTL, no tags, no index.
 Numbers move with the machine, so read [`benchmarks/cache/README.md`](benchmarks/cache/README.md)
 for the full table, the spread column and the methodology before quoting any figure.
-
-## Contributors
-
-Thanks to everyone who has contributed so far. The grid below is generated live and
-updates on its own — the [contributors graph](https://github.com/blaze-cache/blaze-cache/graphs/contributors)
-has the per-commit detail:
-
-<p align="center">
-  <a href="https://github.com/blaze-cache/blaze-cache/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=blaze-cache/blaze-cache" alt="Blaze Cache contributors">
-  </a>
-</p>
