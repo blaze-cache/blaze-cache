@@ -22,7 +22,18 @@ export { initBlazeWasm, loadBlazeWasm, wasmUrl } from './wasm.js';
 export type { WasmInitInput, WasmLoadOptions, WasmSource } from './wasm.js';
 
 export { indexedDbPersistence } from './persistence/indexeddb.js';
-export type { CachePersistence, IndexedDbOptions, PersistedRecord } from './persistence/types.js';
+export type {
+  CachePersistence,
+  IndexedDbOptions,
+  PersistedRecord,
+  PersistenceActivity,
+  PersistenceControl,
+  PersistenceErrorPhase,
+  PersistenceOptions,
+  PersistenceStats,
+  PersistenceWriteMode,
+  PersistenceWriteOps,
+} from './persistence/types.js';
 
 export { safeStableStringify, stableStringify } from './utils.js';
 

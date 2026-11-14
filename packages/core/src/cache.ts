@@ -20,7 +20,16 @@ import { CacheSubscriptions } from './reactivity.js';
 import { loadBlazeWasm, keyScratch, WasmCache } from './wasm.js';
 import type { WasmLoadOptions } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
-import type { CachePersistence, IndexedDbOptions, PersistedRecord } from './persistence/types.js';
+import type {
+  CachePersistence,
+  PersistedRecord,
+  PersistenceActivity,
+  PersistenceControl,
+  PersistenceErrorPhase,
+  PersistenceOptions,
+  PersistenceStats,
+  PersistenceWriteMode,
+} from './persistence/types.js';
 
 /** Entries held when `capacity` is not given. */
 export const DEFAULT_CAPACITY = 500;
@@ -42,20 +51,39 @@ const MAX_FAILED_FLUSHES = 3;
  */
 const NO_TAGS: string[] = [];
 
-/** Options for a custom {@link CachePersistence} adapter. */
-export interface CachePersistenceOptions {
-  adapter: CachePersistence;
-  /** Debounce applied to write-through flushes. Default {@link DEFAULT_FLUSH_DELAY_MS}. */
-  flushDelayMs?: number;
-  /** Maximum records persisted per flush (newest win). Default {@link DEFAULT_MAX_RECORDS}. */
-  maxRecords?: number;
+/**
+ * Reads one persistence option that exists under a new name **and** a legacy alias
+ * (`debounceMs`/`flushDelayMs`, `maxEntries`/`maxRecords`).
+ *
+ * Either spelling works on its own; given both, they must agree — a silent "new name
+ * wins" would leave the old one rotting in a caller's config with no hint that it stopped
+ * having an effect. Returns the value to validate, or `undefined` when neither was given.
+ */
+function pickPaired<T>(
+  primary: T | undefined,
+  legacy: T | undefined,
+  primaryName: string,
+  legacyName: string,
+): T | undefined {
+  if (primary !== undefined && legacy !== undefined && primary !== legacy) {
+    throw new RangeError(
+      `[blaze-cache] persistence.${primaryName} (${String(primary)}) and persistence.${legacyName} (${String(legacy)}) were both given and disagree — keep one spelling.`,
+    );
+  }
+  return primary ?? legacy;
 }
 
-/** Options for the built-in IndexedDB adapter — settings plus flush tuning. */
-export interface IndexedDbPersistenceOptions extends IndexedDbOptions {
-  flushDelayMs?: number;
-  maxRecords?: number;
+/** Options for a custom {@link CachePersistence} adapter — settings, tuning and observers. */
+export interface CachePersistenceOptions extends PersistenceOptions {
+  adapter: CachePersistence;
 }
+
+/**
+ * Options for the built-in IndexedDB adapter — connection settings plus flush tuning,
+ * session isolation and observers. An alias of {@link PersistenceOptions}: the full set
+ * of persistence options is identical for both flavours.
+ */
+export type IndexedDbPersistenceOptions = PersistenceOptions;
 
 /** Options accepted by {@link BlazeCache.create}. */
 export interface BlazeCacheOptions extends WasmLoadOptions {
@@ -73,6 +101,10 @@ export interface BlazeCacheOptions extends WasmLoadOptions {
    *
    * * `{ namespace, database, store, ... }` — the built-in IndexedDB adapter.
    * * `{ adapter, ... }` — any {@link CachePersistence} implementation.
+   *
+   * Both flavours accept the same tuning, session and observer options — see
+   * {@link PersistenceOptions} — and expose the same control surface at
+   * {@link BlazeCache.persistence}.
    */
   persistence?: false | CachePersistenceOptions | IndexedDbPersistenceOptions;
 }
@@ -195,6 +227,43 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #chain: Promise<void> = Promise.resolve();
   #disposed = false;
+  /** The configured namespace, for {@link BlazeCache.persistence.stats}. */
+  #namespace = '';
+  /**
+   * The current session generation — the token rotated on logout/login. `''` means "no
+   * generation", i.e. the plain namespace.
+   */
+  #generation = '';
+  /**
+   * Monotonic session counter, bumped by {@link PersistenceControl.rotate}.
+   *
+   * Every asynchronous persistence pass (flush, hydrate) snapshots it before its first
+   * `await` and re-checks it after each one: a mismatch means the session changed
+   * underneath the pass, which then **drops its claimed work** instead of writing the
+   * previous account's records into the next account's storage — or requeueing them,
+   * where they would surface one flush later. Clearing memory alone never did this; a
+   * save already handed to the adapter cannot be un-handed, which is why the adapter
+   * snapshots its bucket too (see `indexedDbPersistence`).
+   */
+  #epoch = 0;
+  #restoreExpired = false;
+  #writeMode: PersistenceWriteMode = 'debounce';
+  /** Observer for contained failures — replaces the default `console.error` reporting. */
+  #onError: ((error: unknown) => void) | undefined;
+  /** Observer for persistence activity (hydrate/flush/rotate/error). */
+  #onActivity: ((activity: PersistenceActivity) => void) | undefined;
+  // --- persistence counters behind `persistence.stats()` ---
+  #statHydrates = 0;
+  #statRestored = 0;
+  #statSkipped = 0;
+  #statFlushes = 0;
+  #statRecordsWritten = 0;
+  #statAborted = 0;
+  #statRotations = 0;
+  #statErrors = 0;
+  #statLastError: unknown = null;
+  #statLastFlushAt: number | null = null;
+  #statLastHydrateAt: number | null = null;
   /** The single in-flight teardown — overlapping {@link BlazeCache.dispose} calls share it. */
   #disposePromise: Promise<void> | null = null;
   /** Consecutive failed flushes per dirty key; a key that keeps failing is dropped, not queued forever. */
@@ -205,10 +274,34 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * for it. Created once and reused: an empty layer is a detached layer.
    */
   #subs: CacheSubscriptions<V> | null = null;
+  /**
+   * The {@link PersistenceControl} handed out by {@link BlazeCache.persistence} — built
+   * once, because every method is a closure over this instance and the state it reads
+   * (adapter presence, generation, counters) is only known at call time. That is also
+   * what lets the surface exist on a memory-only cache: the methods simply resolve as
+   * no-ops instead of forcing callers to branch on an option they may not remember.
+   */
+  readonly #control: PersistenceControl;
 
   private constructor(wasm: WasmCache) {
     this.#wasm = wasm;
     this.#raw = keyScratch.enabled;
+    // The getters below need *the instance* for private-field access: inside an object
+    // literal `this` would be the control object itself.
+    const self = this;
+    this.#control = {
+      get enabled(): boolean {
+        return self.#persist !== null;
+      },
+      get generation(): string {
+        return self.#generation;
+      },
+      flush: () => this.flush(),
+      clear: () => this.#controlClear(),
+      hydrate: () => this.#controlHydrate(),
+      rotate: (generation: string) => this.#rotate(generation),
+      stats: () => this.#persistenceStats(),
+    };
   }
 
   /**
@@ -726,6 +819,30 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   }
 
   /**
+   * The persistence control surface: `flush()`, `clear()`, `hydrate()`, `stats()` and
+   * `rotate()` — see {@link PersistenceControl}.
+   *
+   * Always present, even on a memory-only cache (the methods resolve as no-ops and
+   * `stats().enabled` is `false`), so callers never have to remember which flavour of
+   * `create` they are holding.
+   *
+   * ```ts
+   * await cache.persistence.flush();     // same as cache.flush()
+   * await cache.persistence.clear();     // wipe this namespace in storage (memory stays)
+   * await cache.persistence.hydrate();   // reload stored records into memory
+   * cache.persistence.stats();           // counters: hydrates, flushes, errors, pending…
+   *
+   * // logout → login:
+   * await cache.persistence.rotate('user-43');  // invalidate the previous session
+   * cache.clear();                              // drop its entries from memory
+   * await cache.persistence.hydrate();          // load the new session's records
+   * ```
+   */
+  get persistence(): PersistenceControl {
+    return this.#control;
+  }
+
+  /**
    * Writes pending changes to storage immediately.
    *
    * Resolves once the underlying transaction commits. Concurrent calls are serialised, so
@@ -734,7 +851,9 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * When the write itself fails — quota, a blocked or transient IndexedDB error — the pass
    * rejects **and hands every record it had claimed back onto the queue**, so the next flush
    * (a later mutation's timer, an explicit call, `pagehide`, `dispose`) retries them instead
-   * of losing them.
+   * of losing them. A pass invalidated by {@link PersistenceControl.rotate} is the
+   * exception: its claimed work belongs to a session that no longer exists, so it is
+   * dropped and the flush resolves without writing.
    */
   flush(): Promise<void> {
     if (this.#disposed) return Promise.resolve();
@@ -801,44 +920,67 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   async #setupPersistence(spec: BlazeCacheOptions['persistence']): Promise<void> {
     if (!spec) return;
 
-    let adapter: CachePersistence;
-    let flushDelayMs: number | undefined;
-    let maxRecords: number | undefined;
-    if ('adapter' in spec) {
-      adapter = spec.adapter;
-      flushDelayMs = spec.flushDelayMs;
-      maxRecords = spec.maxRecords;
-    } else {
-      adapter = indexedDbPersistence(spec);
-      flushDelayMs = spec.flushDelayMs;
-      maxRecords = spec.maxRecords;
+    // ---- validate everything before touching storage or the adapter ----------
+    // Validated, not defaulted silently: a `debounceMs` of NaN would make every debounce
+    // fire immediately, and `maxEntries: 0` would persist *everything* — `slice(-0)` is
+    // the whole array, not the empty one. A caller who passes a bad number gets a loud
+    // failure at `create` rather than a mysterious persistence behaviour later.
+    const debounceMs = pickPaired(
+      spec.debounceMs,
+      spec.flushDelayMs,
+      'debounceMs',
+      'flushDelayMs',
+    );
+    if (debounceMs !== undefined && (!Number.isFinite(debounceMs) || debounceMs < 0)) {
+      throw new RangeError(
+        `[blaze-cache] persistence.debounceMs must be a finite number >= 0, got ${String(debounceMs)}.`,
+      );
+    }
+    const maxEntries = pickPaired(spec.maxEntries, spec.maxRecords, 'maxEntries', 'maxRecords');
+    if (maxEntries !== undefined && (!Number.isInteger(maxEntries) || maxEntries < 1)) {
+      throw new RangeError(
+        `[blaze-cache] persistence.maxEntries must be an integer >= 1, got ${String(maxEntries)}.`,
+      );
+    }
+    const writeMode = spec.writeMode ?? 'debounce';
+    if (writeMode !== 'debounce' && writeMode !== 'immediate') {
+      throw new RangeError(
+        `[blaze-cache] persistence.writeMode must be "debounce" or "immediate", got ${String(writeMode)}.`,
+      );
+    }
+    if (spec.restoreExpired !== undefined && typeof spec.restoreExpired !== 'boolean') {
+      throw new RangeError(
+        `[blaze-cache] persistence.restoreExpired must be a boolean, got ${String(spec.restoreExpired)}.`,
+      );
     }
 
+    // ---- attach --------------------------------------------------------------
+    // A custom adapter takes precedence; otherwise the built-in IndexedDB one — which
+    // validates `namespace`/`generation` (no NUL characters) and throws from here, so a
+    // bad isolation setup fails `create` loudly instead of misbehaving later.
+    const adapter = spec.adapter ?? indexedDbPersistence(spec);
     this.#persist = adapter;
-    // Validated, not defaulted silently: `flushDelayMs: NaN` would make every debounce fire
-    // immediately, and `maxRecords: 0` would persist *everything* — `slice(-0)` is the whole
-    // array, not the empty one. A caller who passes a number gets a loud failure at `create`
-    // rather than a mysterious persistence behaviour later.
-    if (flushDelayMs !== undefined && (!Number.isFinite(flushDelayMs) || flushDelayMs < 0)) {
-      this.#persist = null;
-      throw new RangeError(
-        `[blaze-cache] persistence.flushDelayMs must be a finite number >= 0, got ${String(flushDelayMs)}.`,
-      );
-    }
-    if (maxRecords !== undefined && (!Number.isInteger(maxRecords) || maxRecords < 1)) {
-      this.#persist = null;
-      throw new RangeError(
-        `[blaze-cache] persistence.maxRecords must be an integer >= 1, got ${String(maxRecords)}.`,
-      );
-    }
-    this.#flushDelayMs = flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
-    this.#maxRecords = maxRecords ?? DEFAULT_MAX_RECORDS;
+    this.#namespace = spec.namespace ?? 'default';
+    this.#generation = spec.generation ?? '';
+    this.#flushDelayMs = debounceMs ?? DEFAULT_FLUSH_DELAY_MS;
+    this.#maxRecords = maxEntries ?? DEFAULT_MAX_RECORDS;
+    this.#restoreExpired = spec.restoreExpired ?? false;
+    this.#writeMode = writeMode;
+    this.#onError = spec.onError;
+    this.#onActivity = spec.onActivity;
 
     try {
       await this.#hydrate(adapter);
     } catch (error) {
+      // Contained: an adapter that cannot open at all (private mode, enterprise policy)
+      // degrades to memory-only instead of breaking `create`. The failure is still
+      // recorded and handed to `onError`, so an operator watching persistence hears it.
       this.#persist = null;
+      this.#recordError('hydrate', error);
       console.warn('[blaze-cache] persistence unavailable — running memory-only.', error);
+      // The console.warn above already announced the degrade; `onError` only fires when
+      // somebody asked to hear about failures, so the two never double-report.
+      if (this.#onError) this.#notifyError(error);
       return;
     }
     this.#bindPageLifecycle();
@@ -854,12 +996,42 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * must cost exactly that row: every record is shape-checked (and its wasm `set` guarded)
    * individually, so the remaining records still hydrate. The complaint is a single
    * `console.warn` per run, not one per bad row.
+   *
+   * Two further guards make an explicit re-hydrate (`cache.persistence.hydrate()`, the
+   * login half of an account switch) safe:
+   *
+   * * **Generation** — the pass snapshots the session before `load()` and discards the
+   *   whole result if it changed while the read was in flight, so the previous account's
+   *   records can never land in the next account's memory.
+   * * **`restoreExpired: false`** (the default) keeps records that expired while the tab
+   *   was away out of memory; `true` restores them with their original TTL window
+   *   restarted from now — never with the non-positive remainder, which the wasm core
+   *   would read as "never expires".
+   *
+   * A full-clear queued *before* this hydrate would erase exactly what was just loaded,
+   * so it is dropped once the records land.
    */
   async #hydrate(adapter: CachePersistence): Promise<void> {
+    const epoch = this.#epoch;
+    const generation = this.#generation;
+    const startedAt = Date.now();
+    this.#activity({ type: 'hydrate-start', generation });
+
     const records = await adapter.load();
+    if (epoch !== this.#epoch) {
+      // The session changed under the read: these rows belong to a generation that no
+      // longer exists. Discard them — storage still holds them for their own owner.
+      this.#statAborted += 1;
+      this.#activity({ type: 'hydrate-abort', generation });
+      return;
+    }
+
     const now = Date.now();
+    let restored = 0;
+    let skipped = 0;
     let reported = false;
     const skip = (reason: string, record: unknown, error?: unknown): void => {
+      skipped += 1;
       if (reported) return;
       reported = true;
       console.warn(
@@ -890,21 +1062,45 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
       try {
         const remaining = record.ttlMs === null ? null : record.ttlMs - (now - record.storedAt);
-        if (remaining !== null && remaining <= 0) continue;
+        if (remaining !== null && remaining <= 0) {
+          if (!this.#restoreExpired) {
+            skipped += 1; // expired on purpose — not a malformed record, so no warning
+            continue;
+          }
+          // Opt-in resurrection: the original TTL window, restarted from now. Fresh but
+          // not forever — and never the dead remainder, which reads as "never expires".
+          this.#wasm.set(record.key, record.value, record.ttlMs, record.tags);
+          restored += 1;
+          continue;
+        }
         // Direct wasm call: hydration is not a user write, so it emits no event — nor any
         // change for persistence (the adapter it came from is already up to date).
         this.#wasm.set(record.key, record.value, remaining, record.tags);
+        restored += 1;
       } catch (error) {
         skip('the wasm core refused the write', record, error);
       }
     }
+
+    this.#clearAll = false;
+    this.#statHydrates += 1;
+    this.#statRestored += restored;
+    this.#statSkipped += skipped;
+    this.#statLastHydrateAt = Date.now();
+    this.#activity({
+      type: 'hydrate-finish',
+      generation,
+      restored,
+      skipped,
+      durationMs: Date.now() - startedAt,
+    });
   }
 
   #bindPageLifecycle(): void {
     if (typeof window === 'undefined') return;
     const flush = () => {
       void this.flush().catch((error: unknown) => {
-        console.error('[blaze-cache] flush on page hide failed.', error);
+        this.#notifyError(error, '[blaze-cache] flush on page hide failed.');
       });
     };
     const onVisibility = () => {
@@ -919,18 +1115,28 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   }
 
   #scheduleFlush(): void {
-    if (this.#timer !== null) return;
+    if (this.#disposed || this.#timer !== null) return;
+    // `immediate` collapses the current task into one pass (a `setMany` of 100 entries
+    // still writes once) instead of chaining one flush per mutation; `debounce` waits
+    // out the window so a burst of writes coalesces by key.
+    const delay = this.#writeMode === 'immediate' ? 0 : this.#flushDelayMs;
     this.#timer = setTimeout(() => {
       this.#timer = null;
       void this.flush().catch((error: unknown) => {
-        console.error('[blaze-cache] background flush failed.', error);
+        this.#notifyError(error, '[blaze-cache] background flush failed.');
       });
-    }, this.#flushDelayMs);
+    }, delay);
   }
 
   async #runFlush(): Promise<void> {
     const persist = this.#persist;
     if (!persist || this.#disposed) return;
+    // Snapshot the session *now*: work claimed under an older generation than the one
+    // currently active is dropped at every checkpoint below instead of being written,
+    // requeued or reconciled (see `#epoch`).
+    const epoch = this.#epoch;
+    const generation = this.#generation;
+    const startedAt = Date.now();
 
     // Take ownership of the pending work up front, so a `set` racing with the awaits below
     // lands in the *next* pass instead of being written twice. The claimed records stay in
@@ -946,26 +1152,14 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     this.#dirty.clear();
     this.#deleted.clear();
 
+    this.#activity({
+      type: 'flush-start',
+      generation,
+      records: dirty.length + deleted.length,
+    });
+
     let toRemove = deleted;
     try {
-      if (clearAll) await persist.clear();
-
-      if (dirty.length > 0) {
-        const records: PersistedRecord[] = [];
-        for (const key of dirty.slice(-this.#maxRecords)) {
-          const entry = this.#wasm.entry(key);
-          if (!entry) continue;
-          records.push({
-            key,
-            value: entry.value,
-            tags: entry.tags,
-            ttlMs: entry.ttlMs,
-            storedAt: Date.now(),
-          });
-        }
-        if (records.length > 0) await persist.save(records);
-      }
-
       // Reconcile the rows the wasm core dropped on its own. A capacity eviction inside
       // `set` and a lapsed TTL never queue a delete for persistence — the `evict`/`expire`
       // events they emit reach subscribers only, and `prune`/`remove` callers may not have
@@ -974,26 +1168,73 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       // `QuotaExceededError` kills persistence outright.
       // Any key storage still holds that the wasm core no longer lists is stale. Skipped
       // after `clear()` (storage was just emptied) and for adapters without `keys()`.
+      // It runs *before* the write: a row the upcoming `save` would add belongs to a live
+      // key (that is why it is dirty), so it can never come back stale here.
       if (!clearAll && typeof persist.keys === 'function') {
         const persisted = await persist.keys();
+        if (epoch !== this.#epoch) return this.#abortPass(generation);
         // Read the live set *after* the await, so a `set` landing mid-pass counts as live
-        // and keeps its row — and nothing awaits before `remove`, so the diff cannot go
+        // and keeps its row — and nothing awaits before the write, so the diff cannot go
         // stale under our feet.
         const live = new Set(this.#wasm.keys());
         const stale = persisted.filter((key) => !live.has(key));
         if (stale.length > 0) toRemove = [...new Set([...deleted, ...stale])];
       }
 
+      const records: PersistedRecord[] = [];
+      for (const key of dirty.slice(-this.#maxRecords)) {
+        const entry = this.#wasm.entry(key);
+        if (!entry) continue;
+        records.push({
+          key,
+          value: entry.value,
+          tags: entry.tags,
+          ttlMs: entry.ttlMs,
+          storedAt: Date.now(),
+        });
+      }
+
       // One last synchronous guard: a key re-`set` while the pass was awaiting belongs to
       // the *next* pass's `save`, so removing its row here would only open a window where
       // memory and storage disagree.
       const targets = toRemove.filter((key) => !this.#dirty.has(key));
-      if (targets.length > 0) await persist.remove(targets);
+
+      if (clearAll || records.length > 0 || targets.length > 0) {
+        if (typeof persist.write === 'function') {
+          // One batch, one transaction: `clear` + upserts + deletes commit together
+          // instead of serialising as up to three separate round trips.
+          await persist.write({ clear: clearAll, save: records, remove: targets });
+        } else {
+          if (clearAll) await persist.clear();
+          if (records.length > 0) await persist.save(records);
+          if (targets.length > 0) await persist.remove(targets);
+        }
+      }
+      if (epoch !== this.#epoch) return this.#abortPass(generation);
 
       // The pass completed — every strike from earlier failures is forgiven (a temporary
       // quota pinch must not accumulate toward dropping a key).
       this.#failedFlushes.clear();
+      this.#statFlushes += 1;
+      this.#statRecordsWritten += records.length;
+      this.#statLastFlushAt = Date.now();
+      this.#activity({
+        type: 'flush-finish',
+        generation,
+        records: records.length,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
+      // The session changed while the adapter was failing: the error belongs to a
+      // generation that no longer exists, and so does the work it was doing. Drop both —
+      // requeueing would write the previous account's records into the next account's
+      // storage on some later flush.
+      if (epoch !== this.#epoch) return this.#abortPass(generation);
+
+      // Recorded for `stats()`/`onActivity`; the rejection below still reaches whoever
+      // awaited this flush (background passes route it to `onError` in their `catch`).
+      this.#recordError('flush', error);
+
       // Hand back exactly what this pass claimed. Concurrent work that landed during the
       // awaits is kept as-is, and the two queues stay disjoint — a key the runner may have
       // touched in the meantime belongs to whoever claimed it last.
@@ -1027,6 +1268,207 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
         if (!this.#dirty.has(key)) this.#deleted.add(key);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Ends a pass whose session disappeared mid-flight: the claimed work is discarded (it
+   * was never requeued), nothing else runs, and the flush resolves — a stale write must
+   * not surface as an error to whoever awaited it, nor as one to the new session.
+   */
+  #abortPass(generation: string): void {
+    this.#statAborted += 1;
+    this.#activity({ type: 'flush-abort', generation });
+  }
+
+  // ------------------------------------------------------- persistence control
+
+  /**
+   * `persistence.clear()` — empties this namespace in storage and drops every queued
+   * write, without touching the cache's memory.
+   *
+   * Queues are dropped twice: once synchronously (so work nobody claimed yet never
+   * reaches storage) and again inside the serialised pass (because an in-flight flush
+   * that *fails* hands its claimed records back after our first drop). The storage wipe
+   * runs on the same chain, so it always lands after writes already in flight — the
+   * final state of storage is empty, not "empty, then rewritten by the pass that was
+   * already running".
+   */
+  async #controlClear(): Promise<void> {
+    const persist = this.#persist;
+    if (!persist || this.#disposed) return;
+
+    const dropQueued = (): void => {
+      this.#dirty.clear();
+      this.#deleted.clear();
+      this.#clearAll = false;
+      this.#failedFlushes.clear();
+      if (this.#timer !== null) {
+        clearTimeout(this.#timer);
+        this.#timer = null;
+      }
+    };
+    dropQueued();
+
+    const run = async (): Promise<void> => {
+      dropQueued();
+      try {
+        await persist.clear();
+      } catch (error) {
+        this.#recordError('clear', error);
+        throw error;
+      }
+    };
+    // Chain instead of guarding: clearing while a flush is in flight must serialise
+    // behind it, exactly like two `flush()` calls do. A rejection leaves the chain
+    // rejected, which the next `flush()` recovers from (it attaches both handlers).
+    this.#chain = this.#chain.then(run, run);
+    return this.#chain;
+  }
+
+  /**
+   * `persistence.hydrate()` — reloads stored records into memory, serialised behind any
+   * write already in flight. Merge, not replace: memory-only entries survive, which is
+   * what makes it usable as a "storage caught up, pull it in" call. A failure rejects
+   * *this* promise (the caller asked for the read) while leaving persistence attached
+   * and the chain healthy — core reads and writes are never affected.
+   */
+  #controlHydrate(): Promise<void> {
+    const persist = this.#persist;
+    if (!persist || this.#disposed) return Promise.resolve();
+
+    const run = async (): Promise<void> => {
+      try {
+        await this.#hydrate(persist);
+      } catch (error) {
+        this.#recordError('hydrate', error);
+        throw error;
+      }
+    };
+    const result = this.#chain.then(run, run);
+    // The chain must outlive a rejected hydrate: swallow the failure *there* while the
+    // caller still receives the original rejection from `result`.
+    this.#chain = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
+  /**
+   * `persistence.rotate(generation)` — the logout/login switch.
+   *
+   * The epoch bump, the queue drop and the timer cancel all happen **synchronously**,
+   * before the first `await`: from this instant every pass still in flight fails its
+   * next epoch check and drops its claimed work, and every queued write belongs to a
+   * session that no longer exists. The adapter then adopts the new generation — its
+   * already-running operations keep the bucket they snapshotted, so a save that lands
+   * after this call writes into the *previous* generation's rows, which the new
+   * generation can never load.
+   *
+   * Memory is deliberately untouched: entries left behind by the old session are the
+   * caller's to drop (`cache.clear()`), and a full-clear queued by that call is already
+   * neutralised here — the queues it would have set are gone.
+   */
+  async #rotate(generation: string): Promise<void> {
+    if (typeof generation !== 'string') {
+      throw new TypeError(
+        `[blaze-cache] persistence.rotate expects a string generation, got ${typeof generation}.`,
+      );
+    }
+    if (generation.includes('\0')) {
+      throw new RangeError(
+        '[blaze-cache] persistence.rotate: a generation must not contain a NUL character ("\\0").',
+      );
+    }
+    if (this.#disposed) return;
+
+    // --- synchronous invalidation: everything below runs before any await ---
+    this.#epoch += 1;
+    this.#generation = generation;
+    this.#dirty.clear();
+    this.#deleted.clear();
+    this.#clearAll = false;
+    this.#failedFlushes.clear();
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+
+    const persist = this.#persist;
+    if (persist?.rotate) {
+      try {
+        await persist.rotate(generation);
+      } catch (error) {
+        // The cache-side isolation is already active (epoch + dropped queues); only the
+        // adapter's bucket switch failed, so report it and let the caller decide.
+        this.#recordError('rotate', error);
+        throw error;
+      }
+    }
+    this.#statRotations += 1;
+    this.#activity({ type: 'rotate', generation });
+  }
+
+  /** A fresh snapshot of the counters behind `persistence.stats()`. */
+  #persistenceStats(): PersistenceStats {
+    return {
+      enabled: this.#persist !== null,
+      namespace: this.#namespace,
+      generation: this.#generation,
+      pending: this.#dirty.size + this.#deleted.size + (this.#clearAll ? 1 : 0),
+      hydrates: this.#statHydrates,
+      restored: this.#statRestored,
+      skipped: this.#statSkipped,
+      flushes: this.#statFlushes,
+      recordsWritten: this.#statRecordsWritten,
+      aborted: this.#statAborted,
+      rotations: this.#statRotations,
+      errors: this.#statErrors,
+      lastError: this.#statLastError,
+      lastFlushAt: this.#statLastFlushAt,
+      lastHydrateAt: this.#statLastHydrateAt,
+    };
+  }
+
+  /**
+   * Hands one failure to the `onActivity` observer. Never throws: a broken observer must
+   * not be able to take down the persistence layer it is observing.
+   */
+  #activity(activity: PersistenceActivity): void {
+    const onActivity = this.#onActivity;
+    if (!onActivity) return;
+    try {
+      onActivity(activity);
+    } catch (error) {
+      console.error('[blaze-cache] persistence onActivity observer failed.', error);
+    }
+  }
+
+  /** Counts one failure for `stats()` and the activity stream. */
+  #recordError(phase: PersistenceErrorPhase, error: unknown): void {
+    this.#statErrors += 1;
+    this.#statLastError = error;
+    this.#activity({ type: 'error', phase, error });
+  }
+
+  /**
+   * Routes a failure **nobody awaited** — the debounced timer's flush, the pagehide
+   * flush, the startup degrade — to `onError`, falling back to `console.error` when no
+   * observer was given. Awaited calls (`flush()`, `hydrate()`, `clear()`, `rotate()`)
+   * reject instead and never come through here; they are already recorded for
+   * `stats()`/`onActivity` by whoever failed.
+   */
+  #notifyError(error: unknown, message = '[blaze-cache] persistence failed.'): void {
+    const onError = this.#onError;
+    if (!onError) {
+      console.error(message, error);
+      return;
+    }
+    try {
+      onError(error);
+    } catch (observerError) {
+      console.error('[blaze-cache] persistence onError observer failed.', observerError);
     }
   }
 
