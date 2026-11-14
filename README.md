@@ -462,6 +462,10 @@ miss, no eviction state, no event.
 | | `subscribeTag(tag, fn)` | `{ tag, keys, change }` per tag hit; returns stop |
 | **Persist** | `flush()` | awaits the pending write-through queue |
 | | `dispose()` | flushes, frees the wasm memory, drops every listener |
+| | `persistence.flush()` / `persistence.clear()` / `persistence.hydrate()` | control API — write now / empty storage only / reload storage into memory |
+| | `persistence.stats()` | `{ enabled, namespace, generation, pending, hydrates, restored, skipped, flushes, recordsWritten, aborted, rotations, errors, lastError, lastFlushAt, lastHydrateAt }` |
+| | `persistence.rotate(generation)` | switches the session bucket, dropping queued and in-flight writes (see [Accounts](#accounts-and-logoutlogin)) |
+| | `persistence.enabled` / `persistence.generation` | whether storage is attached / the current session token |
 
 Values travel **by reference** in and out of every read and write — see
 [Values](#values) before mutating one.
@@ -472,32 +476,112 @@ Persistence is optional and off by default.
 
 ```ts
 const cache = await createCache({
-  persistence: { namespace: 'app', flushDelayMs: 250, maxRecords: 2000 },
+  persistence: {
+    namespace: 'app',        // isolates this cache from others in the database
+    debounceMs: 250,         // coalesce writes for 250 ms before hitting storage
+    maxEntries: 2000,        // cap on records written by a single flush
+    restoreExpired: false,   // never resurrect records that expired while the tab was away
+    writeMode: 'debounce',   // or 'immediate' — flush on the next task
+    onError: (err) => report(err),   // failures nobody awaited
+    onActivity: (a) => debug(a),     // hydrate/flush/rotate lifecycle
+  },
 });
 ```
 
 The built-in adapter stores records in IndexedDB as
-`{ id, ns, key, value, tags, ttlMs, storedAt }`, keyed by `namespace\0key`, so two
-caches in the same database never collide. Writes are debounced, flushed on `pagehide`
-and `visibilitychange`, and absolute expiry is reconstructed from `storedAt` at
-hydration — records that expired while the tab was away are dropped on load.
+`{ id, ns, key, value, tags, ttlMs, storedAt, v }`, keyed by
+`namespace\0generation\0key`, so two caches in the same database — and two sessions in
+the same cache — never collide. Writes are debounced (`debounceMs`), coalesced per key
+(three writes to one key inside the window produce one row with the final value), flushed
+on `pagehide` and `visibilitychange`, and absolute expiry is reconstructed from
+`storedAt` at hydration.
 
-The persistence options are validated when the adapter is attached: a non-finite or
-negative `flushDelayMs`, or a `maxRecords` below `1`, throws a `RangeError` from `create`
-rather than misbehaving later (`maxRecords: 0` would persist *everything* — `slice(-0)` is
-the whole array, not the empty one).
+| Option | Default | What it does |
+| --- | --- | --- |
+| `namespace` | `'default'` | Key prefix isolating this cache in the store. No `\0`. |
+| `generation` | `''` | Session bucket (see [Accounts](#accounts-and-logoutlogin)); change it via `cache.persistence.rotate()`, not by hand. |
+| `debounceMs` | `400` | How long a write waits for more writes before reaching storage. Finite, `>= 0`. |
+| `maxEntries` | `2000` | Records one flush writes at most (newest dirty keys win). Integer `>= 1`. |
+| `restoreExpired` | `false` | Restore records that expired while away — with their original TTL window restarted from now, never the dead remainder. |
+| `writeMode` | `'debounce'` | `'debounce'` waits `debounceMs`; `'immediate'` flushes on the next task while still coalescing the current one. |
+| `onError` | `console.error` | Receives failures **nobody awaited** (timer, pagehide, startup degrade). Awaited calls still reject. |
+| `onActivity` | — | Hydrate/flush start·finish, aborts, rotations, errors — see `PersistenceActivity`. |
+
+The legacy spellings `flushDelayMs` and `maxRecords` still work as aliases of
+`debounceMs`/`maxEntries`; passing both spellings with different values throws.
+
+Every option is validated when persistence is attached: a non-finite or negative
+`debounceMs`, an `maxEntries` below `1`, an unknown `writeMode` or a `\0` in the
+namespace/generation throws a `RangeError`/`TypeError` from `create` rather than
+misbehaving later (`maxEntries: 0` would persist *everything* — `slice(-0)` is the whole
+array, not the empty one).
+
+### The control API: `cache.persistence`
+
+```ts
+await cache.persistence.flush();    // write pending changes now (same as cache.flush())
+await cache.persistence.clear();    // empty this namespace in storage + drop queued writes — memory untouched
+await cache.persistence.hydrate();  // reload storage into memory (merge, not replace)
+cache.persistence.stats();          // { enabled, namespace, generation, pending, hydrates, restored,
+                                    //   skipped, flushes, recordsWritten, aborted, rotations,
+                                    //   errors, lastError, lastFlushAt, lastHydrateAt }
+await cache.persistence.rotate('user-42'); // switch session generation — see below
+cache.persistence.enabled;          // false when persistence was never attached
+cache.persistence.generation;       // the current session token ('' when unused)
+```
+
+Every method is safe to call on a cache created **without** persistence: they resolve as
+no-ops and `stats()` reports `enabled: false`, so application code never has to branch.
+
+`hydrate()` merges — memory-only entries survive — which makes it usable as a
+"storage caught up, pull it in" call. A failure rejects *that* promise (you asked for the
+read) while leaving persistence attached and healthy; core reads and writes are never
+affected.
+
+### Accounts and logout/login
+
+Fold the account into a **generation** and rotate it on every login/logout:
+
+```ts
+// login
+await cache.persistence.rotate(`user:${userId}`); // previous session's queued + in-flight writes are dropped
+// (optionally) await cache.persistence.hydrate();  // pull the new account's rows in
+
+// logout
+await cache.persistence.rotate('');               // back to the anonymous bucket
+cache.clear();                                     // memory is the caller's to drop
+```
+
+Rotation is stronger than clearing memory:
+
+* Every write **queued** by the previous session is discarded — it never reaches storage.
+* Every flush or hydrate still **in flight** fails its next epoch check and drops the work
+  it claimed, so a slow write cannot repopulate the next session's rows (counted in
+  `stats().aborted`, never as an error).
+* The adapter snapshots its bucket per operation, so a write that started before
+  `rotate()` lands in the *previous* generation's rows — invisible to the new one.
+* Rows already stored are preserved: log back in as that account and they are there.
+  Call `clear()` first if you want them wiped instead.
+
+### Schema versioning
+
+Rows carry a schema stamp (`v`). Unversioned rows written by older releases are adopted
+in place on first load. If storage holds rows from a **newer** schema (a downgrade), the
+namespace is reset with a console warning rather than misreading them — safe, loud, and
+never a crash. Individual corrupt rows (missing key, bad tags, bad TTL) cost exactly
+themselves: the rest of the hydrate proceeds, with a single warning for the run.
 
 Failures are contained at both ends. An adapter that cannot open at all (private mode,
 enterprise policy) degrades to memory-only with a console warning rather than breaking
 the app. A flush that fails *later* — a quota error, a transient IndexedDB problem — is
-logged and, crucially, every record it had claimed is put straight back on the queue, so
-the next flush retries them instead of losing them. The one exception is a record that
-fails *on its own* — an unserializable value, an adapter that rejects one specific row:
-it earns one strike per failed pass, and after three consecutive failures it is dropped
-from the queue with a console warning (the entry stays in memory) so one poison record
-cannot block every later flush. Any successful pass clears the strikes, so a temporary
-quota pinch never loses data. Only an awaited `flush()` or `dispose()` surfaces the
-storage error to you.
+reported (`onError` when nobody awaited it) and, crucially, every record it had claimed
+is put straight back on the queue, so the next flush retries them instead of losing them.
+The one exception is a record that fails *on its own* — an unserializable value, an
+adapter that rejects one specific row: it earns one strike per failed pass, and after
+three consecutive failures it is dropped from the queue with a console warning (the entry
+stays in memory) so one poison record cannot block every later flush. Any successful pass
+clears the strikes, so a temporary quota pinch never loses data. An awaited `flush()`,
+`clear()`, `hydrate()` or `rotate()` surfaces the storage error to you by rejecting.
 
 Any storage can be plugged in:
 
@@ -507,7 +591,9 @@ interface CachePersistence {
   save(records: PersistedRecord[]): Promise<void>;
   remove(keys: string[]): Promise<void>;
   clear(): Promise<void>;
-  keys?(): Promise<string[]>;   // reconciliation — see below
+  keys?(): Promise<string[]>;                       // reconciliation — see below
+  write?(ops: { clear?, save, remove }): Promise<void>; // one batch, one transaction — see below
+  rotate?(generation: string): void | Promise<void>; // adopt a session bucket
   close?(): Promise<void>;
 }
 ```
@@ -518,6 +604,18 @@ persistence (the `evict`/`expire` events reach *subscribers*, not the flush book
 so without a way to list what storage still holds, those rows would outlive every flush,
 re-hydrate at the next startup and eat quota until persistence dies. Implementing it is
 recommended; adapters that skip it keep working exactly as before.
+
+`write()` is the batching hook: when present, the cache hands the whole flush (`clear` +
+upserts + deletes) over in one call instead of up to three, so an adapter can commit them
+in a single transaction. The built-in IndexedDB adapter does exactly that — a
+`clear()`-then-`set()` flush costs one transaction, not two serialised ones. Adapters
+without it keep the `clear`/`save`/`remove` sequence.
+
+`rotate(generation)` tells the adapter to switch buckets. Implementations must guarantee
+that an operation already in flight keeps writing to the **previous** bucket (the
+built-in adapter snapshots its effective key prefix per operation). Adapters without it
+still get the cache-level isolation above, but their rows are not namespaced by
+generation.
 
 ### Multiple tabs
 
