@@ -170,13 +170,19 @@ stop(); stopMany(); stopTag();         // idempotent — also safe from inside a
   is what keeps `get`/`set` allocation-free.
 * **Persistence is optional** and off by default; a blocked IndexedDB (private mode)
   degrades to memory-only instead of breaking the app. A flush that fails later — a quota
-  error, a transient IndexedDB problem — is logged and its records go straight back on
-  the queue for the next flush, rather than being dropped; the exception is a record that
-  fails *on its own* three times running, which is dropped from the queue with a console
-  warning (still in memory) so one poison row cannot block every later flush, and any
-  successful pass resets the count. `flushDelayMs` and `maxRecords` are validated when
-  persistence is attached and throw a `RangeError` from `create` rather than misbehave
-  later (`maxRecords: 0` would persist everything — `slice(-0)` is the whole array).
+  error, a transient IndexedDB problem — is reported (`onError`, or the awaited call's
+  rejection) and its records go straight back on the queue for the next flush, rather
+  than being dropped; the exception is a record that fails *on its own* three times
+  running, which is dropped from the queue with a console warning (still in memory) so one
+  poison row cannot block every later flush, and any successful pass resets the count.
+  Options — `namespace`, `debounceMs`, `maxEntries`, `restoreExpired`, `writeMode`,
+  `onError`, `onActivity`, `generation` — are validated when persistence is attached and
+  throw from `create` rather than misbehave later (`flushDelayMs`/`maxRecords` remain as
+  aliases). `cache.persistence` is the control surface: `flush()` writes now, `clear()`
+  empties storage without touching memory, `hydrate()` reloads storage into memory,
+  `stats()` reports counters, and `rotate(generation)` switches sessions — dropping the
+  previous session's queued *and* in-flight writes (see
+  [Persistence](https://github.com/blaze-cache/blaze-cache#persistence)).
 * **`capacity` is normalised** — below `1` clamps up, above `1_000_000` clamps down, and
   a non-finite value falls back to the wasm default — so `capacity()` reports a real
   number back.
