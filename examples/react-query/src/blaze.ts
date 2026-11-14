@@ -15,7 +15,7 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-react-query', flushDelayMs: 250 },
+  persistence: { namespace: 'blaze-example-react-query', debounceMs: 250 },
   wasmUrl,
 });
 

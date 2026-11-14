@@ -48,7 +48,7 @@ interface and calls the adapter:
 ```ts
 const cache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-ky', flushDelayMs: 250 },
+  persistence: { namespace: 'blaze-example-ky', debounceMs: 250 },
   wasmUrl,                     // `?url` import — the binary ships inside @blaze-cache/core
 });
 
