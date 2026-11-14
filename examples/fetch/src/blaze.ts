@@ -13,7 +13,7 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-fetch', flushDelayMs: 250 },
+  persistence: { namespace: 'blaze-example-fetch', debounceMs: 250 },
   wasmUrl,
 });
 

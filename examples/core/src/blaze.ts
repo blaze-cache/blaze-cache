@@ -14,5 +14,5 @@ import type { BlazeCache } from '@blaze-cache/core';
  */
 export const cache: BlazeCache<string> = await createCache<string>({
   capacity: 100,
-  persistence: { namespace: 'blaze-example-core', flushDelayMs: 250 },
+  persistence: { namespace: 'blaze-example-core', debounceMs: 250 },
 });

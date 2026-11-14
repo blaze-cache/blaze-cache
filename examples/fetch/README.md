@@ -42,7 +42,7 @@ serves it with the same fake API the dev server runs.
 ```ts
 const cache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-fetch', flushDelayMs: 250 },
+  persistence: { namespace: 'blaze-example-fetch', debounceMs: 250 },
   wasmUrl,
 });
 
