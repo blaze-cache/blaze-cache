@@ -37,7 +37,8 @@ Or from this directory once the packages are built (`pnpm build` at the root):
 pnpm --filter blaze-cache-example-ky dev
 ```
 
-`pnpm build` here type-checks and produces a production bundle in `dist/`.
+`pnpm build` here type-checks and produces a production bundle in `dist/`; `pnpm preview`
+serves it with the same fake API the dev server runs.
 
 ## What it wires up
 

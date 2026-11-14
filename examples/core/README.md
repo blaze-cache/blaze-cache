@@ -31,7 +31,8 @@ Or from this directory once the packages are built (`pnpm build` at the root):
 pnpm --filter blaze-cache-example-core dev
 ```
 
-`pnpm build` here type-checks and produces a production bundle in `dist/`.
+`pnpm build` here type-checks and produces a production bundle in `dist/`; `pnpm preview`
+serves it (this example has no fake API — the playground writes straight into the cache).
 
 ## What it wires up
 
