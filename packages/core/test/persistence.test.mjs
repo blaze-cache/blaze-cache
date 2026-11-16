@@ -904,4 +904,39 @@ describe('persistence isolation regressions', () => {
     assert.deepEqual(await adapter.load(), []);
     await adapter.close();
   });
+
+  it('a newer-schema reset after rotate clears the bucket it read, not the new one', async () => {
+    freshIndexedDb();
+    const seed = indexedDbPersistence({ namespace: 'app', generation: 'alice' });
+    await seed.save([storedRecord('k', 'old')]);
+    await seed.close();
+    await rawPut([
+      { id: 'app\0alice\0k', ns: 'app\0alice', key: 'k', value: 2, tags: [], ttlMs: null, storedAt: Date.now(), v: 99 },
+    ]);
+
+    const bob = indexedDbPersistence({ namespace: 'app', generation: 'bob' });
+    await bob.save([storedRecord('keep', 'BOB')]);
+    const alice = indexedDbPersistence({ namespace: 'app', generation: 'alice' });
+
+    const warns = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warns.push(args.map(String).join(' '));
+    try {
+      const pending = alice.load(); // snapshots the alice bucket, then awaits the connection
+      alice.rotate('bob'); // rotation lands while that read is in flight
+      await pending;
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(
+      (await bob.load()).map((record) => record.value),
+      ['BOB'],
+      'the new generation was not wiped',
+    );
+    assert.deepEqual(await rawKeys(), ['app\0bob\0keep'], 'only the stale newer-schema row was cleared');
+    assert.ok(warns.some((warning) => warning.includes('newer schema')));
+    await alice.close();
+    await bob.close();
+  });
 });
