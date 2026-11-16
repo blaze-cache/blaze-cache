@@ -47,6 +47,7 @@ export function createBlazeOfetch(
     varyHeaders,
     markerHeader,
     fetch: customFetch,
+    defaults: explicitDefaults,
     ...ofetchOptions
   } = options as CreateBlazeOfetchOptions & { fetch?: typeof globalThis.fetch };
 
@@ -62,6 +63,9 @@ export function createBlazeOfetch(
     varyHeaders,
     markerHeader,
     baseURL: (ofetchOptions as FetchOptions).baseURL ?? options.baseURL,
+    // ofetch's defaults live in a closure the wrapper cannot read. Forward the identity-
+    // bearing ones so `resolveRequest` can fold them into the key (and wire baseURL).
+    defaults: explicitDefaults ?? ofetchOptions,
   });
 }
 

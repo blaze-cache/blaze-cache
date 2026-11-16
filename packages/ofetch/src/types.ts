@@ -192,6 +192,20 @@ export interface BlazeOfetchOptions {
    * URL is exactly what two different origins have in common.
    */
   baseURL?: string;
+
+  /**
+   * Identity-bearing ofetch instance defaults, for key resolution when wrapping an
+   * instance whose defaults ofetch keeps in a closure. `headers`, `query`, `params` and
+   * `baseURL` are the fields that affect identity; per-call options still win, and
+   * defaults passed to a derived `.create()` win over these.
+   *
+   * Without this hint a default `Authorization` or tenant query goes out on the wire but
+   * stays out of the cache key, so two callers sharing one cache could be served each
+   * other's personalized response. {@link createBlazeOfetch} forwards its own ofetch
+   * options here automatically; pass it explicitly when using {@link blazeOfetch} with a
+   * pre-configured instance.
+   */
+  defaults?: FetchOptions;
 }
 
 /**

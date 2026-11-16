@@ -683,6 +683,92 @@ describe('regressions (ofetch)', () => {
     assert.equal(cache.size(), 2, 'two identities occupy two entries');
   });
 
+  it('folds instance default headers into the key (no cross-user replay)', async () => {
+    const cache = await makeCache();
+    const stub = () => stubNetwork((url, n, headers) => ({
+      body: { auth: headers.get('authorization') ?? null },
+      headers: { 'content-type': 'application/json', vary: 'authorization' },
+    }));
+    const alpha = stub();
+    const beta = stub();
+    const makeApi = (network, auth) => createBlazeOfetch(cache, {
+      baseURL: 'https://api.example.com',
+      headers: { authorization: auth },
+      fetch: network.net,
+      ttlMs: TTL_MS,
+    });
+    const apiA = makeApi(alpha, 'Bearer alice');
+    const apiB = makeApi(beta, 'Bearer bob');
+
+    const alice = await settle(apiA('/me'));
+    await delay(20); // A's write is detached — let it land before B reads, or both simply miss.
+    const bob = await settle(apiB('/me'));
+
+    assert.deepEqual(alice, { auth: 'Bearer alice' });
+    assert.deepEqual(bob, { auth: 'Bearer bob' }, 'a second identity must not replay the first');
+    assert.equal(alpha.calls.length, 1);
+    assert.equal(beta.calls.length, 1, 'the second identity reaches its own network');
+    await delay(20);
+    assert.equal(cache.size(), 2, 'two identities occupy two entries');
+  });
+
+  it('folds instance default query into the key', async () => {
+    const cache = await makeCache();
+    const alpha = stubNetwork((url) => ({ body: { url } }));
+    const beta = stubNetwork((url) => ({ body: { url } }));
+    const makeApi = (network, tenant) => createBlazeOfetch(cache, {
+      baseURL: 'https://api.example.com',
+      query: { tenant },
+      fetch: network.net,
+      ttlMs: TTL_MS,
+    });
+    const apiA = makeApi(alpha, 'alpha');
+    const apiB = makeApi(beta, 'beta');
+
+    const a = await settle(apiA('/me'));
+    await delay(20);
+    const b = await settle(apiB('/me'));
+
+    assert.deepEqual(a, { url: 'https://api.example.com/me?tenant=alpha' });
+    assert.deepEqual(b, { url: 'https://api.example.com/me?tenant=beta' }, 'tenant beta must not replay alpha');
+    assert.equal(beta.calls.length, 1, 'beta reached its own network');
+    await delay(20);
+    assert.equal(cache.size(), 2);
+  });
+
+  it('accepts an explicit defaults hint for a pre-configured instance', async () => {
+    const cache = await makeCache();
+    const alpha = stubNetwork((url, n, headers) => ({
+      body: { auth: headers.get('authorization') ?? null },
+      headers: { 'content-type': 'application/json', vary: 'authorization' },
+    }));
+    const beta = stubNetwork((url, n, headers) => ({
+      body: { auth: headers.get('authorization') ?? null },
+      headers: { 'content-type': 'application/json', vary: 'authorization' },
+    }));
+    const makeApi = (network, auth) => blazeOfetch(
+      createFetch({ fetch: network.net, defaults: { headers: { authorization: auth } } }),
+      cache,
+      {
+        baseURL: 'https://api.example.com',
+        defaults: { headers: { authorization: auth } },
+        ttlMs: TTL_MS,
+      },
+    );
+    const apiA = makeApi(alpha, 'Bearer alice');
+    const apiB = makeApi(beta, 'Bearer bob');
+
+    const alice = await settle(apiA('/me'));
+    await delay(20);
+    const bob = await settle(apiB('/me'));
+
+    assert.deepEqual(alice, { auth: 'Bearer alice' });
+    assert.deepEqual(bob, { auth: 'Bearer bob' });
+    assert.equal(beta.calls.length, 1);
+    await delay(20);
+    assert.equal(cache.size(), 2);
+  });
+
   it('keys an opted-in POST by its body: two payloads, two entries', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url, callNumber) => ({ body: { served: callNumber } }));

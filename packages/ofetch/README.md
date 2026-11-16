@@ -109,10 +109,15 @@ const api = blazeOfetch(ofetch, cache, {
   tags: (response, ctx) => ['api'],         // tags on stored entries
   varyHeaders: ['authorization'],        // headers folded into the default key
   markerHeader: 'x-blaze-cache',         // or false to disable the marker
+  defaults: { headers: { authorization: 'Bearer …' } }, // identity of a wrapped instance
 });
 ```
 
-`createBlazeOfetch(cache, options)` accepts these **plus** every ofetch option.
+`createBlazeOfetch(cache, options)` accepts these **plus** every ofetch option. It forwards
+its own ofetch options as `defaults` automatically, so a configured `headers`, `query` or
+`params` still participates in the key. When wrapping a pre-configured instance with
+`blazeOfetch`, ofetch keeps those defaults in a closure the adapter cannot read — pass them
+as `defaults` explicitly, or callers with different identities would share one cache entry.
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -123,6 +128,7 @@ const api = blazeOfetch(ofetch, cache, {
 | `shouldCache` | `2xx` | Which responses are stored. |
 | `tags` | `['ofetch', '<method> <url>']` | Tags for `cache.invalidateTags(...)`. |
 | `varyHeaders` | `['authorization']` | Request headers folded into the default key. |
+| `defaults` | — | Identity-bearing ofetch instance defaults (`headers`, `query`, `params`, `baseURL`) for key resolution when wrapping a pre-configured instance. Per-call options and `.create()` defaults win. |
 | `markerHeader` | `'x-blaze-cache'` | Header carrying `HIT`/`MISS` on `raw()` responses; `false` disables it. |
 
 ## Invalidating

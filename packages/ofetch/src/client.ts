@@ -163,12 +163,21 @@ export function blazeOfetch(
     if (typeof request === 'string') {
       url = request;
       // Mirror ofetch's resolution order: baseURL then query/params (applied to strings only).
-      const base = opts.baseURL ?? inherited.baseURL ?? options.baseURL ?? state.resolvedBase;
+      const base =
+        opts.baseURL ??
+        inherited.baseURL ??
+        options.baseURL ??
+        options.defaults?.baseURL ??
+        state.resolvedBase;
       if (base) url = withBase(url, base);
 
       // ofetch merges defaults and per-call values into one object rather than letting the
-      // call replace the defaults, so the key has to merge them the same way.
+      // call replace the defaults, so the key has to merge them the same way. Instance
+      // defaults passed via `defaults` are the lowest-precedence source: ofetch's own
+      // instance defaults are invisible to us, and `.create()` defaults sit above them.
       const query = {
+        ...(options.defaults?.params ?? {}),
+        ...(options.defaults?.query ?? {}),
         ...(inherited.params ?? {}),
         ...(inherited.query ?? {}),
         ...(opts.params ?? {}),
@@ -186,6 +195,7 @@ export function blazeOfetch(
 
     const method = (opts.method ?? (typeof request !== 'string' && 'method' in request ? (request as Request).method : undefined) ?? 'GET').toUpperCase();
     const headers = mergeHeaders(
+      options.defaults?.headers,
       inherited.headers,
       typeof request !== 'string' && 'headers' in request ? (request as Request).headers : undefined,
       opts.headers as HeadersInit | undefined,
@@ -210,7 +220,7 @@ export function blazeOfetch(
    * per-call options over the instance defaults, so passing it here makes the two agree.
    */
   function wireOptions(callOpts: FetchOptions, inherited: FetchOptions): FetchOptions {
-    const base = callOpts.baseURL ?? inherited.baseURL ?? options.baseURL;
+    const base = callOpts.baseURL ?? inherited.baseURL ?? options.baseURL ?? options.defaults?.baseURL;
     return base === undefined ? callOpts : { ...callOpts, baseURL: base };
   }
 
@@ -478,7 +488,7 @@ export function blazeOfetch(
     return wrapped;
   }
 
-  return wrap(instance);
+  return wrap(instance, options.defaults);
 }
 
 
