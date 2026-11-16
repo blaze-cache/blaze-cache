@@ -939,4 +939,27 @@ describe('persistence isolation regressions', () => {
     await alice.close();
     await bob.close();
   });
+
+  it('a queued delete is not undone by a later hydrate', async () => {
+    const rows = new Map();
+    const adapter = {
+      load: async () => [...rows.values()],
+      save: async (records) => { for (const record of records) rows.set(record.key, record); },
+      remove: async (keys) => { for (const key of keys) rows.delete(key); },
+      clear: async () => rows.clear(),
+      keys: async () => [...rows.keys()],
+    };
+    const cache = await makeCache({ persistence: { adapter, debounceMs: 10_000 } });
+
+    await cache.set('k', 'v1');
+    await cache.flush();
+    await cache.delete('k');
+    await cache.persistence.hydrate();
+    assert.equal(cache.get('k'), undefined, 'the deleted key stayed deleted in memory');
+
+    await cache.flush();
+    assert.deepEqual([...rows.keys()], [], 'storage is clean');
+    assert.equal(cache.get('k'), undefined, 'memory and storage still agree');
+    await cache.dispose();
+  });
 });
