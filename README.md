@@ -1203,6 +1203,7 @@ packages/
   axios/                 @blaze-cache/axios (HTTP adapter)
   fetch/                 @blaze-cache/fetch (drop-in fetch() replacement)
   ky/                    @blaze-cache/ky (ky.extend hook, ky v1 + v2)
+  ofetch/                @blaze-cache/ofetch ($fetch wrapper, Cache-Control)
   react-query/           @blaze-cache/react-query (v5 mirror + hook)
   swr/                   @blaze-cache/swr (SWR persist + hook)
   integration-tests/     cross-integration tests: several packages, one shared cache
@@ -1212,6 +1213,7 @@ examples/
   axios/                 Vite + React demo for @blaze-cache/axios
   fetch/                 Vite + React demo for @blaze-cache/fetch
   ky/                    Vite + React demo for @blaze-cache/ky
+  ofetch/                Vite + React demo for @blaze-cache/ofetch
   react-query/           Vite + React demo for @blaze-cache/react-query
   swr/                   Vite + React demo for @blaze-cache/swr
 benchmarks/
@@ -1240,6 +1242,7 @@ pnpm dev:core         # build, then serve the @blaze-cache/core playground
 pnpm dev:axios        # build, then serve the @blaze-cache/axios example
 pnpm dev:fetch        # build, then serve the @blaze-cache/fetch example
 pnpm dev:ky           # build, then serve the @blaze-cache/ky example
+pnpm dev:ofetch       # build, then serve the @blaze-cache/ofetch example
 pnpm dev:react-query  # build, then serve the @blaze-cache/react-query example
 pnpm dev:swr          # build, then serve the @blaze-cache/swr example
 pnpm clean            # remove build outputs
