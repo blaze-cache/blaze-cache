@@ -175,6 +175,43 @@ importers:
         specifier: ^8.3.7
         version: 8.3.7(@types/node@26.6.6)
 
+  examples/ofetch:
+    dependencies:
+      '@blaze-cache/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@blaze-cache/ofetch':
+        specifier: workspace:*
+        version: link:../../packages/ofetch
+      ofetch:
+        specifier: ^1.5.1
+        version: 1.5.1
+      react:
+        specifier: ^19.0.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.3.1(react@19.3.1)
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: ^5.0.0
+        version: 5.2.0(vite@8.3.7(@types/node@26.6.6))
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.3.7
+        version: 8.3.7(@types/node@26.6.6)
+
   examples/react-query:
     dependencies:
       '@blaze-cache/core':

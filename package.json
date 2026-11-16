@@ -16,6 +16,7 @@
     "dev:axios": "pnpm build && pnpm --filter blaze-cache-example-axios dev",
     "dev:fetch": "pnpm build && pnpm --filter blaze-cache-example-fetch dev",
     "dev:ky": "pnpm build && pnpm --filter blaze-cache-example-ky dev",
+    "dev:ofetch": "pnpm build && pnpm --filter blaze-cache-example-ofetch dev",
     "dev:react-query": "pnpm build && pnpm --filter blaze-cache-example-react-query dev",
     "dev:swr": "pnpm build && pnpm --filter blaze-cache-example-swr dev",
     "typecheck": "pnpm -r typecheck",
