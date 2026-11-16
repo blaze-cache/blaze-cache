@@ -332,6 +332,9 @@ importers:
       '@blaze-cache/ky':
         specifier: workspace:*
         version: link:../ky
+      '@blaze-cache/ofetch':
+        specifier: workspace:*
+        version: link:../ofetch
       '@blaze-cache/react-query':
         specifier: workspace:*
         version: link:../react-query
@@ -344,6 +347,9 @@ importers:
       ky:
         specifier: ^2.2.0
         version: 2.2.0
+      ofetch:
+        specifier: ^1.5.1
+        version: 1.5.1
 
   packages/ky:
     dependencies:
