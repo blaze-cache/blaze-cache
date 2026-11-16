@@ -237,9 +237,12 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
     });
 
   /** Applies one write batch — clear, then upserts, then deletes — in a single transaction. */
-  const writeBatch = async ({ clear = false, save, remove }: PersistenceWriteOps): Promise<void> => {
+  const writeBatch = async (
+    { clear = false, save, remove }: PersistenceWriteOps,
+    bucket: string = namespace,
+  ): Promise<void> => {
     if (!clear && save.length === 0 && remove.length === 0) return;
-    const ns = namespace; // snapshot: a rotate mid-flight must not redirect this batch
+    const ns = bucket; // snapshot: a rotate mid-flight must not redirect this batch
     const db = await open();
     await runTransaction(db, 'readwrite', (objectStore, fail) => {
       const apply = (): void => {
@@ -279,8 +282,9 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
     });
   };
 
-  /** Empties this namespace only — one transaction. */
-  const clearNamespace = (): Promise<void> => writeBatch({ clear: true, save: [], remove: [] });
+  /** Empties one namespace only — one transaction. Defaults to the current bucket. */
+  const clearNamespace = (bucket: string = namespace): Promise<void> =>
+    writeBatch({ clear: true, save: [], remove: [] }, bucket);
 
   return {
     async load(): Promise<PersistedRecord[]> {
@@ -303,7 +307,9 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
         console.warn(
           `[blaze-cache] IndexedDB namespace was written by a newer schema — resetting it.`,
         );
-        await clearNamespace();
+        // Clear the bucket this load actually read, not whichever generation happens to
+        // be current now: a rotate during the awaited read must not redirect the reset.
+        await clearNamespace(ns);
         return [];
       }
 
