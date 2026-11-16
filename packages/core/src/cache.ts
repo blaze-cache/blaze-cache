@@ -1059,6 +1059,15 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
         skip(reason, record);
         continue;
       }
+      // A delete queued before this hydrate is still an intent to remove the key. Loading
+      // the row back into memory here would undo that delete, while the queued delete
+      // would then erase the row from storage on the next flush — leaving memory and
+      // storage disagreeing. Storage is the source being adopted, but a pending delete
+      // wins over it; the delete stays queued so storage is cleaned as well.
+      if (this.#deleted.has(record.key)) {
+        skipped += 1;
+        continue;
+      }
 
       try {
         const remaining = record.ttlMs === null ? null : record.ttlMs - (now - record.storedAt);
