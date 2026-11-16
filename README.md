@@ -915,7 +915,10 @@ What you get:
   for the `FetchResponse` (with the `x-blaze-cache` marker), `.native` for the underlying
   fetch, and `.create()` for derived instances (which remain cached, with their options
   applied to *both* the request and the cache key — an instance's own `baseURL`, which
-  ofetch keeps hidden in a closure, is learned from the first response instead).
+  ofetch keeps hidden in a closure, is learned from the first response instead). Identity
+  defaults that affect the key (`headers`, `query`, `params`) are forwarded automatically by
+  `createBlazeOfetch`; pass them as `defaults` when wrapping a pre-configured instance so two
+  callers cannot share a personalized entry.
 * No stale-while-revalidate here. For SWR (with an `STALE` marker) use
   [`@blaze-cache/fetch`](#fetch).
 
