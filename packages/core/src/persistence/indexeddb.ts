@@ -99,7 +99,16 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
    */
   let namespace = fold(baseNamespace, generation);
 
-  const idFor = (ns: string, key: string): string => `${ns}\u0000${key}`;
+  /**
+   * A NUL inside a record key would make the composite primary key ambiguous: the folded
+   * bucket already contains one, so `"app\0alice" + "k"` and `"app" + "alice\0k"` would
+   * otherwise land on the same id and silently overwrite each other. Doubling NULs in the
+   * key makes the encoding injective (odd runs can only be the boundary) and leaves keys
+   * without NUL — every existing row — byte-for-byte unchanged.
+   */
+  const encodeIdKey = (key: string): string => key.replace(/\0/g, '\0\0');
+  const decodeIdKey = (key: string): string => key.replace(/\0\0/g, '\0');
+  const idFor = (ns: string, key: string): string => `${ns}\u0000${encodeIdKey(key)}`;
 
   let opening: Promise<IDBDatabase> | null = null;
 
@@ -234,10 +243,20 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
     const db = await open();
     await runTransaction(db, 'readwrite', (objectStore, fail) => {
       const apply = (): void => {
+        // Before the NUL-safe encoding, a key containing NUL was joined verbatim. Delete
+        // that legacy id too when it differs, so an upgrade cannot leave an orphan row
+        // that a later `remove` misses and the next hydrate resurrects.
+        const deleteKey = (key: string): void => {
+          const current = idFor(ns, key);
+          objectStore.delete(current);
+          const legacy = `${ns}\u0000${key}`;
+          if (legacy !== current) objectStore.delete(legacy);
+        };
         for (const record of save) {
+          deleteKey(record.key);
           objectStore.put({ ...record, id: idFor(ns, record.key), ns, v: SCHEMA_VERSION } satisfies StoredRecord);
         }
-        for (const key of remove) objectStore.delete(idFor(ns, key));
+        for (const key of remove) deleteKey(key);
       };
       if (!clear) {
         apply();
@@ -324,7 +343,15 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
           `[blaze-cache] skipping ${unreadable} unreadable persisted record(s) in namespace.`,
         );
       }
-      return records;
+      // A row written before the NUL-safe key encoding can sit beside its migrated
+      // replacement under a different primary key. Collapse duplicates by cache key so a
+      // hydrate never installs the same entry twice; the freshest write wins.
+      const byKey = new Map<string, PersistedRecord>();
+      for (const record of records) {
+        const previous = byKey.get(record.key);
+        if (!previous || record.storedAt >= previous.storedAt) byKey.set(record.key, record);
+      }
+      return [...byKey.values()];
     },
 
     async save(records: PersistedRecord[]): Promise<void> {
@@ -367,7 +394,7 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       // The index hands back composite ids; strip the prefix to recover the cache keys, and
       // ignore anything that somehow lacks it rather than feeding nonsense to reconciliation.
       return ids.filter((id): id is string => typeof id === 'string' && id.startsWith(prefix))
-        .map((id) => id.slice(prefix.length));
+        .map((id) => decodeIdKey(id.slice(prefix.length)));
     },
 
     async close(): Promise<void> {

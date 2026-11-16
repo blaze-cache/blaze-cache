@@ -847,3 +847,61 @@ describe('persistence option validation', () => {
     await modern.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Isolation regressions: composite keys, schema reset and queued deletes
+// ---------------------------------------------------------------------------
+
+/** Every primary key in the store, read without going through an adapter. */
+const rawKeys = async () => {
+  const db = await rawOpen();
+  const ids = await new Promise((resolve, reject) => {
+    const request = db.transaction('entries').objectStore('entries').getAllKeys();
+    request.onsuccess = () => resolve(request.result ?? []);
+    request.onerror = () => reject(request.error ?? new Error('raw getAllKeys failed'));
+  });
+  db.close();
+  return ids;
+};
+
+describe('persistence isolation regressions', () => {
+  it('a NUL in a cache key cannot collide with a generation bucket', async () => {
+    freshIndexedDb();
+    const plain = indexedDbPersistence({ namespace: 'app' });
+    const alice = indexedDbPersistence({ namespace: 'app', generation: 'alice' });
+
+    await plain.save([storedRecord('alice\0k', 'PLAIN')]);
+    await alice.save([storedRecord('k', 'ALICE')]);
+
+    assert.deepEqual(
+      (await plain.load()).map((record) => record.value),
+      ['PLAIN'],
+      'the plain bucket kept its own row',
+    );
+    assert.deepEqual(
+      (await alice.load()).map((record) => record.value),
+      ['ALICE'],
+      'the generation bucket has a separate row',
+    );
+    assert.equal((await rawKeys()).length, 2, 'two primary keys, not one overwritten one');
+    await plain.close();
+    await alice.close();
+  });
+
+  it('removing a NUL key also deletes its pre-encoding row', async () => {
+    freshIndexedDb();
+    const seed = indexedDbPersistence({ namespace: 'app' });
+    await seed.save([storedRecord('a\0b', 'new')]);
+    await seed.close();
+    // The row a pre-encoding release would have written, with the key joined verbatim.
+    await rawPut([{ id: 'app\0a\0b', ns: 'app', ...storedRecord('a\0b', 'legacy') }]);
+    assert.equal((await rawKeys()).length, 2);
+
+    const adapter = indexedDbPersistence({ namespace: 'app' });
+    await adapter.remove(['a\0b']);
+
+    assert.deepEqual(await rawKeys(), [], 'both the current and the legacy row are gone');
+    assert.deepEqual(await adapter.load(), []);
+    await adapter.close();
+  });
+});
