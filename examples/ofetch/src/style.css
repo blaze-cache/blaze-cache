@@ -1,0 +1,167 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.layout {
+  max-width: 46rem;
+  margin: 0 auto;
+  display: grid;
+  gap: 1.5rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+header p {
+  margin: 0;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
+.panel {
+  border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+}
+
+.muted {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+  font-size: 0.9rem;
+}
+
+.error {
+  color: #c0392b;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 0.4rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: transparent;
+}
+
+input {
+  min-width: 12rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+button:disabled:hover {
+  border-color: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* The marker badge: HIT is green-ish, MISS is amber-ish — readable in both schemes. */
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: baseline;
+  border: 1px solid transparent;
+}
+
+.badge-hit {
+  color: #1a7f37;
+  border-color: #1a7f37;
+  background: color-mix(in srgb, #1a7f37 12%, transparent);
+}
+
+.badge-miss {
+  color: #9a6700;
+  border-color: #9a6700;
+  background: color-mix(in srgb, #9a6700 12%, transparent);
+}
+
+.badge-idle {
+  color: color-mix(in srgb, currentColor 55%, transparent);
+  border-color: color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.log {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  display: grid;
+  gap: 0.15rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.log li {
+  display: flex;
+  gap: 0.75rem;
+  color: color-mix(in srgb, currentColor 75%, transparent);
+}
+
+.log .hit {
+  color: #1a7f37;
+  font-weight: 700;
+}
+
+.log .miss {
+  color: #9a6700;
+  font-weight: 700;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 1rem;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats dt {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
+.stats dd {
+  margin: 0;
+}
+
+/* STALE marker for @blaze-cache/fetch */
+.badge-stale { color: #8250df; border-color: #8250df; background: color-mix(in srgb, #8250df 12%, transparent); }
+.log .stale { color: #8250df; font-weight: 700; }
