@@ -13,9 +13,11 @@
     "@blaze-cache/core": "workspace:*",
     "@blaze-cache/fetch": "workspace:*",
     "@blaze-cache/ky": "workspace:*",
+    "@blaze-cache/ofetch": "workspace:*",
     "@blaze-cache/react-query": "workspace:*",
     "@blaze-cache/swr": "workspace:*",
     "axios": "^1.21.0",
-    "ky": "^2.2.0"
+    "ky": "^2.2.0",
+    "ofetch": "^1.5.1"
   }
 }
