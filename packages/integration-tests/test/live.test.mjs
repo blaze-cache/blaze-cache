@@ -2,7 +2,7 @@
  * **Live** tests for the cross-integration suite, against a real public API.
  *
  * The offline suite pins the isolation contract with a canned adapter; this file proves
- * the same five integrations against the same shared cache — driven over *real* network
+ * the same six integrations against the same shared cache — driven over *real* network
  * — behave the same way a development machine behaves, instead of an idealized stub.
  *
  * It is deliberately separate from `shared-cache.test.mjs` and **skipped unless opted in**,
@@ -12,13 +12,13 @@
  *   BLAZE_CACHE_LIVE=1 node --test test/live.test.mjs
  *
  * Endpoint (keyless): `GET https://api.github.com/repos/blaze-cache/blaze-cache` — a 200
- * JSON body. Unauthenticated GitHub allows 60 requests/hour and this file uses well under
- * ten. A workspace build is assumed (`pnpm build`), exactly like the offline suite.
+ * JSON body. Unauthenticated GitHub allows 60 requests/hour and this file uses fewer than
+ * twenty. A workspace build is assumed (`pnpm build`), exactly like the offline suite.
  *
- * Integrations under test, all on one cache: axios, fetch, ky, react-query, swr.
- * They are wired to the *same* `Vary`-keying on purpose, so `fetch` and `ky` genuinely
- * share an entry for identical request identity — the contract this suite exists to prove
- * end to end.
+ * Integrations under test, all on one cache: axios, fetch, ky, ofetch, react-query, swr.
+ * They are wired to the *same* `Vary`-keying on purpose, so `fetch`, `ky` and `ofetch`
+ * could share an entry for identical request identity — the offline suite pins that
+ * compatibility; these live tests pin each integration's marker and tag behaviour.
  */
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -31,6 +31,7 @@ import { createCache } from '@blaze-cache/core';
 import { installBlazeCache } from '@blaze-cache/axios';
 import { createBlazeFetch } from '@blaze-cache/fetch';
 import { createBlazeKy } from '@blaze-cache/ky';
+import { createBlazeOfetch } from '@blaze-cache/ofetch';
 import {
   createBlazeQueryClient,
   prefetchBlazeQuery,
@@ -119,12 +120,12 @@ const realNetwork = () => {
 };
 
 /**
- * All five integrations on one cache, with real network underneath them.
+ * All six integrations on one cache, with real network underneath them.
  *
  * Every integration gets its own counter increment — axios via its adapter, the rest via
  * the wrapped `fetch` — so the count stays truthful no matter which layer replays.
  */
-const fiveIntegrations = (cache, network) => {
+const allIntegrations = (cache, network) => {
   const axiosApi = axios.create({ adapter: network.httpAdapter });
   installBlazeCache(axiosApi, { cache, varyHeaders: VARY });
 
@@ -136,6 +137,14 @@ const fiveIntegrations = (cache, network) => {
     fetch: network.fetchCounting,
     varyHeaders: VARY,
     key: () => 'ky live repo entry',
+  });
+
+  // Custom key: ofetch shares fetch/ky's key format, so pinning its own key keeps the
+  // "one entry per integration" assertions meaningful. The marker still comes from .raw().
+  const ofetchApi = createBlazeOfetch(cache, {
+    fetch: network.fetchCounting,
+    varyHeaders: VARY,
+    key: () => 'ofetch live repo entry',
   });
 
   const rqClient = createBlazeQueryClient({ cache });
@@ -154,16 +163,16 @@ const fiveIntegrations = (cache, network) => {
       ...options,
     });
 
-  return { axiosApi, fetchWrap, kyApi, rqClient, prefetch, swr };
+  return { axiosApi, fetchWrap, kyApi, ofetchApi, rqClient, prefetch, swr };
 };
 
-describe('live: five integrations, one shared cache', () => {
-  it('each integration reached the real API exactly once, and the cache holds all five', {
+describe('live: six integrations, one shared cache', () => {
+  it('each integration reached the real API exactly once, and the cache holds all six', {
     skip: SKIP,
   }, async () => {
     const cache = await makeCache();
     const network = realNetwork();
-    const { axiosApi, fetchWrap, kyApi, prefetch, swr } = fiveIntegrations(cache, network);
+    const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(cache, network);
 
     const ax = await axiosApi.get(REPO);
     assert.equal(ax.status, 200, 'the endpoint answered');
@@ -177,14 +186,18 @@ describe('live: five integrations, one shared cache', () => {
     assert.equal(ky.status, 200);
     assert.equal(ky.headers.get('x-blaze-cache'), 'MISS');
 
+    const of = await ofetchApi.raw(REPO);
+    assert.equal(of.status, 200);
+    assert.equal(of.headers.get('x-blaze-cache'), 'MISS');
+
     await prefetch();
 
     const run = swr();
     await run.fetcher(REPO);
 
-    await whenStored(cache, 5);
-    assert.equal(network.state.requests, 5, 'each integration made exactly one round-trip');
-    assert.equal(cache.size(), 5, 'one entry per integration on the shared cache');
+    await whenStored(cache, 6);
+    assert.equal(network.state.requests, 6, 'each integration made exactly one round-trip');
+    assert.equal(cache.size(), 6, 'one entry per integration on the shared cache');
   });
 
   it('every integration’s second read is served from the store — the counter does not move', {
@@ -192,20 +205,22 @@ describe('live: five integrations, one shared cache', () => {
   }, async () => {
     const cache = await makeCache();
     const network = realNetwork();
-    const { axiosApi, fetchWrap, kyApi, prefetch, swr } = fiveIntegrations(cache, network);
+    const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(cache, network);
 
     await axiosApi.get(REPO);
     await fetchWrap(REPO);
     await kyApi.get(REPO);
+    await ofetchApi.raw(REPO);
     await prefetch();
     await swr().fetcher(REPO);
-    await whenStored(cache, 5);
+    await whenStored(cache, 6);
     const afterWarm = network.state.requests;
-    assert.equal(afterWarm, 5);
+    assert.equal(afterWarm, 6);
 
     assert.equal((await axiosApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
     assert.equal((await fetchWrap(REPO)).headers.get('x-blaze-cache'), 'HIT');
     assert.equal((await kyApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
+    assert.equal((await ofetchApi.raw(REPO)).headers.get('x-blaze-cache'), 'HIT');
 
     await prefetch({ staleTime: 60_000 });
 
@@ -244,37 +259,47 @@ describe('live: five integrations, one shared cache', () => {
     const cache = await makeCache();
     const network = realNetwork();
 
-    // Anonymous fetch keyed by the default algorithm; ky pinned to its own key — two
-    // distinct entries, two distinct default tags.
+    // Anonymous fetch keyed by the default algorithm; ky and ofetch pinned to their own
+    // keys — three distinct entries, three distinct default tags.
     const fetchWrap = createBlazeFetch(cache, { fetch: network.fetchCounting, varyHeaders: VARY });
     const kyApi = createBlazeKy(cache, {
       fetch: network.fetchCounting,
       varyHeaders: VARY,
       key: () => 'ky live repo entry',
     });
+    const ofetchApi = createBlazeOfetch(cache, {
+      fetch: network.fetchCounting,
+      varyHeaders: VARY,
+      key: () => 'ofetch live repo entry',
+    });
 
     const f = await fetchWrap(REPO);
     assert.equal(f.headers.get('x-blaze-cache'), 'MISS');
     const k = await kyApi.get(REPO);
     assert.equal(k.status, 200, 'the anonymous request went out');
-    await whenStored(cache, 2);
-    assert.equal(cache.size(), 2, 'one entry per integration');
+    const o = await ofetchApi.raw(REPO);
+    assert.equal(o.headers.get('x-blaze-cache'), 'MISS');
+    await whenStored(cache, 3);
+    assert.equal(cache.size(), 3, 'one entry per integration');
 
     assert.equal(cache.keysWithTag('fetch').length, 1, 'fetch owns exactly one tagged entry');
     assert.equal(cache.keysWithTag('ky').length, 1, 'ky owns exactly one tagged entry');
+    assert.equal(cache.keysWithTag('ofetch').length, 1, 'ofetch owns exactly one tagged entry');
 
     cache.invalidateTags('fetch');
-    assert.equal(cache.size(), 1, 'only fetch’s entry was purged');
+    assert.equal(cache.size(), 2, 'only fetch’s entry was purged');
 
     const f2 = await fetchWrap(REPO);
     assert.equal(f2.headers.get('x-blaze-cache'), 'MISS', 'fetch pays the network again');
 
     const k2 = await kyApi.get(REPO);
     assert.equal(k2.headers.get('x-blaze-cache'), 'HIT', 'ky’s entry survived the purge');
+    const o2 = await ofetchApi.raw(REPO);
+    assert.equal(o2.headers.get('x-blaze-cache'), 'HIT', 'ofetch’s entry survived the purge');
     assert.equal(
       network.state.requests,
-      3,
-      'fetch went out twice, ky went out once — its re-read replayed from the store',
+      4,
+      'fetch went out twice, ky and ofetch once each — their re-reads replayed from the store',
     );
   });
 });
