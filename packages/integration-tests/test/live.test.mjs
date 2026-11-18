@@ -21,13 +21,11 @@
  * compatibility; these live tests pin each integration's marker and tag behaviour.
  */
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import axios, { getAdapter } from 'axios';
 
-import { createCache } from '@blaze-cache/core';
 import { installBlazeCache } from '@blaze-cache/axios';
 import { createBlazeFetch } from '@blaze-cache/fetch';
 import { createBlazeKy } from '@blaze-cache/ky';
@@ -37,6 +35,8 @@ import {
   prefetchBlazeQuery,
 } from '@blaze-cache/react-query';
 import { blazeSWRMiddleware } from '@blaze-cache/swr';
+
+import { createDiagnosticCache } from './wasm-diagnostics.mjs';
 
 const LIVE = process.env.BLAZE_CACHE_LIVE === '1';
 const SKIP = LIVE
@@ -54,12 +54,8 @@ const QUERY_KEY = ['blaze-cache', 'repo'];
  */
 const VARY = ['authorization', 'accept', 'accept-encoding', 'x-requested-with'];
 
-const wasmBytes = await readFile(
-  new URL('../../core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url),
-);
-
-/** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+/** A cache over the real wasm module, with failure diagnostics on every wasm call. */
+const makeCache = (options = {}) => createDiagnosticCache(options);
 
 /**
  * Poll — bounded — until the background stores have written `count` entries.
