@@ -32,6 +32,6 @@
     "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   }
 }
