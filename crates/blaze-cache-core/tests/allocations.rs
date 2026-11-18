@@ -11,6 +11,7 @@ use blaze_cache_core::{Cache, EntryOptions};
 
 thread_local! {
     static COUNT: Cell<usize> = const { Cell::new(0) };
+    static BYTES: Cell<usize> = const { Cell::new(0) };
     static TRACK: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -20,6 +21,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if TRACK.with(|t| t.get()) {
             COUNT.with(|c| c.set(c.get() + 1));
+            BYTES.with(|b| b.set(b.get() + layout.size()));
         }
         unsafe { System.alloc(layout) }
     }
@@ -31,6 +33,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if TRACK.with(|t| t.get()) {
             COUNT.with(|c| c.set(c.get() + 1));
+            BYTES.with(|b| b.set(b.get() + new_size));
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -41,11 +44,39 @@ static ALLOC: Counting = Counting;
 
 fn count<R>(f: impl FnOnce() -> R) -> (R, usize) {
     COUNT.with(|c| c.set(0));
+    BYTES.with(|b| b.set(0));
     TRACK.with(|t| t.set(true));
     let result = f();
     TRACK.with(|t| t.set(false));
     let used = COUNT.with(|c| c.get());
     (result, used)
+}
+
+fn count_bytes<R>(f: impl FnOnce() -> R) -> (R, usize) {
+    COUNT.with(|c| c.set(0));
+    BYTES.with(|b| b.set(0));
+    TRACK.with(|t| t.set(true));
+    let result = f();
+    TRACK.with(|t| t.set(false));
+    let used = BYTES.with(|b| b.get());
+    (result, used)
+}
+
+#[test]
+fn construction_does_not_reserve_the_full_capacity() {
+    let (cache, bytes) = count_bytes(|| Cache::<String, u32>::new(1_000_000));
+    assert_eq!(cache.capacity(), 1_000_000, "capacity is a logical ceiling");
+    assert!(
+        bytes < 1_000_000,
+        "a million-slot declaration allocated {bytes} bytes before any insert"
+    );
+
+    // The index still grows on demand all the way past the initial reservation.
+    let mut cache = cache;
+    for i in 0..2_000 {
+        cache.insert(i.to_string(), i);
+    }
+    assert_eq!(cache.len(), 2_000);
 }
 
 #[test]
