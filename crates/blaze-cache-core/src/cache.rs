@@ -14,6 +14,15 @@ use crate::node::Node;
 use crate::stats::CacheStats;
 use crate::tags::TagIndex;
 
+/// Largest index reservation made by [`Cache::new`] before any entry is stored.
+///
+/// `capacity` is a ceiling, not a promise that the caller will fill it: the wasm binding
+/// accepts a JS number and clamps hostile values to a million, and reserving a million
+/// buckets up front costs ~69 MB on the host (tens of MB of wasm linear memory). Starting
+/// small and letting the hash map grow geometrically keeps construction cheap without
+/// changing the number of entries the cache can hold.
+const INITIAL_INDEX_RESERVATION: usize = 1024;
+
 /// Remaining lifetime and tags of a live entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryMeta {
@@ -128,7 +137,7 @@ where
             nodes: Vec::new(),
             free: Vec::new(),
             index: HashMap::with_capacity_and_hasher(
-                capacity,
+                capacity.min(INITIAL_INDEX_RESERVATION),
                 foldhash::fast::RandomState::default(),
             ),
             queue: Sieve::new(),
