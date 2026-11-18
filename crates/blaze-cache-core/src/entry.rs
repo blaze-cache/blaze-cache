@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use smallvec::SmallVec;
+
 /// Options applied to a single [`Cache::insert_with`](crate::Cache::insert_with).
 ///
 /// Built with a chainable, move-`self` DSL:
@@ -18,7 +20,10 @@ use std::time::Duration;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryOptions {
     ttl: Option<Duration>,
-    tags: Vec<String>,
+    /// Up to two tags live inline: the common write carries zero or one, so the normal
+    /// path pays no heap allocation for its tag list. `SmallVec` falls back to the heap
+    /// automatically past the inline capacity, keeping `tags_ref()` a plain slice.
+    tags: SmallVec<[String; 2]>,
 }
 
 impl EntryOptions {

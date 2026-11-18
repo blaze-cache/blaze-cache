@@ -220,6 +220,30 @@ fn rewriting_an_entry_replaces_its_tags() {
 }
 
 #[test]
+fn common_tag_counts_stay_inline_on_insert_and_overwrite() {
+    // The headline promise of the `smallvec` dependency: the usual zero-to-two tags need no
+    // heap allocation for a node's id list. `spilled()` is true only once SmallVec has moved
+    // its contents to the heap.
+    let mut cache: Cache<&str, u32> = Cache::new(4);
+    for (key, count) in [("none", 0), ("one", 1), ("two", 2)] {
+        let names: Vec<&str> = ["a", "b"][..count].to_vec();
+        let options = EntryOptions::new().tags(names.iter().copied());
+        cache.insert_with(key, 1, options);
+        let idx = cache.index.get(key).copied().expect("inserted");
+        assert!(!cache.nodes[idx].as_ref().expect("live slot").tags.spilled());
+
+        // An overwrite must keep the ids inline too, neither by cloning them into the node
+        // nor by growing them to the heap.
+        cache.insert_with(key, 2, EntryOptions::new().tags(names.iter().copied()));
+        assert!(!cache.nodes[idx].as_ref().expect("live slot").tags.spilled());
+    }
+    // A larger batch is allowed to spill — that is the documented fallback.
+    cache.insert_with("three", 1, EntryOptions::new().tags(["a", "b", "c"]));
+    let idx = cache.index.get("three").copied().expect("inserted");
+    assert!(cache.nodes[idx].as_ref().expect("live slot").tags.spilled());
+}
+
+#[test]
 fn a_tagged_write_that_forces_an_eviction_keeps_its_own_tags() {
     // The capacity sweep runs *before* the new node is published, and dropping a tag's last
     // member forgets the tag outright. Interning the ids before that sweep therefore handed

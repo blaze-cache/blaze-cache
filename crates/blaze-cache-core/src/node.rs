@@ -1,5 +1,6 @@
 //! The intrusive node that links an entry into the SIEVE queue.
 
+use smallvec::SmallVec;
 use web_time::Instant;
 
 /// One cached entry plus its queue bookkeeping.
@@ -15,12 +16,19 @@ pub(crate) struct Node<K, V> {
     /// SIEVE "has been touched since the hand last passed" bit.
     pub(crate) visited: bool,
     pub(crate) expires_at: Option<Instant>,
-    /// Tag ids from the [`TagIndex`](crate::tags::TagIndex). Empty vec allocates nothing.
-    pub(crate) tags: Vec<u32>,
+    /// Tag ids from the [`TagIndex`](crate::tags::TagIndex). Empty or ≤2 ids need no heap
+    /// allocation, which is the common case and keeps `Node` no larger than it was with a
+    /// `Vec` on 64-bit targets.
+    pub(crate) tags: SmallVec<[u32; 2]>,
 }
 
 impl<K, V> Node<K, V> {
-    pub(crate) fn new(key: K, value: V, expires_at: Option<Instant>, tags: Vec<u32>) -> Self {
+    pub(crate) fn new(
+        key: K,
+        value: V,
+        expires_at: Option<Instant>,
+        tags: SmallVec<[u32; 2]>,
+    ) -> Self {
         Self {
             key,
             value,
