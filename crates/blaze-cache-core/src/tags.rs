@@ -110,6 +110,36 @@ impl TagIndex {
         self.ids.get(name).copied()
     }
 
+    /// Test-only structural audit: no dangling ids, no members that are not live nodes.
+    #[cfg(test)]
+    pub(crate) fn debug_check(&self, live_nodes: &[(usize, &[u32])]) {
+        for (&id, tag) in &self.tags {
+            assert_eq!(
+                self.ids.get(&tag.name),
+                Some(&id),
+                "name/id desync for tag {}",
+                tag.name
+            );
+            for &idx in &tag.members {
+                let ids = live_nodes
+                    .iter()
+                    .find(|(slot, _)| *slot == idx)
+                    .map(|(_, ids)| *ids)
+                    .expect("tag member is not a live node");
+                assert!(ids.contains(&id), "tag member is missing its own id");
+            }
+        }
+        for &(idx, ids) in live_nodes {
+            for &id in ids {
+                let tag = self.tags.get(&id).expect("node holds a dangling tag id");
+                assert!(
+                    tag.members.contains(&idx),
+                    "node is missing from its tag's members"
+                );
+            }
+        }
+    }
+
     /// Drops every tag. Used by [`Cache::clear`](crate::Cache::clear).
     pub(crate) fn clear(&mut self) {
         self.ids.clear();
