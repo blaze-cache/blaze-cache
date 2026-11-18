@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use smallvec::SmallVec;
+
 /// Interned tags plus the set of live node slots belonging to each tag.
 ///
 /// Tag ids are monotonically increasing and **never reused**. When the last member of a tag is
@@ -46,11 +48,15 @@ impl TagIndex {
     }
 
     /// Interns every name, de-duplicating within the batch, and returns the ids.
-    pub(crate) fn intern_all<'a, I>(&mut self, names: I) -> Vec<u32>
+    ///
+    /// The ids are inline for the usual zero-to-two tags; sizing from the iterator's
+    /// lower bound keeps a larger batch to a single heap allocation.
+    pub(crate) fn intern_all<'a, I>(&mut self, names: I) -> SmallVec<[u32; 2]>
     where
         I: IntoIterator<Item = &'a str>,
     {
-        let mut ids = Vec::new();
+        let names = names.into_iter();
+        let mut ids = SmallVec::with_capacity(names.size_hint().0);
         for name in names {
             let id = self.intern(name);
             if !ids.contains(&id) {

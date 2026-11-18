@@ -1,6 +1,7 @@
 //! Unit tests for [`Sieve`] — split out of `eviction.rs`.
 
 use super::*;
+use smallvec::SmallVec;
 use std::time::Duration;
 
 struct Slab {
@@ -12,7 +13,8 @@ impl Slab {
         Self { nodes: Vec::new() }
     }
     fn push(&mut self, key: &'static str) -> usize {
-        self.nodes.push(Some(Node::new(key, 0, None, Vec::new())));
+        self.nodes
+            .push(Some(Node::new(key, 0, None, SmallVec::new())));
         self.nodes.len() - 1
     }
 }

@@ -549,15 +549,17 @@ where
                 let new_tag_ids = self
                     .tags
                     .intern_all(options.tags_ref().iter().map(String::as_str));
-                let (old_expires_at, old_tag_ids) = {
+                let old_expires_at = {
                     let node = self.nodes[idx].as_mut().expect("live slot");
                     let old_expires_at = node.expires_at;
                     node.expires_at = expires_at;
-                    (
-                        old_expires_at,
-                        std::mem::replace(&mut node.tags, new_tag_ids.clone()),
-                    )
+                    old_expires_at
                 };
+                // Take the old ids out so the new vector can be *moved* into the node once
+                // the diff is done. Cloning it to fill the node first would heap-allocate
+                // again on every overwrite with more than two tags.
+                let old_tag_ids =
+                    std::mem::take(&mut self.nodes[idx].as_mut().expect("live slot").tags);
                 self.shift_ttl(old_expires_at, expires_at);
                 for &id in &old_tag_ids {
                     if !new_tag_ids.contains(&id) {
@@ -569,6 +571,7 @@ where
                         self.tags.attach(id, idx);
                     }
                 }
+                self.nodes[idx].as_mut().expect("live slot").tags = new_tag_ids;
                 // A write makes the entry the newest one; it has not been visited yet.
                 self.queue.unlink(&mut self.nodes, idx);
                 self.queue.push_back(&mut self.nodes, idx);
@@ -590,7 +593,7 @@ where
                 let new_tag_ids = self
                     .tags
                     .intern_all(options.tags_ref().iter().map(String::as_str));
-                let node = Node::new(key.clone(), value, expires_at, new_tag_ids.clone());
+                let node = Node::new(key.clone(), value, expires_at, new_tag_ids);
                 let idx = match self.free.pop() {
                     Some(idx) => {
                         self.nodes[idx] = Some(node);
@@ -602,7 +605,10 @@ where
                     }
                 };
                 self.index.insert(key, idx);
-                for &id in &new_tag_ids {
+                // Read the ids back from the published node so `new_tag_ids` could be moved
+                // into it instead of cloned. The node is in the slab before we attach, so a
+                // failure here cannot leave a half-built entry registered under a tag.
+                for &id in &self.nodes[idx].as_ref().expect("live slot").tags {
                     self.tags.attach(id, idx);
                 }
                 self.queue.push_back(&mut self.nodes, idx);
