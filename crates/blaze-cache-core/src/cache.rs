@@ -832,4 +832,6 @@ where
 }
 
 #[cfg(test)]
+mod stress;
+#[cfg(test)]
 mod tests;

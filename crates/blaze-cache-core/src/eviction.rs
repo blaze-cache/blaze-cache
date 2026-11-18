@@ -15,6 +15,9 @@
 //! The queue only stores indices; the nodes themselves live in the cache's slab. Methods take
 //! the slab as an argument so `self` and the nodes never fight over the borrow checker.
 
+#[cfg(test)]
+use std::collections::HashSet;
+
 use web_time::Instant;
 
 use crate::node::Node;
@@ -150,6 +153,41 @@ impl Sieve {
         let head = self.head?;
         self.unlink(nodes, head);
         Some(head)
+    }
+
+    /// Test-only structural audit: every link must resolve to a live, linked slot.
+    #[cfg(test)]
+    pub(crate) fn debug_check<K, V>(&self, nodes: &[Option<Node<K, V>>], live: &HashSet<usize>) {
+        assert_eq!(self.len, live.len(), "queue/index length desync");
+        let mut seen = HashSet::with_capacity(self.len);
+        let mut prev = None;
+        let mut cursor = self.head;
+        let mut count = 0;
+        while let Some(idx) = cursor {
+            assert!(idx < nodes.len(), "queue index out of bounds");
+            assert!(
+                live.contains(&idx),
+                "queue holds a slot absent from the index"
+            );
+            assert!(seen.insert(idx), "cycle in the SIEVE queue at slot {idx}");
+            let node = nodes[idx].as_ref().expect("queue slot must hold a node");
+            assert_eq!(node.prev, prev, "broken prev link at slot {idx}");
+            prev = Some(idx);
+            cursor = node.next;
+            count += 1;
+            assert!(count <= self.len, "queue longer than its counter");
+        }
+        assert_eq!(count, self.len);
+        assert_eq!(prev, self.tail, "tail link mismatch");
+        if let Some(hand) = self.hand {
+            assert!(live.contains(&hand), "eviction hand points at a freed slot");
+        }
+    }
+
+    /// Test-only: deliberately corrupt the cursor to exercise the defensive restart path.
+    #[cfg(test)]
+    pub(crate) fn set_hand(&mut self, hand: Option<usize>) {
+        self.hand = hand;
     }
 
     /// Oldest-first indices — the hand's natural scanning order.
