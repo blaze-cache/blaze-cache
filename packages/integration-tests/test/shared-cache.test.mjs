@@ -22,13 +22,11 @@
  *   pnpm --filter @blaze-cache/integration-tests test
  */
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { AxiosHeaders } from 'axios';
 
-import { createCache } from '@blaze-cache/core';
 import { blazeAdapter, defaultCacheKey as axiosCacheKey } from '@blaze-cache/axios';
 import { createBlazeFetch, defaultCacheKey as fetchCacheKey } from '@blaze-cache/fetch';
 import { createBlazeKy, defaultCacheKey as kyCacheKey } from '@blaze-cache/ky';
@@ -43,12 +41,10 @@ import {
 } from '@blaze-cache/react-query';
 import { blazeSWRMiddleware, resolveBlazeKey } from '@blaze-cache/swr';
 
-const wasmBytes = await readFile(
-  new URL('../../core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url),
-);
+import { createDiagnosticCache } from './wasm-diagnostics.mjs';
 
-/** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+/** A cache over the real wasm module, with failure diagnostics on every wasm call. */
+const makeCache = (options = {}) => createDiagnosticCache(options);
 
 /** HTTP adapters buffer their bodies in a detached task; poll the store before asserting. */
 const whenStored = async (cache, count, timeoutMs = 2_000) => {
