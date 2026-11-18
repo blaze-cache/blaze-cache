@@ -19,8 +19,8 @@ use std::time::Duration;
 use blaze_cache_core::{Cache, EntryOptions};
 use wasm_bindgen::prelude::*;
 
-/// Hard ceiling for a JS-supplied capacity: enough for any realistic workload, and small
-/// enough that the eager hash-map reservation in `Cache::new` can never approach wasm memory.
+/// Hard ceiling for a JS-supplied capacity: enough for any realistic workload. The core
+/// reserves only a small fixed index up front, so this is a logical bound, not an allocation.
 pub const MAX_CAPACITY: usize = 1_000_000;
 
 thread_local! {
@@ -49,8 +49,8 @@ impl BlazeCache {
     /// * above [`MAX_CAPACITY`] — clamped down, because `capacity()` reports it back and
     ///   nobody builds a browser cache meant to hold a billion entries.
     ///
-    /// The core also caps its own index reservation, so even an unvalidated number could no
-    /// longer abort the instance with a huge up-front allocation.
+    /// The core reserves at most a small fixed number of index buckets, so even an
+    /// unvalidated number cannot abort the instance with a huge up-front allocation.
     #[wasm_bindgen(constructor)]
     pub fn new(capacity: f64) -> BlazeCache {
         let capacity = if !capacity.is_finite() {
