@@ -105,7 +105,8 @@ impl BlazeCache {
     ///
     /// Replacing a key refreshes its TTL **and** its tags, and re-queues it as the newest
     /// entry. Capacity pressure is applied before the new node becomes visible, so a write
-    /// can never evict itself.
+    /// can never evict itself. The key is looked up by slice first, so an overwrite never
+    /// allocates a `String` just to throw it away again.
     #[wasm_bindgen(js_name = set)]
     pub fn set(&mut self, key: &str, value: JsValue, ttl_ms: Option<f64>, tags: Vec<String>) {
         let mut options = EntryOptions::new().tags(tags);
@@ -114,7 +115,7 @@ impl BlazeCache {
                 options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
         }
-        self.inner.insert_with(key.to_owned(), value, options);
+        self.inner.insert_borrowed(key, value, options);
     }
 
     /// Batch get: looks up every key in one boundary crossing. Returns `JsValue::UNDEFINED`
@@ -131,7 +132,8 @@ impl BlazeCache {
     /// `ttl_ms[i] < 0` means no expiry. `tag_offsets[i]`..`tag_offsets[i+1]` index into
     /// `tags_flat` for the tags of entry `i`. Those offsets come from JS, so they are
     /// clamped rather than trusted: a non-monotonic or out-of-range pair yields no tags
-    /// for that entry instead of panicking and trapping the wasm instance.
+    /// for that entry instead of panicking and trapping the wasm instance. Keys are looked
+    /// up by slice, so overwriting an existing key pays no key allocation.
     #[wasm_bindgen(js_name = setMany)]
     pub fn set_many(
         &mut self,
@@ -167,7 +169,7 @@ impl BlazeCache {
                 options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
             let value = values_arr.get(i as u32);
-            self.inner.insert_with(keys[i].clone(), value, options);
+            self.inner.insert_borrowed(keys[i].as_str(), value, options);
         }
     }
 
