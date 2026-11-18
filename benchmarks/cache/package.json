@@ -10,6 +10,6 @@
   },
   "dependencies": {
     "@blaze-cache/core": "workspace:*",
-    "quick-lru": "^7.3.0"
+    "quick-lru": "^8.0.0"
   }
 }
