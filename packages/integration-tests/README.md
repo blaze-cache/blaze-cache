@@ -48,3 +48,12 @@ request identity, and a default-tag purge removes exactly that integration's ent
 `test:live` does not build the workspace — the build comes first, as with the offline
 suite. Every live test is skipped unless `BLAZE_CACHE_LIVE=1` is set, so the default
 suite always runs offline.
+
+## Wasm failure diagnostics
+
+Both suites create their cache through `test/wasm-diagnostics.mjs`. If the binary cannot be
+read, instantiation fails, or any wasm-bound method traps, that helper logs a structured
+report before rethrowing: the stage and method (with a truncated argument summary), the full
+`cause` chain, the Node version, and a fingerprint of the binary actually loaded (path, byte
+count, sha256 prefix). A stale build is therefore obvious from the log alone — rebuild with
+`pnpm build:wasm`. The original error is never swallowed, so test assertions still see it.
