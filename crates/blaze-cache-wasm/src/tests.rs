@@ -507,3 +507,72 @@ fn set_many_clamps_malformed_tag_offsets_instead_of_trapping() {
         "out-of-range start yields no tags"
     );
 }
+
+#[wasm_bindgen_test]
+fn tagged_overwrite_refreshes_value_ttl_and_tags() {
+    let mut cache = BlazeCache::new(4.0);
+    cache.set(
+        "k",
+        JsValue::from_str("v1"),
+        Some(10_000.0),
+        vec!["old".to_string()],
+    );
+    cache.set(
+        "k",
+        JsValue::from_str("v2"),
+        Some(20_000.0),
+        vec!["new".to_string()],
+    );
+
+    // The borrowed-key path must still update the existing entry in place.
+    assert_eq!(cache.size(), 1);
+    assert_eq!(cache.keys(), vec!["k".to_string()]);
+    assert_eq!(
+        cache.get("k").and_then(|v| v.as_string()).as_deref(),
+        Some("v2")
+    );
+    assert_eq!(cache.tags_of("k"), vec!["new".to_string()]);
+    assert!(cache.keys_with_tag("old").is_empty());
+    assert_eq!(cache.keys_with_tag("new"), vec!["k".to_string()]);
+    let ttl = cache.ttl("k").expect("deadline was refreshed");
+    assert!(
+        ttl > 0.0 && ttl <= 20_000.0,
+        "unexpected remaining TTL {ttl}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn batch_overwrite_refreshes_existing_entries() {
+    let mut cache = BlazeCache::new(4.0);
+    cache.set("a", JsValue::from_str("old"), None, vec!["t1".to_string()]);
+    cache.set("b", JsValue::from_str("keep"), None, vec![]);
+
+    let values = Array::new();
+    values.push(&JsValue::from_str("fresh"));
+    values.push(&JsValue::from_str("other"));
+    cache.set_many(
+        vec!["a".to_string(), "b".to_string()],
+        values.into(),
+        vec![5_000.0, -1.0],
+        vec!["t2".to_string()],
+        vec![0, 1, 1],
+    );
+
+    assert_eq!(cache.size(), 2);
+    assert_eq!(
+        cache.get("a").and_then(|v| v.as_string()).as_deref(),
+        Some("fresh")
+    );
+    assert_eq!(
+        cache.get("b").and_then(|v| v.as_string()).as_deref(),
+        Some("other")
+    );
+    assert_eq!(cache.tags_of("a"), vec!["t2".to_string()]);
+    assert!(cache.keys_with_tag("t1").is_empty());
+    let ttl = cache.ttl("a").expect("batch set installed a deadline");
+    assert!(
+        ttl > 0.0 && ttl <= 5_000.0,
+        "unexpected remaining TTL {ttl}"
+    );
+    assert_eq!(cache.ttl("b"), None, "a negative ttlMs means no expiry");
+}
