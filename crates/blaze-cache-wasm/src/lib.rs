@@ -229,13 +229,14 @@ impl BlazeCache {
     ///
     /// # Host contract
     ///
-    /// `ptr`/`len` must address `len` bytes of valid UTF-8. The wrapper only ever passes
-    /// bytes it encoded from a JS string (ASCII fast path or `TextEncoder`), so the slice
-    /// below is valid by construction.
+    /// `ptr`/`len` must address `len` bytes of valid UTF-8 in the current scratch buffer.
+    /// The wrapper only ever passes bytes it encoded from a JS string (ASCII fast path or
+    /// `TextEncoder`). Anything else — a stale pointer after a scratch reallocation, an
+    /// out-of-range length, invalid UTF-8 — is treated as a miss instead of undefined
+    /// behaviour (see [`with_raw_key`]).
     #[wasm_bindgen(js_name = getRaw)]
     pub fn get_raw(&mut self, ptr: u32, len: u32) -> Option<JsValue> {
-        let key = unsafe { key_from_scratch(ptr, len) };
-        self.inner.get(key).cloned()
+        with_raw_key(ptr, len, |key| self.inner.get(key).cloned()).flatten()
     }
 
     /// [`set`](Self::set) with a pre-encoded key and **no tags** — the untagged write fast
@@ -243,22 +244,22 @@ impl BlazeCache {
     /// [`set`](Self::set) when the entry carries tags.
     #[wasm_bindgen(js_name = setRaw)]
     pub fn set_raw(&mut self, ptr: u32, len: u32, value: JsValue, ttl_ms: Option<f64>) {
-        let key = unsafe { key_from_scratch(ptr, len) };
-        let mut options = EntryOptions::new();
-        if let Some(ms) = ttl_ms {
-            if ms.is_finite() && ms > 0.0 {
-                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+        let _ = with_raw_key(ptr, len, |key| {
+            let mut options = EntryOptions::new();
+            if let Some(ms) = ttl_ms {
+                if ms.is_finite() && ms > 0.0 {
+                    options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+                }
             }
-        }
-        self.inner.insert_borrowed(key, value, options);
+            self.inner.insert_borrowed(key, value, options);
+        });
     }
 
     /// [`delete`](Self::delete) with a pre-encoded key. See [`getRaw`](Self::get_raw) for
     /// the host contract.
     #[wasm_bindgen(js_name = deleteRaw)]
     pub fn delete_raw(&mut self, ptr: u32, len: u32) -> bool {
-        let key = unsafe { key_from_scratch(ptr, len) };
-        self.inner.remove(key).is_some()
+        with_raw_key(ptr, len, |key| self.inner.remove(key).is_some()).unwrap_or(false)
     }
 
     /// Full view of one key — value, remaining TTL (ms) and tags — or `undefined` when the key
@@ -444,19 +445,26 @@ pub fn ensure_scratch(len: usize) -> u32 {
     })
 }
 
-/// Reinterprets host-written scratch bytes as the key slice a lookup needs.
+/// Runs `f` on the host-written scratch bytes at `ptr`/`len`, interpreted as a key.
 ///
-/// # Safety
+/// `ptr` is an absolute wasm pointer (the base [`ensureScratch`] handed the host), so it is
+/// validated against the *current* buffer before any slice is made. That closes two holes
+/// the old unchecked decoder had: a pointer left stale by a scratch reallocation, and a
+/// length reaching past the buffer. Invalid UTF-8 is rejected too, so no `&str` is ever
+/// built from bytes JS did not encode. A rejected key skips `f` entirely — the exported
+/// methods turn that into a miss, a no-op or `false`, never a trap.
 ///
-/// `ptr`/`len` must address `len` bytes of valid UTF-8 — see the host contract on
-/// [`getRaw`](BlazeCache::get_raw). The scratch buffer itself is never freed while the
-/// wasm module lives, so the slice outlives any single call.
-unsafe fn key_from_scratch(ptr: u32, len: u32) -> &'static str {
-    // SAFETY: caller guarantees UTF-8 validity; `from_raw_parts` upholds the slice invariants
-    // for any in-range (ptr, len) the host passes, and wasm memory cannot be unmapped.
-    unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr as *const u8, len as usize))
-    }
+/// The closure receives the slice while the `RefCell` borrow is alive, so the returned
+/// reference never needs to outlive it and the whole path stays safe Rust.
+fn with_raw_key<R>(ptr: u32, len: u32, f: impl FnOnce(&str) -> R) -> Option<R> {
+    KEY_SCRATCH.with(|cell| {
+        let scratch = cell.borrow();
+        let base = scratch.as_ptr() as usize;
+        let start = (ptr as usize).checked_sub(base)?;
+        let end = start.checked_add(len as usize)?;
+        let bytes = scratch.get(start..end)?;
+        Some(f(std::str::from_utf8(bytes).ok()?))
+    })
 }
 
 fn set_field(target: &js_sys::Object, key: &str, value: &JsValue) {
