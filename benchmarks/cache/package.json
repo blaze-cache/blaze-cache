@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "bench": "node --expose-gc bench.mjs",
-    "test": "pnpm --filter @blaze-cache/core build && node --test"
+    "test": "(test -f ../../packages/core/dist/index.js || pnpm --filter @blaze-cache/core build) && node --test"
   },
   "dependencies": {
     "@blaze-cache/core": "workspace:*",
