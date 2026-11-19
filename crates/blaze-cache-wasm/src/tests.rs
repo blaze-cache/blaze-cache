@@ -576,3 +576,48 @@ fn batch_overwrite_refreshes_existing_entries() {
     );
     assert_eq!(cache.ttl("b"), None, "a negative ttlMs means no expiry");
 }
+
+#[wasm_bindgen_test]
+fn raw_key_methods_round_trip_and_reject_bad_pointers() {
+    let mut cache = BlazeCache::new(4.0);
+    let base = crate::ensure_scratch(16);
+    crate::KEY_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        scratch[..2].copy_from_slice(b"ok");
+    });
+
+    cache.set_raw(base, 2, JsValue::from_str("v"), None);
+    assert_eq!(
+        cache
+            .get_raw(base, 2)
+            .and_then(|v| v.as_string())
+            .as_deref(),
+        Some("v"),
+        "the valid raw path is unchanged"
+    );
+    assert!(cache.delete_raw(base, 2));
+    assert_eq!(cache.get_raw(base, 2), None);
+
+    // An out-of-bounds pointer or length used to build an invalid slice (UB). Now both
+    // degrade to a miss / no-op / false without trapping the instance.
+    assert_eq!(cache.get_raw(u32::MAX, 1), None);
+    assert!(!cache.delete_raw(u32::MAX, 1));
+    assert_eq!(cache.get_raw(base, u32::MAX), None);
+    cache.set_raw(u32::MAX, 1, JsValue::from_str("v"), None);
+    assert_eq!(cache.size(), 0, "a bad pointer must not create an entry");
+}
+
+#[wasm_bindgen_test]
+fn raw_key_methods_ignore_invalid_utf8_in_the_scratch() {
+    let mut cache = BlazeCache::new(4.0);
+    let base = crate::ensure_scratch(8);
+    crate::KEY_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        scratch[0] = 0xff; // a lone continuation byte: never valid UTF-8
+    });
+
+    cache.set_raw(base, 1, JsValue::from_str("v"), None);
+    assert_eq!(cache.size(), 0, "invalid UTF-8 must not create an entry");
+    assert_eq!(cache.get_raw(base, 1), None, "nor be served as a key");
+    assert!(!cache.delete_raw(base, 1));
+}
