@@ -94,17 +94,17 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core          # 0.4.0-beta.1
-npm install @blaze-cache/axios         # 0.4.0-beta.1
-npm install @blaze-cache/fetch         # 0.4.0-beta.1
-npm install @blaze-cache/ky            # 0.4.0-beta.1
-npm install @blaze-cache/ofetch        # 0.4.0-beta.1
-npm install @blaze-cache/react-query   # 0.4.0-beta.1
-npm install @blaze-cache/swr           # 0.4.0-beta.1
+npm install @blaze-cache/core          # 0.4.0-beta.2
+npm install @blaze-cache/axios         # 0.4.0-beta.2
+npm install @blaze-cache/fetch         # 0.4.0-beta.2
+npm install @blaze-cache/ky            # 0.4.0-beta.2
+npm install @blaze-cache/ofetch        # 0.4.0-beta.2
+npm install @blaze-cache/react-query   # 0.4.0-beta.2
+npm install @blaze-cache/swr           # 0.4.0-beta.2
 ```
 
 `pnpm add …` and `yarn add …` are equivalent. This block documents the
-`0.4.0-beta.1` prerelease: append `@beta` to any command (for example
+`0.4.0-beta.2` prerelease: append `@beta` to any command (for example
 `@blaze-cache/core@beta`) to install it, or leave the tag off to install the last
 stable release.
 
