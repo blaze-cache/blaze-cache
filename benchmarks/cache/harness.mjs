@@ -22,7 +22,15 @@
  * is one branch and one add per operation, and it is **identical for every adapter in a
  * scenario**, which keeps the comparison — the thing the benchmark is actually about — fair.
  */
-import process from 'node:process';
+/**
+ * High-resolution clock in nanoseconds. Node's `hrtime.bigint()` is used when available;
+ * browsers fall back to `performance.now()` (coarser, but batches are calibrated to tens of
+ * milliseconds so the clock's resolution stays well below the measured span).
+ */
+const nowNs =
+  typeof process !== 'undefined' && typeof process.hrtime?.bigint === 'function'
+    ? () => Number(process.hrtime.bigint())
+    : () => performance.now() * 1e6;
 
 /** Nanoseconds in one second. */
 const NS_PER_SECOND = 1e9;
@@ -50,8 +58,15 @@ export function spreadPercent(values) {
   return ((Math.max(...values) - Math.min(...values)) / middle) * 100;
 }
 
-/** Yields to the event loop so a sample's garbage is collectable before the next one. */
-const breathe = () => new Promise((resolve) => setImmediate(resolve));
+/**
+ * Yields to the event loop so a sample's garbage is collectable before the next one. Node's
+ * `setImmediate` is available in the CLI; browsers fall back to a zero-delay task.
+ */
+const breathe = () =>
+  new Promise((resolve) => {
+    if (typeof setImmediate === 'function') setImmediate(resolve);
+    else setTimeout(resolve, 0);
+  });
 
 /**
  * Times `op` and returns summary statistics.
@@ -64,8 +79,11 @@ const breathe = () => new Promise((resolve) => setImmediate(resolve));
  * @param {number} [options.samples]                   batches to record
  * @param {number} [options.targetMs]                  approximate length of each sample
  * @param {number} [options.warmupBatches]             discarded batches before recording
+ * @param {number} [options.divisor]                   subtasks per `op` (e.g. records flushed);
+ *                                                     `nsPerOp` is divided by it so a batch op
+ *                                                     reports a per-record figure
  * @returns {Promise<{nsPerOp: number, opsPerSecond: number, spread: number,
- *   samples: number[], opsPerSample: number, sink: number}>}
+ *   samples: number[], opsPerSample: number, divisor: number, sink: number}>}
  */
 export async function measure({
   op,
@@ -74,6 +92,7 @@ export async function measure({
   samples = 7,
   targetMs = 120,
   warmupBatches = 3,
+  divisor = 1,
 }) {
   const targetNs = targetMs * 1_000_000;
   const gc = typeof globalThis.gc === 'function' ? globalThis.gc.bind(globalThis) : () => {};
@@ -81,10 +100,10 @@ export async function measure({
   /** One untimed `prepare`, then `n` timed ops. */
   const timedBatch = (n) => {
     prepare?.();
-    const start = process.hrtime.bigint();
+    const start = nowNs();
     let sink = 0;
     for (let i = 0; i < n; i += 1) sink += op(i) ? 1 : 0;
-    return { ns: Number(process.hrtime.bigint() - start), sink };
+    return { ns: nowNs() - start, sink };
   };
 
   // --- 1. calibrate ------------------------------------------------------
@@ -123,7 +142,7 @@ export async function measure({
       ns += batch.ns;
       sink += batch.sink;
     }
-    nsPerOpSamples.push(ns / opsPerSample);
+    nsPerOpSamples.push(ns / opsPerSample / divisor);
   }
 
   const nsPerOp = median(nsPerOpSamples);
@@ -133,6 +152,84 @@ export async function measure({
     spread: spreadPercent(nsPerOpSamples),
     samples: nsPerOpSamples,
     opsPerSample,
+    divisor,
+    sink,
+  };
+}
+
+/**
+ * Async twin of {@link measure} for scenarios whose `prepare` or `op` awaits (TTL churn needs
+ * an awaited delay before each batch; persistence flush and hydration await adapter calls).
+ * The await is outside the timed work for `prepare` and inside it for `op`, exactly as in the
+ * synchronous path. Kept separate so the hot-point-op loops above never pay a microtask.
+ *
+ * @param {object} options as {@link measure}, with `divisor` defaulting to 1
+ * @returns {Promise<object>} the same shape as {@link measure}
+ */
+export async function measureAsync({
+  op,
+  prepare,
+  opsPerBatch,
+  samples = 7,
+  targetMs = 120,
+  warmupBatches = 3,
+  divisor = 1,
+}) {
+  const targetNs = targetMs * 1_000_000;
+  const gc = typeof globalThis.gc === 'function' ? globalThis.gc.bind(globalThis) : () => {};
+
+  const timedBatch = async (n) => {
+    await prepare?.();
+    const start = nowNs();
+    let sink = 0;
+    for (let i = 0; i < n; i += 1) sink += (await op(i)) ? 1 : 0;
+    return { ns: nowNs() - start, sink };
+  };
+
+  let n = opsPerBatch ?? MIN_BATCH;
+  if (opsPerBatch === undefined) {
+    let { ns } = await timedBatch(n);
+    while (ns < PROBE_NS && n < MAX_BATCH) {
+      n = Math.min(MAX_BATCH, n * 2);
+      ({ ns } = await timedBatch(n));
+    }
+    if (ns > 0) {
+      n = Math.min(MAX_BATCH, Math.max(MIN_BATCH, Math.round((n * targetNs) / ns)));
+    }
+  }
+
+  let sink = 0;
+  for (let w = 0; w < warmupBatches; w += 1) sink += (await timedBatch(n)).sink;
+
+  const probe = await timedBatch(n);
+  const batchesPerSample = Math.max(
+    1,
+    Math.min(MAX_BATCHES_PER_SAMPLE, Math.round(targetNs / Math.max(probe.ns, 1))),
+  );
+  const opsPerSample = n * batchesPerSample;
+
+  const nsPerOpSamples = [];
+  for (let s = 0; s < samples; s += 1) {
+    await breathe();
+    gc();
+
+    let ns = 0;
+    for (let b = 0; b < batchesPerSample; b += 1) {
+      const batch = await timedBatch(n);
+      ns += batch.ns;
+      sink += batch.sink;
+    }
+    nsPerOpSamples.push(ns / opsPerSample / divisor);
+  }
+
+  const nsPerOp = median(nsPerOpSamples);
+  return {
+    nsPerOp,
+    opsPerSecond: NS_PER_SECOND / nsPerOp,
+    spread: spreadPercent(nsPerOpSamples),
+    samples: nsPerOpSamples,
+    opsPerSample,
+    divisor,
     sink,
   };
 }

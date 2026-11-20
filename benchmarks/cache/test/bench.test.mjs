@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import * as adapters from '../adapters.mjs';
 import { ADAPTERS, adapterLabel, createAdapter } from '../adapters.mjs';
 import { median, measure, spreadPercent } from '../harness.mjs';
 import { runBenchmark, validateScenario } from '../runner.mjs';
@@ -130,11 +131,15 @@ describe('scenarios', () => {
   });
 
   it('runs every scenario adapter identically for the same workload', async () => {
-    const result = await runBenchmark(TINY);
+    const result = await runBenchmark({ ...TINY, adapters });
+    const expected = buildScenarios(TINY.capacity).reduce(
+      (sum, scenario) => sum + scenario.adapters.length,
+      0,
+    );
     assert.equal(
       result.rows.length,
-      buildScenarios(TINY.capacity).length * 3,
-      'three adapters measured for every scenario',
+      expected,
+      'every adapter in every scenario was measured exactly once',
     );
     for (const row of result.rows) {
       const label = `${row.scenario}/${row.adapter}`;
@@ -163,7 +168,7 @@ describe('equivalence guard', () => {
     };
 
     await assert.rejects(
-      () => validateScenario(scenario, 8),
+      () => validateScenario(scenario, 8, adapters),
       /not doing equivalent work/,
       'an unequal comparison fails loudly instead of producing a number',
     );
@@ -178,7 +183,7 @@ describe('equivalence guard', () => {
       setup: (adapter) => adapter.set('key:0', 'value'),
       probe: (adapter) => [adapter.get('key:0'), adapter.size()],
     };
-    assert.equal(await validateScenario(scenario, 8), 2, 'both adapters were compared');
+    assert.equal(await validateScenario(scenario, 8, adapters), 2, 'both adapters were compared');
   });
 });
 
@@ -217,6 +222,9 @@ describe('harness', () => {
   });
 
   it('rejects a filter that matches nothing instead of reporting an empty table', async () => {
-    await assert.rejects(() => runBenchmark({ ...TINY, filter: 'no-such-scenario' }), /no scenario matches/);
+    await assert.rejects(
+      () => runBenchmark({ ...TINY, adapters, filter: 'no-such-scenario' }),
+      /no scenario matches/,
+    );
   });
 });
