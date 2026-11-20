@@ -1287,34 +1287,32 @@ update PRs for dependencies and those pins.
 ## Benchmarks
 
 `pnpm bench` runs [`benchmarks/cache/`](benchmarks/cache), which times `@blaze-cache/core`
-against React Query and SWR adapters over five workloads — cold fill, a hit, a miss, a
-90/10 mixed load under capacity pressure, and one headline that switches on every feature at
-once. Before a single timing is taken, every adapter in a scenario must produce *deeply
-equal* probe observations, so the three are provably asked the same question rather than a
-similar-looking one.
+against `Map`, `quick-lru`, `lru-cache` and hand-rolled feature stacks over ten workloads:
+cold fill, a hit, a miss, a 90/10 mixed load, the `full-featured` headline, plus TTL churn,
+eviction pressure, tag invalidation at scale and the persistence flush/hydration pair. Before
+a single timing is taken, every adapter in a scenario must produce *deeply equal* probe
+observations, so the adapters are provably asked the same question rather than a similar-looking
+one. `pnpm bench:browser` runs the same suites in headless Chrome through
+[`benchmarks/browser/`](benchmarks/browser), so the numbers cross the Wasm boundary in the
+actual deployment target; TanStack Query and SWR live in the separate
+[`benchmarks/framework/`](benchmarks/framework) cache-store suite.
 
-From one run on an Apple M2 — nanoseconds per operation, **lower is better**:
+The published results, methodology, hardware, raw JSON and caveats are in
+[`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md). In brief, on an Apple M2 with a
+10 000-entry cache, `full-featured` at a ~1 KB payload measured (ns/op, **lower is better**):
 
-| Scenario | React Query | SWR | Blaze adapters |
-| --- | ---: | ---: | ---: |
-| `fill` | **46.0** | 56.8 | 106.9 |
-| `get-hit` | **32.4** | 90.4 | 69.0 |
-| `get-miss` | **29.8** | 34.1 | 53.0 |
-| `mixed-90-10` | **48.1** | 72.6 | 83.8 |
+| Adapter | Node | Browser |
+| --- | ---: | ---: |
+| Map + LRU + TTL + tags | 211.2 | 190.3 |
+| QuickLRU + tag index | **109.3** | **88.2** |
+| lru-cache + tag index | 231.3 | 100.0 |
+| blaze-cache | 183.6 | 208.6 |
 
-The headline asks the question this cache exists for — *give me a bounded, expiring,
-tag-invalidatable cache: what does each one cost?* — so its columns differ from the three
-above, since a bare React Query or SWR cannot answer it at all:
-
-| `full-featured` | React Query + SWR (multiple adapters) | Blaze adapters (core) |
-| --- | ---: | ---: | ---: |
-| ns/op | 192.6 | **102.9** | 141.9 |
-
-Of the caches that actually bound themselves, blaze is the faster **read** path — 1.3× on a
-hit — and beats the three layers you would otherwise write and own by 1.4×, while the
-React Query and SWR adapters stay 1.4× quicker still, for a cache you also then maintain.
-blaze pays for that on writes, where every `set` crosses the JS→wasm boundary and marshals
-its key (and deadline, and tags) into linear memory. React Query and SWR win the first table because they
-are asked to do the least: no capacity, no TTL, no tags, no index.
-Numbers move with the machine, so read [`benchmarks/cache/README.md`](benchmarks/cache/README.md)
-for the full table, the spread column and the methodology before quoting any figure.
+The payload matrix (≤64 B → 1 MB, as structured-cloneable objects **and** `Uint8Array`) is the
+important result: payload size barely moves a hot read or a full-featured operation, because
+values are held **by reference** and are never serialised on the hot path. The residual cost is
+the JS→Wasm boundary crossing itself, which is why Stage 2 of the 0.4.0 roadmap is gated on
+these numbers rather than assumed. The honest claim is narrow: blaze replaces a stack of
+application code at roughly the same cost (faster on Node reads, about even in the browser),
+and pays a clear write-path premium against native LRU libraries whose TTL is built in.
+Numbers move with the machine — read the results page before quoting any figure.

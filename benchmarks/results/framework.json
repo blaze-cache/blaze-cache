@@ -1,0 +1,285 @@
+{
+  "config": {
+    "capacity": 10000,
+    "iterations": 10000,
+    "samples": 7,
+    "warmup": 2,
+    "valueBytes": 1024
+  },
+  "scenarios": [
+    {
+      "id": "warm-hit",
+      "title": "read a present key from a filled cache",
+      "opLabel": "get(key)"
+    },
+    {
+      "id": "miss",
+      "title": "read an absent key from a filled cache",
+      "opLabel": "get(key)"
+    },
+    {
+      "id": "write",
+      "title": "overwrite an existing key",
+      "opLabel": "set(key, value)"
+    },
+    {
+      "id": "invalidate-by-key",
+      "title": "delete a distinct present key (one delete per op)",
+      "opLabel": "delete(key)"
+    }
+  ],
+  "adapters": [
+    {
+      "name": "Blaze",
+      "label": "Blaze (WASM core)"
+    },
+    {
+      "name": "TanStack Query",
+      "label": "TanStack Query (query-core)",
+      "note": "includes query-key hashing/normalization + query-cache bookkeeping"
+    },
+    {
+      "name": "SWR",
+      "label": "SWR (cache store)",
+      "note": "uses SWR initCache store in Node; real SWR apps also pay key serialization"
+    }
+  ],
+  "results": [
+    {
+      "scenario": "warm-hit",
+      "adapter": "Blaze",
+      "label": "Blaze (WASM core)",
+      "probe": {
+        "present": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 40.4708,
+      "p50": 40.4708,
+      "p95": 54.5958,
+      "spread": 45.25880387835179,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 3.3949734917119656
+    },
+    {
+      "scenario": "warm-hit",
+      "adapter": "TanStack Query",
+      "label": "TanStack Query (query-core)",
+      "note": "includes query-key hashing/normalization + query-cache bookkeeping",
+      "probe": {
+        "present": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 518.7459,
+      "p50": 518.7459,
+      "p95": 650.1125,
+      "spread": 26.670899953136967,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 43.516030803301796
+    },
+    {
+      "scenario": "warm-hit",
+      "adapter": "SWR",
+      "label": "SWR (cache store)",
+      "note": "uses SWR initCache store in Node; real SWR apps also pay key serialization",
+      "probe": {
+        "present": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 11.9208,
+      "p50": 11.9208,
+      "p95": 12.1,
+      "spread": 32.99610764378229,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 1
+    },
+    {
+      "scenario": "miss",
+      "adapter": "Blaze",
+      "label": "Blaze (WASM core)",
+      "probe": {
+        "missing": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 28.2375,
+      "p50": 28.2375,
+      "p95": 35.6833,
+      "spread": 38.320672864099166,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 2.436010248712441
+    },
+    {
+      "scenario": "miss",
+      "adapter": "TanStack Query",
+      "label": "TanStack Query (query-core)",
+      "note": "includes query-key hashing/normalization + query-cache bookkeeping",
+      "probe": {
+        "missing": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 504.9333,
+      "p50": 504.9333,
+      "p95": 604.0416,
+      "spread": 22.65231863297588,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 43.55990061854603
+    },
+    {
+      "scenario": "miss",
+      "adapter": "SWR",
+      "label": "SWR (cache store)",
+      "note": "uses SWR initCache store in Node; real SWR apps also pay key serialization",
+      "probe": {
+        "missing": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 11.5917,
+      "p50": 11.5917,
+      "p95": 15.0209,
+      "spread": 56.68624964414193,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "write",
+      "adapter": "Blaze",
+      "label": "Blaze (WASM core)",
+      "probe": {
+        "updated": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 175.3209,
+      "p50": 175.3209,
+      "p95": 193.575,
+      "spread": 14.993933980489487,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 1.3405439834107387
+    },
+    {
+      "scenario": "write",
+      "adapter": "TanStack Query",
+      "label": "TanStack Query (query-core)",
+      "note": "includes query-key hashing/normalization + query-cache bookkeeping",
+      "probe": {
+        "updated": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 1831.6833,
+      "p50": 1831.6833,
+      "p95": 1864.6125,
+      "spread": 13.357019742441286,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 14.0054724070486
+    },
+    {
+      "scenario": "write",
+      "adapter": "SWR",
+      "label": "SWR (cache store)",
+      "note": "uses SWR initCache store in Node; real SWR apps also pay key serialization",
+      "probe": {
+        "updated": true,
+        "size": 10000,
+        "sizeOk": true
+      },
+      "nsPerOp": 130.7834,
+      "p50": 130.7834,
+      "p95": 136.4292,
+      "spread": 5.154859102913679,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "invalidate-by-key",
+      "adapter": "Blaze",
+      "label": "Blaze (WASM core)",
+      "probe": {
+        "removed": true,
+        "size": 9999,
+        "sizeOk": true
+      },
+      "nsPerOp": 142.7208,
+      "p50": 142.7208,
+      "p95": 148.0083,
+      "spread": 4.758661666694685,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 1.42792196098049
+    },
+    {
+      "scenario": "invalidate-by-key",
+      "adapter": "TanStack Query",
+      "label": "TanStack Query (query-core)",
+      "note": "includes query-key hashing/normalization + query-cache bookkeeping",
+      "probe": {
+        "removed": true,
+        "size": 9999,
+        "sizeOk": true
+      },
+      "nsPerOp": 1427377.3833,
+      "p50": 1427377.3833,
+      "p95": 1799668.4625,
+      "spread": 28.009076623849836,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 14280.914290145072
+    },
+    {
+      "scenario": "invalidate-by-key",
+      "adapter": "SWR",
+      "label": "SWR (cache store)",
+      "note": "uses SWR initCache store in Node; real SWR apps also pay key serialization",
+      "probe": {
+        "removed": true,
+        "size": 9999,
+        "sizeOk": true
+      },
+      "nsPerOp": 99.95,
+      "p50": 99.95,
+      "p95": 110.7958,
+      "spread": 12.089344672336162,
+      "opsPerSample": 10000,
+      "samples": 7,
+      "warmup": 2,
+      "sink": 90000,
+      "relative": 1
+    }
+  ]
+}

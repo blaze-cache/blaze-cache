@@ -18,7 +18,7 @@ Cache-store microbenchmarks for Blaze Cache vs real framework cache stores.
 - `prepare()` runs outside the timed region before every sample.
 - `globalThis.gc?.()` is called before each timed sample when Node is run with `--expose-gc`.
 - Warmup samples are discarded (default 2); recorded samples report **p50** and **p95**.
-- Defaults: `--capacity=10000 --iterations=50000 --samples=7 --warmup=2 --value-bytes=256`.
+- Defaults: `--capacity=10000 --iterations=10000 --samples=7 --warmup=2 --value-bytes=256` (`iterations` must not exceed `capacity` for `invalidate-by-key`).
 - `invalidate-by-key` deletes a **distinct pre-filled key per iteration** (pure delete). It requires `--iterations <= --capacity`.
 - Adapter order is fixed per scenario; read small gaps cautiously.
 
@@ -28,7 +28,7 @@ Cache-store microbenchmarks for Blaze Cache vs real framework cache stores.
 - **TanStack Query costs include query-key hashing/normalization and query-cache bookkeeping** (real for `QueryClient` API users), not just raw storage.
 - **SWR uses the real SWR cache wrapper in Node**; real SWR app paths also pay key serialization and hook/render behavior.
 - For Map/QuickLRU engine baselines, use `benchmarks/cache`.
-- These scenarios do point operations on a filled cache; add eviction/persistence/hydration scenarios before making broader claims.
+- These scenarios do point operations on a filled cache. Eviction, TTL churn, tag-invalidation-at-scale, persistence flush and hydration are covered in [`../cache/`](../cache/README.md) and published in [`docs/benchmarks/RESULTS.md`](../../docs/benchmarks/RESULTS.md) — use those before making broader claims.
 
 ## Run
 
