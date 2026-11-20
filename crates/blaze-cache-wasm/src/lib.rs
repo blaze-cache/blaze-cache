@@ -10,6 +10,12 @@
 //!   cannot silently extend or truncate an entry's life.
 //! * **Bulk operations return `Vec<String>`** (`invalidate_tags`, `prune`) so the host knows
 //!   exactly which keys disappeared — that is what keeps IndexedDB in sync.
+//!
+//! The crate is `#![forbid(unsafe_code)]`: the raw-key bindings used to decode host-supplied
+//! pointers with `from_raw_parts`/`from_utf8_unchecked`, which allowed out-of-bounds reads
+//! and invalid `&str`s. `with_raw_key` now validates every pointer/length in safe Rust, and
+//! this attribute keeps that guarantee from regressing at compile time.
+#![forbid(unsafe_code)]
 #![allow(clippy::unused_unit)]
 
 use js_sys::Array;
