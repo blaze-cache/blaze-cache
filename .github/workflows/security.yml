@@ -57,9 +57,11 @@ jobs:
           sudo install -m 755 /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
-      # --redact keeps matched secret material out of the job log.
+      # --redact keeps matched secret material out of the job log. The repo config extends
+      # the default rules with a path- and literal-scoped allowlist for the two synthetic
+      # `sk_live_…` collision fixtures (see .gitleaks.toml); everything else still fails.
       - name: scan history for secrets
-        run: gitleaks git . --redact --no-banner
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner
 
   npm:
     name: pnpm audit (npm advisories)
