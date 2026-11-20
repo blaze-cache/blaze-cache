@@ -1,0 +1,41 @@
+# SBOM: generate a CycloneDX 1.5 BOM from the two lockfiles and attach it to the
+# published GitHub release. The generator uses only Node built-ins, so there is no
+# install step and no third-party binary to pin.
+name: SBOM
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# `contents: write` is needed only for `gh release upload`; everything else is read-only.
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbom:
+    name: generate and attach SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: generate CycloneDX SBOM
+        run: pnpm generate:sbom
+
+      - name: attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" sbom.cdx.json --clobber
