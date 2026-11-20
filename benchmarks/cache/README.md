@@ -103,7 +103,10 @@ and runs **this exact suite** — same harness, same probes, same scenarios — 
 adapter registry, where blaze fetches its own wasm asset over HTTP. Node suites remain the CI
 regression gate. `pnpm bench:ci` runs `--quick` (5 samples × 60 ms), compares each row against
 [`../results/baseline.node.json`](../results/baseline.node.json) after normalising by its
-scenario's median, and fails any regression above 20% (with a noise allowance).
+scenario's median, trimming single-sample outliers and allowing for the remaining spread, and
+fails any regression above 20%. In CI the baseline is regenerated **from the base revision on
+the same runner** before the PR head is measured, so laptop-vs-hosted-runner drift cannot fail a
+PR; the checked-in file is the local convenience baseline.
 ## Methodology
 
 * **Identical work, not similar work.** Every adapter in a scenario is fed the same
