@@ -1,0 +1,26 @@
+# Extend gitleaks' default rules with one narrowly scoped false-positive allowlist.
+#
+# The two `sk_live_…` values below are *synthetic* fixtures: they exist solely because they
+# collide under the legacy 32-bit FNV-1a hash, which is how the cache-key identity bug was
+# reproduced and regression-tested. They are not credentials, have never been valid Stripe
+# keys, and are documented as such in the security assessment. The allowlist is restricted to
+# the exact two literals in the two files that contain them — any other Stripe-shaped token,
+# anywhere in history, still fails the scan.
+
+title = "Blaze Cache gitleaks"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic Stripe-shaped tokens used only as 32-bit hash-collision fixtures"
+paths = [
+  '''packages/fetch/test/fetch\.test\.mjs''',
+  '''docs/security/.*security-assessment-2026-11-20\.md''',
+  # Historical path: the assessment was moved into docs/security/ after it was written, and
+  # gitleaks scans the whole history, not just the current tree.
+  '''docs/security-assessment-2026-11-20\.md''',
+]
+regexes = [
+  '''sk_live_ae70c7077724d8ba''',
+  '''sk_live_6b326ecd982941c8''',
+]
