@@ -35,6 +35,33 @@ function median(values) {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * A single GC pause or scheduler preemption can inflate one sample several-fold (the raw
+ * `--quick` runs contain samples like 58, 58, 58, 61, 101). The published report keeps them —
+ * that is what the spread column is for — but a regression gate should compare the steady
+ * state, so drop samples more than 1.5× the median before taking the central value. A real
+ * regression moves *every* sample and is unaffected; a one-off spike no longer fails a PR.
+ */
+function steadySamples(row) {
+  const samples = (Array.isArray(row.samples) ? row.samples : [row.nsPerOp]).filter(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  if (samples.length === 0) return [row.nsPerOp];
+  const mid = median(samples);
+  const kept = samples.filter((value) => value <= mid * 1.5);
+  return kept.length > 0 ? kept : samples;
+}
+
+function steadyNs(row) {
+  return median(steadySamples(row));
+}
+
+function steadySpread(row) {
+  const samples = steadySamples(row);
+  const mid = median(samples);
+  return mid > 0 ? ((Math.max(...samples) - Math.min(...samples)) / mid) * 100 : 0;
+}
+
 function group(row) {
   return [
     row.environment?.runtime ?? 'node',
@@ -54,14 +81,14 @@ function index(report) {
     byGroup.get(groupKey).push(row);
   }
   const scales = new Map(
-    [...byGroup].map(([groupKey, groupRows]) => [groupKey, median(groupRows.map((r) => r.nsPerOp))]),
+    [...byGroup].map(([groupKey, groupRows]) => [groupKey, median(groupRows.map(steadyNs))]),
   );
   const map = new Map();
   for (const row of rows) {
     map.set(key(row), {
-      ratio: row.nsPerOp / Math.max(scales.get(group(row)), 1),
-      nsPerOp: row.nsPerOp,
-      spread: row.spread ?? 0,
+      ratio: steadyNs(row) / Math.max(scales.get(group(row)), 1),
+      nsPerOp: steadyNs(row),
+      spread: steadySpread(row),
     });
   }
   return map;

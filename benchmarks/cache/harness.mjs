@@ -124,10 +124,14 @@ export async function measure({
   for (let w = 0; w < warmupBatches; w += 1) sink += timedBatch(n).sink;
 
   // --- 3. record ---------------------------------------------------------
-  const probe = timedBatch(n);
+  // A single probe batch can land on a GC pause and report 10× the steady-state cost, which
+  // changes how many batches each sample contains and makes back-to-back runs incomparable.
+  // Take the median of three instead; warm-up has already paid for JIT tier-up.
+  const probes = [timedBatch(n), timedBatch(n), timedBatch(n)];
+  const probeNs = median(probes.map((batch) => batch.ns));
   const batchesPerSample = Math.max(
     1,
-    Math.min(MAX_BATCHES_PER_SAMPLE, Math.round(targetNs / Math.max(probe.ns, 1))),
+    Math.min(MAX_BATCHES_PER_SAMPLE, Math.round(targetNs / Math.max(probeNs, 1))),
   );
   const opsPerSample = n * batchesPerSample;
 
@@ -201,10 +205,14 @@ export async function measureAsync({
   let sink = 0;
   for (let w = 0; w < warmupBatches; w += 1) sink += (await timedBatch(n)).sink;
 
-  const probe = await timedBatch(n);
+  // Same median-of-three calibration as the synchronous path (an expensive batch op can
+  // otherwise land on a GC pause and skew the whole run's sample count).
+  const probeNsList = [];
+  for (let p = 0; p < 3; p += 1) probeNsList.push((await timedBatch(n)).ns);
+  const probeNs = median(probeNsList);
   const batchesPerSample = Math.max(
     1,
-    Math.min(MAX_BATCHES_PER_SAMPLE, Math.round(targetNs / Math.max(probe.ns, 1))),
+    Math.min(MAX_BATCHES_PER_SAMPLE, Math.round(targetNs / Math.max(probeNs, 1))),
   );
   const opsPerSample = n * batchesPerSample;
 
