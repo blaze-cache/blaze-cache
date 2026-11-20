@@ -29,7 +29,8 @@
     "publish": "pnpm build && pnpm -r publish --no-git-checks",
     "publish:beta": "pnpm build && pnpm -r publish --tag beta --no-git-checks",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm typecheck",
-    "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target"
+    "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target",
+    "generate:sbom": "node scripts/generate-sbom.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2"
