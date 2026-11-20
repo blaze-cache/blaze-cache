@@ -826,7 +826,10 @@ describe('keys', () => {
   it('builds bare keys when nothing is varied on', () => {
     const init = { method: 'GET', headers: new Headers() };
     assert.equal(defaultCacheKey('/plain', init, []), 'get /plain');
-    assert.equal(defaultCacheKey('/plain', init, ['authorization']), 'get /plain?tu3x2x');
+    assert.equal(
+      defaultCacheKey('/plain', init, ['authorization']),
+      'get /plain?68cdbfb3cd757277b806e944be2bdcb9',
+    );
 
     const withAuth = {
       method: 'POST',
@@ -838,6 +841,20 @@ describe('keys', () => {
       varied,
       defaultCacheKey('/plain', { ...withAuth, headers: new Headers() }, ['authorization']),
     );
+  });
+
+  it('does not let a 32-bit FNV-1a collision merge two identities', () => {
+    // These two tokens really do collide under the legacy `fnv1a` (32-bit birthday
+    // attack, ~3M tries). Cache keys must use the 128-bit hash so they stay apart.
+    const a = 'Bearer sk_live_ae70c7077724d8ba';
+    const b = 'Bearer sk_live_6b326ecd982941c8';
+    assert.equal(fnv1a(JSON.stringify([a])), fnv1a(JSON.stringify([b])), 'fixture collides at 32 bits');
+
+    const keyFor = (token) =>
+      defaultCacheKey('/api/account', { method: 'GET', headers: new Headers({ authorization: token }) }, ['authorization']);
+    const keyA = keyFor(a);
+    assert.notEqual(keyA, keyFor(b), 'two identities keep separate cache entries');
+    assert.match(keyA.slice(keyA.lastIndexOf('?') + 1), /^[0-9a-f]{32}$/, '128-bit hex hash suffix');
   });
 
   it('keeps vary values apart that a naive join would collide', () => {
@@ -930,7 +947,11 @@ describe('storage decisions', () => {
 
     await fetch('/tagged');
 
-    assert.deepEqual(cache.keysWithTag('http-GET'), ['get /tagged?tu3x2x'], 'the custom tag landed');
+    assert.deepEqual(
+      cache.keysWithTag('http-GET'),
+      ['get /tagged?68cdbfb3cd757277b806e944be2bdcb9'],
+      'the custom tag landed',
+    );
     assert.equal(cache.keysWithTag('/tagged').length, 1, 'and so did the URL tag');
     assert.equal(cache.keysWithTag('fetch').length, 0, 'the default tag was replaced');
     assert.equal(cache.size(), 1, 'the response itself is stored as usual');

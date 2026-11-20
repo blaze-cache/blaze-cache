@@ -35,7 +35,7 @@ export type {
   PersistenceWriteOps,
 } from './persistence/types.js';
 
-export { safeStableStringify, stableStringify } from './utils.js';
+export { cacheKeyHash, safeStableStringify, stableStringify } from './utils.js';
 
 export type {
   BlazeCacheLike,
