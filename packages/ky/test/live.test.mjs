@@ -16,7 +16,7 @@
  *   - `GET /repos/blaze-cache/blaze-cache` → 200 with `cache-control: public, max-age=60`,
  *     so the header-honouring path is exercised against a real server.
  *   - `GET /rate_limit` → 200 with `cache-control: no-cache`, so the *rejection* path is too.
- *   - `GET raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/blaze-cache-logo.png`
+ *   - `GET raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png`
  *     → a real PNG, for the binary round-trip.
  *
  * Unauthenticated GitHub allows 60 requests/hour and this file uses well under ten.
@@ -41,7 +41,7 @@ const REPO = 'https://api.github.com/repos/blaze-cache/blaze-cache';
 /** Also real, but answered with `cache-control: no-cache`. */
 const NO_CACHE = 'https://api.github.com/rate_limit';
 /** A real PNG straight off the raw host, for the binary round-trip. */
-const PNG = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/blaze-cache-logo.png';
+const PNG = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const wasmBytes = await readFile(

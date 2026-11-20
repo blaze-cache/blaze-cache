@@ -333,7 +333,7 @@ describe('live: real public API', () => {
     const cache = await makeCache();
     const { fetch, requests } = realNetwork(cache, { ttlMs: 30_000 });
     const FILE =
-      'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/blaze-cache-logo.png';
+      'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 
     const miss = await fetch(FILE);
     assert.equal(miss.status, 200, 'the file is served');

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/blaze-cache-logo.png" alt="Blaze Cache logo" width="150">
+  <img src="docs/assets/blaze-cache-logo.png" alt="Blaze Cache logo" width="150">
 </p>
 
 <h1 align="center">Blaze Cache</h1>
