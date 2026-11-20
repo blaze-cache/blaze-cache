@@ -2,7 +2,7 @@
   "name": "blaze-cache-bench",
   "private": true,
   "version": "0.1.0",
-  "description": "Benchmarks @blaze-cache/core against quick-lru and the native Map",
+  "description": "Benchmarks @blaze-cache/core against Map, quick-lru, lru-cache and hand-rolled feature stacks, in Node and the browser",
   "type": "module",
   "scripts": {
     "bench": "node --expose-gc bench.mjs",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@blaze-cache/core": "workspace:*",
+    "lru-cache": "^11.5.3",
     "quick-lru": "^8.0.0"
   }
 }

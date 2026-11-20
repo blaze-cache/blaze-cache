@@ -1,0 +1,22 @@
+{
+  "name": "blaze-cache-browser-bench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser benchmark workspace for @blaze-cache/core (Vite + Playwright)",
+  "type": "module",
+  "scripts": {
+    "bench": "node runner.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@blaze-cache/core": "workspace:*",
+    "lru-cache": "^11.5.3",
+    "quick-lru": "^8.0.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.1",
+    "vite": "^8.3.8"
+  }
+}
