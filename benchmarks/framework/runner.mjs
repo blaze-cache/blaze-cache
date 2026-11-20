@@ -9,7 +9,7 @@ Usage: node runner.mjs [options]
 
 Options
   --capacity=N      cache entries filled before sample   (default 10000)
-  --iterations=N    timed operations per sample          (default 50000)
+  --iterations=N    timed operations per sample          (default 10000)
   --samples=N       recorded samples per adapter         (default 7)
   --warmup=N        discarded warmup samples             (default 2)
   --value-bytes=N   approximate payload size per value   (default 256)
@@ -107,7 +107,7 @@ async function main() {
   }
   const options = {
     capacity: intOpt(values, 'capacity', 10000),
-    iterations: intOpt(values, 'iterations', 50000),
+    iterations: intOpt(values, 'iterations', 10000),
     samples: intOpt(values, 'samples', 7),
     warmup: intOpt(values, 'warmup', 2, { min: 0 }),
     valueBytes: intOpt(values, 'value-bytes', 256, { min: 0 }),
