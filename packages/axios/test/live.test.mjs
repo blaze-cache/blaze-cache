@@ -15,7 +15,7 @@
  *   - `GET https://api.github.com/repos/blaze-cache/blaze-cache` → 200,
  *     `cache-control: public, max-age=60`; with a bogus token → 401.
  *   - `GET https://api.github.com/rate_limit` → 200, `cache-control: no-cache`.
- *   - `GET https://raw.githubusercontent.com/.../docs/blaze-cache-logo.png` → a real PNG.
+ *   - `GET https://raw.githubusercontent.com/.../docs/assets/blaze-cache-logo.png` → a real PNG.
  *
  * Unauthenticated GitHub allows 60 requests/hour and this file uses well under ten.
  */
@@ -35,7 +35,7 @@ const SKIP = LIVE
 
 const REPO = '/repos/blaze-cache/blaze-cache';
 const RATE_LIMIT = '/rate_limit';
-const FILE = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/blaze-cache-logo.png';
+const FILE = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const wasmBytes = await readFile(
