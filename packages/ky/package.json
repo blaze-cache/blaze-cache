@@ -52,6 +52,6 @@
   "devDependencies": {
     "ky": "^2.2.0",
     "ky1": "npm:ky@^1.14.3",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   }
 }
