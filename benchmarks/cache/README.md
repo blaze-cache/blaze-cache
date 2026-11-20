@@ -1,8 +1,12 @@
 # Cache benchmark
 
-How fast is `@blaze-cache/core` — really — against the two caches you would otherwise
-reach for: the native [`Map`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Map)
-and [`quick-lru`](https://github.com/sindresorhus/quick-lru)?
+How fast is `@blaze-cache/core` — really — against the caches you would otherwise reach for:
+the native [`Map`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Map),
+[`quick-lru`](https://github.com/sindresorhus/quick-lru),
+[`lru-cache`](https://github.com/isaacs/node-lru-cache), and the LRU/TTL/tag stack you would
+write by hand? The same suite runs in Node and, via [`../browser/`](../browser/), in a real
+browser. Published numbers and methodology live in
+[`docs/benchmarks/RESULTS.md`](../../docs/benchmarks/RESULTS.md).
 
 ## Run it
 
@@ -12,6 +16,8 @@ pnpm bench -- --quick       # ~10s smoke run
 pnpm bench -- --filter=get  # only scenarios whose id contains "get"
 pnpm bench -- --capacity=5000
 pnpm bench -- --json        # results as JSON
+pnpm bench -- --payload=large --payload-kind=bytes
+pnpm bench -- --matrix      # all five payload sizes in one report
 ```
 
 `pnpm bench` rebuilds the wasm and the core first, so the numbers are never taken against a
@@ -21,105 +27,83 @@ spread column gets noisier.
 
 ## What is compared
 
-Each scenario picks three of these.
+Each scenario picks three or four of these.
 
 | Adapter | Store | Eviction | TTL | Tags |
 | --- | --- | --- | --- | --- |
 | `Map` | native `Map` | **none** — grows forever | none | none |
-| `QuickLRU` | `quick-lru` v7 | LRU at `maxSize` | built-in `maxAge` | none |
+| `QuickLRU` | `quick-lru` v8 | LRU at `maxSize` | built-in `maxAge` | none |
+| `lru-cache` | `lru-cache` v11 | LRU at `max` | built-in `ttl` | none |
+| `Map + LRU` | `Map` + one layer you would write | hand-rolled LRU | none | none |
 | `Map + LRU + TTL + tags` | `Map` + three layers you would write | hand-rolled LRU | hand-rolled deadline check | key→tags / tag→keys mirror |
 | `QuickLRU + tag index` | `quick-lru` + one layer you would write | LRU | built-in `maxAge` | the same mirror |
+| `lru-cache + tag index` | `lru-cache` + one layer you would write | LRU | built-in `ttl` | the same mirror |
 | `blaze-cache` | Rust core, through wasm | SIEVE at `capacity` | built-in | built-in |
+| `blaze-cache + persistence` | core + real write-through layer | SIEVE | built-in | built-in |
+| `Map`/`QuickLRU + written queue` | a store + hand-rolled pending writes | as the store | as the store | none |
 
 The hand-written wrappers exist so that a store without a feature still has to *do the work*
 of that feature — otherwise blaze would be timed doing work its rivals never attempted, or
 spared it, and neither comparison means anything. The stacked `Map` row is the point of the
-exercise: **it is the cache you would otherwise write and then own** — eviction, expiry and
-invalidation as three layers of application code. QuickLRU, by contrast, gets its LRU and its
-deadline for free and is wrapped only for the tag mirror, because a hand-rolled stand-in must
-never be put up against a built-in.
+exercise: **it is the cache you would otherwise write and then own**. QuickLRU and lru-cache get
+their LRU and their deadline natively, so a hand-rolled stand-in is never put up against a
+built-in; they are wrapped only for the tag mirror. Every adapter is a one-call-deep class
+wrapper, so none gets to skip a method call the others pay.
 
-Every adapter is a class whose methods delegate to its store, so all are called through the
-same one-call-deep wrapper and none gets to skip a method call the others pay.
+## Payload matrix
+
+`--payload=tiny|small|medium|large|massive` (≤64 B, ~1 KB, ~10 KB, ~100 KB, ~1 MB) and
+`--payload-kind=object|bytes` select one cell of a 5 × 2 matrix; `--matrix` runs all five sizes
+at once. Values come from a small pool of shared references, so the number measures the cost of
+the boundary crossing at a given working-set size — never the cost of building a fresh 1 MB
+object on every `set`. This matters because blaze stores values **by reference**: if payload
+size barely moves `get`/`set`, the original "serialising JS objects is the bottleneck" premise
+is wrong. The published matrix shows exactly that — see
+[`docs/benchmarks/RESULTS.md`](../../docs/benchmarks/RESULTS.md).
 
 ## Scenarios
 
-Five, deliberately: three diagnostic rows that isolate one mechanism each, one control, and
-one headline. `overwrite`, `get-with-ttl` and `set-with-tags` were folded into the headline —
-they measured TTL and tags *in isolation*, where a rival can look cheap because nothing else
-is being asked of it, and their story is now told by the control/headline pair below.
+Ten: three diagnostics, one control, the headline, five scenario types added in Stage 1.
+`overwrite`, `get-with-ttl` and `set-with-tags` were folded into the headline — they measured
+TTL and tags *in isolation*, where a rival can look cheap because nothing else is being asked
+of it, and their story is now told by the control/headline pair.
 
 | Scenario | Adapters | What it measures |
 | --- | --- | --- |
-| `fill` | Map, QuickLRU, blaze | cold insert of `capacity` distinct keys into an empty cache |
-| `get-hit` | Map, QuickLRU, blaze | random reads over the resident set |
-| `get-miss` | Map, QuickLRU, blaze | reads of keys from a disjoint namespace, against a full cache |
-| `mixed-90-10` | Map, QuickLRU, blaze | 90% reads of a hot half, 10% writes to a cold half — bounded caches evict continuously. **The control.** |
-| `full-featured` | Map + LRU + TTL + tags, QuickLRU + tag index, blaze | the same load again, plus a deadline and a tag on every write and a periodic invalidation. **The headline.** |
+| `fill` | Map, QuickLRU, lru-cache, blaze | cold insert of `capacity` distinct keys |
+| `get-hit` | as above | random reads over the resident set |
+| `get-miss` | as above | reads from a disjoint namespace, against a full cache |
+| `mixed-90-10` | as above | 90/10 hot-read/cold-write under pressure — **the control** |
+| `full-featured` | Map stack, QuickLRU + tags, lru-cache + tags, blaze | the same load plus TTL, tags and periodic invalidation — **the headline** |
+| `ttl-churn` | the three full-featured stacks | lazy expiry reclamation on every read |
+| `eviction-pressure` | Map + LRU, QuickLRU, lru-cache, blaze | a reclaim on every write into a full cache |
+| `tag-invalidation-scale` | the three full-featured stacks | a 128-tag index under a background read load |
+| `persistence-flush` | blaze + persistence, Map/QuickLRU + queue | a whole 10 000-record flush (reported per record) |
+| `hydration` | as above | restoring 10 000 stored records (reported per record) |
+
+The persistence pair is async: one timed operation is the whole batch, divided by the record
+count so its `ns/op` is comparable to the point operations. blaze uses its real write-through
+layer over an in-memory `CachePersistence` adapter; the rivals use an equivalent hand-rolled
+pending-write queue over the same store. Node has no IndexedDB.
 
 ## Results
 
-Apple M2, macOS, Node v24.5.0, `capacity` 10 000, 7 samples × ~120 ms per adapter.
-Nanoseconds per operation — **lower is better**.
+Published numbers for Node **and** headless Chrome, across all five payload sizes and both value
+representations, are in [`docs/benchmarks/RESULTS.md`](../../docs/benchmarks/RESULTS.md), with
+the raw JSON in [`../results/`](../results/). The headline is reported next to its
+feature-equivalent control table, and the boundary-crossing caveat is stated explicitly — there
+is no unqualified "faster than JS" claim. In short: blaze is roughly on par with the three
+layers you would write yourself (faster on Node reads, slightly slower in the browser) and
+pays a clear write-path premium against native LRU libraries.
 
-### The diagnostic rows and the control
+## Browser and CI
 
-| Scenario | Map | QuickLRU | blaze-cache | blaze vs QuickLRU |
-| --- | ---: | ---: | ---: | ---: |
-| `fill` | **46.0** | 56.8 | 106.9 | 1.9× slower |
-| `get-hit` | **32.4** | 90.4 | 69.0 | **1.3× faster** |
-| `get-miss` | **29.8** | 34.1 | 53.0 | 1.6× slower |
-| `mixed-90-10` (control) | **48.1** | 72.6 | 83.8 | 1.2× slower |
-
-### The headline: `full-featured`
-
-Bounded, expiring, tag-invalidatable — three different ways of getting there. This row has
-its own columns because the three adapters are *not* the three above: the plain `Map` and
-`QuickLRU` can't answer this question at all.
-
-| Map + LRU + TTL + tags | QuickLRU + tag index | blaze-cache | spread (all three) |
-| ---: | ---: | ---: | --- |
-| 192.6 | **102.9** | 141.9 | ±6% / ±5% / ±2% |
-
-Two comparisons here, and only two are meaningful:
-
-* **blaze vs the hand-rolled stack — 1.4× faster** (141.9 against 192.6). That middle column
-  is the three layers you would otherwise write: an LRU on a `Map`, a deadline wrapped around
-  every value, and a tag mirror kept in step by hand. blaze is faster than your own code *and*
-  doesn't leave you owning its eviction callback, its stale-index bugs or its invalidation
-  bookkeeping — and it holds exactly `capacity` entries where that stack is charged for
-  holding them too.
-* **blaze vs `QuickLRU + tag index` — 1.4× slower** (141.9 against 102.9). The rival gets its
-  LRU and its `maxAge` natively and hands you only the tag mirror to write. Against *that*
-  hand-written mirror, blaze costs a premium: every `set` crosses the JS→wasm boundary and
-  marshals key, deadline and a `Vec<String>` of tags into linear memory.
-
-### How to read this
-
-* **`Map` wins the first four rows, and it is not a rival.** It has no capacity, no TTL, no
-  tags and no index — in `mixed-90-10` it simply keeps every key it is handed while the other
-  two evict for the whole run. Treat it as the floor: the cost of a bare JavaScript hash
-  lookup, with nothing else asked of it. Never quote blaze's ns/op next to it.
-* **The comparison that means something is blaze vs `QuickLRU`** — or, in the headline, vs
-  the stacked `Map`. Those are the caches actually holding a bounded, feature-carrying state.
-* **Reads are where blaze wins:** 1.3× faster on `get-hit`, one round trip plus SIEVE's
-  visited bit against QuickLRU's recency promotion on every hit.
-* **Writes are where blaze pays** — 1.9× on `fill`. Every `set` crosses the boundary and
-  marshals its key; that is the cost of running eviction, TTL and tag indexes in the same
-  place the data lives rather than in the JavaScript around it.
-* **What the features cost, on identical work.** `mixed-90-10` and `full-featured` replay the
-  *same* read/write plan; the second only attaches a deadline, a tag and a periodic
-  invalidation. The difference per operation: `QuickLRU + tag index` **+30 ns**, blaze
-  **+58 ns**, the stacked `Map` **+144 ns** — though most of the Map's jump is simply gaining
-  the LRU policy that its control row never had. The pair is the story the old isolated
-  scenarios told one feature at a time.
-* **Believe gaps smaller than the `spread` column as nothing.** That column is the range of
-  the samples around their median — your machine, your Node build and how warm the JIT
-  happens to be will all move these numbers. In `get-miss` it even swallows the gap between
-  `Map` and `QuickLRU` (±17% on a 4 ns difference), so read that pair as a tie, while the
-  19 ns out to blaze there is several times the spread. The headline's three figures, at
-  ±2–6% against a 39 ns gap, are not in that territory.
-
+`pnpm bench:browser` (from the repo root) starts Vite, drives headless Chrome with Playwright
+and runs **this exact suite** — same harness, same probes, same scenarios — through the browser
+adapter registry, where blaze fetches its own wasm asset over HTTP. Node suites remain the CI
+regression gate. `pnpm bench:ci` runs `--quick` (5 samples × 60 ms), compares each row against
+[`../results/baseline.node.json`](../results/baseline.node.json) after normalising by its
+scenario's median, and fails any regression above 20% (with a noise allowance).
 ## Methodology
 
 * **Identical work, not similar work.** Every adapter in a scenario is fed the same
@@ -159,12 +143,17 @@ Two comparisons here, and only two are meaningful:
 
 | File | Role |
 | --- | --- |
-| `bench.mjs` | CLI, table rendering, `--json` |
-| `runner.mjs` | orchestration: validate a scenario, then measure it |
-| `harness.mjs` | calibration, warm-up, sampling, median/spread |
-| `scenarios.mjs` | the workloads and their probes |
-| `adapters.mjs` | the stores, plus the LRU/TTL/tag wrappers that stack them |
+| `bench.mjs` | CLI, table rendering, `--json`/`--out` |
+| `runner.mjs` | orchestration: validate a scenario, then measure it (shared with the browser) |
+| `harness.mjs` | calibration, warm-up, sampling, median/spread, async pair |
+| `payloads.mjs` | the 5 × 2 payload matrix and its shared-reference factory |
+| `scenarios.mjs` | the ten workloads and their probes |
+| `stores.mjs` | the stores, plus the LRU/TTL/tag and persistence wrappers (shared with the browser) |
+| `adapters.mjs` | Node registry: supplies the wasm bytes read from disk |
+| `adapters.browser.mjs` | browser registry: lets core fetch its own wasm asset |
 | `test/bench.test.mjs` | guards the machinery (run by `pnpm -r test`) |
+| `test/compare-bench.test.mjs` | guards the `bench:ci` regression gate |
+| `../browser/` | Vite + Playwright workspace that runs this suite in Chrome |
 
 `test/bench.test.mjs` runs against the built `dist/` plus the wasm binary, so it needs
 `pnpm build:wasm` to have run — the same requirement as the core suite.
