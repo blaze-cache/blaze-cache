@@ -21,8 +21,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       quick-lru:
-        specifier: ^7.3.0
-        version: 7.3.0
+        specifier: ^8.0.0
+        version: 8.0.0
 
   benchmarks/framework:
     dependencies:
@@ -980,9 +980,9 @@ packages:
     resolution: {integrity: sha512-cJ+oHTW1VAEa8cJslgmUZrc+sjRKgAKl3Zyse6+PV38hZe/V6Z14TbCuXcan9F9ghlz4QrFr2c92TNF82UkYHA==}
     engines: {node: '>=10'}
 
-  quick-lru@7.3.0:
-    resolution: {integrity: sha512-k9lSsjl36EJdK7I06v7APZCbyGT2vMTsYSRX1Q2nbYmnkBqgUhRkAuzH08Ciotteu/PLJmIF2+tti7o3C/ts2g==}
-    engines: {node: '>=18'}
+  quick-lru@8.0.0:
+    resolution: {integrity: sha512-wuV1TowawrTfnwGvYbjYE1vwKAO0yO0rcEgHz0y9/Lz+v79WqQtRLLpLYYCZJY/tacCb9zVDMDJCJ04DKVZgfg==}
+    engines: {node: '>=22'}
 
   react-dom@19.3.1:
     resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
@@ -1605,7 +1605,7 @@ snapshots:
 
   proxy-from-env@2.1.0: {}
 
-  quick-lru@7.3.0: {}
+  quick-lru@8.0.0: {}
 
   react-dom@19.3.1(react@19.3.1):
     dependencies:
