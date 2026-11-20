@@ -88,17 +88,23 @@ jobs:
       - name: typecheck
         run: pnpm typecheck
 
-  # Quick performance gate. Absolute numbers drift with the runner, so the checked-in baseline
-  # is refreshed deliberately; a >20% regression on any matched row fails the PR. Browser
-  # suites are published separately (see docs/benchmarks/RESULTS.md) because hosted browsers
+  # Quick performance gate. The baseline is generated FROM THE BASE REVISION IN THIS SAME JOB,
+  # before the PR's head is measured: absolute numbers and per-adapter sensitivity vary far too
+  # much between a developer's laptop and a hosted runner for a checked-in cross-machine
+  # baseline to mean anything (a 2× difference on one adapter is routine). Only the engine
+  # sources are swapped for the base run — the harness, scenarios and peers stay identical — so
+  # the comparison isolates the PR's change. The checked-in baseline remains for local runs.
+  # Browser suites are published separately (see docs/benchmarks/RESULTS.md): hosted browsers
   # are too noisy for a hard gate.
   bench:
-    name: bench:ci (quick regression gate)
+    name: bench:ci (same-runner A/B gate)
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the base revision is needed for the A/B run
 
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
@@ -129,8 +135,32 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: benchmark regression gate
-        run: pnpm bench:ci
+      - name: Build wasm + core (PR head)
+        run: pnpm build:wasm && pnpm --filter @blaze-cache/core build
+
+      - name: Measure PR head
+        run: pnpm --filter blaze-cache-bench bench -- --quick --out=benchmarks/results/current.node.json > /dev/null
+
+      - name: Measure base revision on the same runner
+        env:
+          # PRs: the base branch tip. Pushes: the commit just before the push. An all-zero
+          # SHA (new branch / forced push) means "no base" — fall back to the checked-in
+          # baseline rather than failing an otherwise valid run.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "${BASE_SHA#0000000000000000000000000000000000000000}" = "" ]; then
+            cp benchmarks/results/baseline.node.json benchmarks/results/base.node.json
+            echo "no usable base revision — using the checked-in baseline"
+            exit 0
+          fi
+          git checkout "$BASE_SHA" -- crates packages/core Cargo.lock Cargo.toml
+          pnpm build:wasm
+          pnpm --filter @blaze-cache/core build
+          pnpm --filter blaze-cache-bench bench -- --quick --out=benchmarks/results/base.node.json > /dev/null
+          git checkout HEAD -- crates packages/core Cargo.lock Cargo.toml
+
+      - name: Compare (scenario-normalised, outlier-trimmed)
+        run: node scripts/compare-bench.mjs benchmarks/results/current.node.json benchmarks/results/base.node.json
 
   live:
     name: live network suites

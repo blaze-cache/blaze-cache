@@ -141,8 +141,11 @@ Some rows — notably the persistence pair and the short `--quick` gate — have
 to ~500% on one hydration sample). The reported statistic is a **median**, so a single outlier
 does not move the central figure, but the range is printed rather than hidden. Gaps smaller
 than the spread are ties. The CI gate is scenario-normalised (each row divided by its cell's
-median) and spread-aware, so a faster or slower runner and a noisy row cannot on their own fail
-a PR; see [`scripts/compare-bench.mjs`](../../scripts/compare-bench.mjs).
+median), trims single-sample GC spikes, and allows for the remaining spread. Crucially, it
+measures the **base revision on the same runner** immediately before the PR head, so a laptop
+or hosted-runner difference cannot fail a PR; see
+[`scripts/compare-bench.mjs`](../../scripts/compare-bench.mjs) and
+[`.github/workflows/js.yml`](../../.github/workflows/js.yml).
 
 ## Suite layout
 
