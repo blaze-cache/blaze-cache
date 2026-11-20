@@ -11,6 +11,8 @@ docs/
 ├── README.md                                   # this index
 ├── assets/
 │   └── blaze-cache-logo.png                    # project logo
+├── plan/
+│   └── 0.4.0-roadmap.md                        # 0.4.0 release plan (staged under 0.4.0-beta.3)
 └── security/
     └── security-assessment-2026-11-20.md       # vulnerability assessment of 0.4.0-beta.2
 ```
@@ -19,13 +21,16 @@ docs/
 
 | Category | Document | Version / date | Description |
 |---|---|---|---|
+| Plan | [0.4.0 Roadmap](plan/0.4.0-roadmap.md) | Target `0.4.0`, staged under `0.4.0-beta.3` | Planned 0.4.0 changes: benchmarks, hybrid/zero-copy memory, multi-tab sync, with stage sequence and acceptance criteria. |
 | Security | [Vulnerability Assessment](security/security-assessment-2026-11-20.md) | 2026-11-20, `0.4.0-beta.2` | Dependency, secret, CI/CD, Wasm memory-safety and application-design review with findings and status. |
 | Assets | [Blaze Cache logo](assets/blaze-cache-logo.png) | — | Used by the root README and package READMEs. |
 
 ## Conventions
 
-- Group documents into category folders: `security/`, `assets/`, and add new folders as
-  new categories appear (for example, `plan/` or `architecture/`).
+- Group documents into category folders: `plan/`, `security/`, `assets/`, and add new
+  folders as new categories appear (for example, `architecture/`).
+- Name planning documents after the release they target (for example,
+  `plan/0.4.0-roadmap.md`).
 - Name dated assessments `security/security-assessment-YYYY-MM-DD.md`.
 - Record the baseline version and target version in the document header.
 - Link new documents from this index in the same change that adds them.
