@@ -203,7 +203,7 @@ describe('key isolation', () => {
   it('axios and fetch file the same URL under different keys', () => {
     const axKey = axiosCacheKey({ method: 'get', url: RESOURCE_URL, headers: {} }, ['authorization']);
     const ftKey = fetchCacheKey(RESOURCE_URL, { method: 'GET', headers: { authorization: 'Bearer t' } }, ['authorization']);
-    // Same format (`get <url>?<fnv1a>`), but axios folds `params` into the hash input
+    // Same format (`get <url>?<hash>`), but axios folds `params` into the hash input
     // ("undefined <vary>") and fetch does not — the suffixes cannot line up.
     assert.notEqual(axKey, ftKey);
     assert.ok(axKey.startsWith('get https://api.example.com/users?'));

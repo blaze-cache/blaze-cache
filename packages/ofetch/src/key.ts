@@ -1,9 +1,14 @@
+import { cacheKeyHash } from '@blaze-cache/core';
+
 /**
- * FNV-1a, 32-bit.
+ * FNV-1a, 32-bit — **legacy utility, not used for cache keys any more**.
  *
- * Folds sensitive material (bearer tokens, `vary` headers) into a short, stable token. It is
- * not a security primitive — the point is that a persisted cache key never contains a
- * secret in readable form.
+ * Kept only for backwards compatibility with callers that imported it directly. With a
+ * 32-bit output its birthday bound is ~2^16, so two different identities can be made to
+ * collide; never use it where a collision would hand one identity another's data.
+ * {@link defaultCacheKey} uses `@blaze-cache/core`'s 128-bit `cacheKeyHash` instead.
+ *
+ * @deprecated Use `cacheKeyHash` from `@blaze-cache/core` for any key that separates data.
  */
 export function fnv1a(input: string): string {
   let hash = 0x811c9dc5;
@@ -83,7 +88,7 @@ export function encodeRequestBody(body: unknown): string | undefined {
     }
     return `FormData(${parts.sort().join('&')})`;
   }
-  // Raw bytes: refused rather than hashed, because a 32-bit digest over caller-supplied
+  // Raw bytes: refused rather than hashed, because a digest over caller-supplied
   // bytes is a collision surface this key does not need to open.
   if (typeof ArrayBuffer !== 'undefined' && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
     return undefined;
@@ -104,6 +109,10 @@ export function encodeRequestBody(body: unknown): string | undefined {
  * Separator between the two hashed key components: a raw NUL, which `JSON.stringify` never
  * emits unescaped (it writes a six-character escape instead), so no `vary` value or body
  * can be crafted to straddle the boundary and impersonate the other component.
+ *
+ * The components are folded with `cacheKeyHash` (128-bit FNV-1a), not the legacy 32-bit
+ * `fnv1a`: a 32-bit digest let two different `vary`/body inputs — and therefore two
+ * identities — collide onto one cache entry.
  */
 const COMPONENT_SEPARATOR = String.fromCharCode(0);
 
@@ -157,5 +166,5 @@ export function defaultCacheKey(
     varyHeaders.length === 0 ? '' : JSON.stringify(varyHeaders.map((name) => headers.get(name) ?? ''));
 
   const payload = encodedBody === undefined ? vary : `${vary}${COMPONENT_SEPARATOR}${encodedBody}`;
-  return `${base}?${fnv1a(payload)}`;
+  return `${base}?${cacheKeyHash(payload)}`;
 }

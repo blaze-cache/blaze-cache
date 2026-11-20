@@ -17,6 +17,7 @@ import {
   DEFAULT_CAPACITY,
   DEFAULT_FLUSH_DELAY_MS,
   DEFAULT_MAX_RECORDS,
+  cacheKeyHash,
   createCache,
   indexedDbPersistence,
   initBlazeWasm,
@@ -1122,6 +1123,14 @@ describe('persistence with events', () => {
 });
 
 describe('string helpers', () => {
+  it('cacheKeyHash is a stable 128-bit digest', () => {
+    const a = cacheKeyHash('["Bearer ada"]');
+    assert.match(a, /^[0-9a-f]{32}$/, '128 bits, lowercase hex');
+    assert.equal(a, cacheKeyHash('["Bearer ada"]'), 'deterministic across calls');
+    assert.notEqual(a, cacheKeyHash('["Bearer grace"]'), 'different identities separate');
+    assert.notEqual(cacheKeyHash(''), a, 'empty input is its own entry');
+  });
+
   it('stableStringify is order-independent', () => {
     assert.equal(
       stableStringify({ b: 1, a: { d: 2, c: 3 } }),
