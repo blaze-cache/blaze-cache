@@ -25,6 +25,8 @@ latency and the server counts its own hits). From there you can watch the adapte
 * **Reload** — entries are persisted to IndexedDB, so the list paints instantly on reload and
   revalidates in the background.
 
+* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+
 ## Run
 
 From the repository root:
