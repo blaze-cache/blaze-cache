@@ -21,6 +21,9 @@ export type { BlazeCacheOptions, CachePersistenceOptions, CreateCacheOptions, In
 export { initBlazeWasm, loadBlazeWasm, wasmUrl } from './wasm.js';
 export type { WasmInitInput, WasmLoadOptions, WasmSource } from './wasm.js';
 
+export { MultiTabSync } from './multitab.js';
+export type { MultiTabOptions, MultiTabStrategy, Version as MultiTabVersion } from './multitab.js';
+
 export { indexedDbPersistence } from './persistence/indexeddb.js';
 export type {
   CachePersistence,
