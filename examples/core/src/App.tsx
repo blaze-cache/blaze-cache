@@ -55,6 +55,8 @@ export default function App() {
   const [storage, setStorage] = useState<ExampleStorage>(() =>
     new URLSearchParams(window.location.search).get('storage') === 'js' ? 'js' : 'wasm',
   );
+  const [multiTab, setMultiTab] = useState(true);
+  const [persistence, setPersistence] = useState(true);
   const [cache, setCache] = useState<BlazeCache<string> | null>(null);
   const [keyInput, setKeyInput] = useState('greeting');
   const [valueInput, setValueInput] = useState('hello from Blaze Cache');
@@ -92,7 +94,7 @@ export default function App() {
   useEffect(() => {
     let active = true;
     let off: (() => void) | undefined;
-    const pending = createExampleCache(storage);
+    const pending = createExampleCache(storage, multiTab, persistence);
     void pending.then((next) => {
       if (!active) {
         void next.dispose();
@@ -103,7 +105,10 @@ export default function App() {
         refresh();
       });
       setCache(next);
-      pushLog(`storage: ${storage === 'js' ? 'js (values in a JS Map)' : 'wasm (values in the Rust slab)'}`);
+      pushLog(
+        `storage: ${storage === 'js' ? 'js (values in a JS Map)' : 'wasm (values in the Rust slab)'}; ` +
+          `multi-tab: ${multiTab ? 'on' : 'off'}; persistence: ${persistence ? 'on' : 'off'}`,
+      );
       refresh();
     });
     return () => {
@@ -112,7 +117,7 @@ export default function App() {
       void pending.then((next) => next.dispose());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storage]);
+  }, [storage, multiTab, persistence]);
 
   const parsedTtl = (): number | null | undefined => {
     const raw = ttlInput.trim();
@@ -154,26 +159,26 @@ export default function App() {
   };
 
   /**
-   * Simulates an origin fetch and writes the fresh value back. This is the usual follow-up to
-   * `invalidateTags`: invalidation removes entries, so the app refetches and `set`s them again.
+   * Re-reads the key from the shared IndexedDB bucket — the closest thing this playground has
+   * to a "refetch from origin". With multi-tab sync on, the value another tab just `set` is
+   * already here via BroadcastChannel and has been committed by its immediate-write mode; a
+   * hydrate pulls the newest durable row either way, so this never invents a local value.
    */
-  const refetchEntry = () => {
+  const refetchEntry = async () => {
     if (!cache) return;
     const key = keyInput.trim();
     if (!key) {
       pushLog('refetch skipped: key is empty');
       return;
     }
-    const ttl = parsedTtl();
-    if (ttl === null) {
-      pushLog('refetch skipped: ttl must be a finite number ≥ 0 (ms), or empty for no expiry');
-      return;
+    try {
+      await cache.persistence.hydrate();
+      const value = cache.get(key);
+      pushLog(`refetch “${key}” → ${value === undefined ? 'miss' : value}`);
+      setLookup(value === undefined ? `miss after refetch: ${key}` : value);
+    } catch (error) {
+      pushLog(`refetch failed: ${String(error)}`);
     }
-    const tags = parseTags(tagsInput);
-    const fresh = `${valueInput || 'fresh'} @ ${new Date().toLocaleTimeString()}`;
-    cache.set(key, fresh, ttl === undefined ? { tags } : { ttlMs: ttl, tags });
-    pushLog(`refetch “${key}” → ${fresh}`);
-    setLookup(`refetched ${key}`);
     refresh();
   };
 
@@ -229,6 +234,30 @@ export default function App() {
               : 'values are by-reference externrefs held in the Rust slab'}
           </span>
         </div>
+        <div className="row" aria-label="multi-tab sync">
+          <span className="muted">multi-tab sync</span>
+          <button type="button" aria-pressed={multiTab} disabled={multiTab} onClick={() => setMultiTab(true)}>
+            on
+          </button>
+          <button type="button" aria-pressed={!multiTab} disabled={!multiTab} onClick={() => setMultiTab(false)}>
+            off
+          </button>
+          <span className="muted">
+            on = sets propagate to other open tabs and both share one IndexedDB bucket
+          </span>
+        </div>
+        <div className="row" aria-label="persistence">
+          <span className="muted">persistence</span>
+          <button type="button" aria-pressed={persistence} disabled={persistence} onClick={() => setPersistence(true)}>
+            on
+          </button>
+          <button type="button" aria-pressed={!persistence} disabled={!persistence} onClick={() => setPersistence(false)}>
+            off
+          </button>
+          <span className="muted">
+            off = memory only (multi-tab sync still works; Reload will not restore entries)
+          </span>
+        </div>
       </header>
 
       <section className="panel" aria-labelledby="editor-title">
@@ -266,8 +295,9 @@ export default function App() {
           </button>
         </div>
         <p className="muted">
-          “Refetch” simulates an origin fetch: it writes a fresh value under the current key with
-          the tags above — the normal follow-up to “Invalidate tag”.
+          “Refetch” re-reads the key from the shared IndexedDB bucket when persistence is on (and
+          from the other tab when multi-tab sync is on). With persistence off it simply re-reads
+          the current cache. It shows the newest value instead of inventing one.
         </p>
         <p className="muted lookup" aria-live="polite">
           {lookup}
