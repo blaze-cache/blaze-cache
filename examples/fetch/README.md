@@ -14,7 +14,11 @@ latency and the server counts its own hits). The wrapper marks each response
 * **Cache statistics** — hits, misses, hit rate, entries, evictions and expirations.
 * **Invalidate / Clear / Prune** — `invalidateTags('fetch')`, empty the cache, or reclaim
   expired entries.
-* **Reload** — entries persist to IndexedDB under `blaze-example-fetch`; the list paints
+* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+  open with `?storage=js` (or use the toggle in the page header) to run the same demo
+  with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
+  and stable ids. Each mode has its own IndexedDB namespace.
+* **Reload** — entries persist to IndexedDB under `blaze-example-fetch-wasm` / `blaze-example-fetch-js`; the list paints
   instantly on return.
 
 ## Run
@@ -42,7 +46,8 @@ serves it with the same fake API the dev server runs.
 ```ts
 const cache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-fetch', debounceMs: 250 },
+  storage, // "wasm" (default) or "js" — from ?storage=js
+  persistence: { namespace: `blaze-example-fetch-${storage}`, debounceMs: 250 },
   wasmUrl,
 });
 

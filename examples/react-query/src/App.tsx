@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateBlazeQueries, useBlazeMutation, useBlazeQuery } from '@blaze-cache/react-query';
 
-import { cache, fetchTodosPayload } from './blaze.js';
+import { cache, fetchTodosPayload, storage } from './blaze.js';
 
 type LogMarker = 'SYNC' | 'ERR' | 'LOG';
 
@@ -146,6 +146,15 @@ export default function App() {
           their original <code>dataUpdatedAt</code>, so a reload paints instantly from the
           mirror while the query refetches in the background — exactly the stale-while-revalidate
           you already know.
+        </p>
+        <p className="muted">
+          value storage: <strong>{storage}</strong> —{' '}
+          <a href={`?storage=${storage === 'js' ? 'wasm' : 'js'}`}>
+            switch to {storage === 'js' ? 'wasm (default)' : 'js (hybrid)'}
+          </a>
+          {storage === 'js'
+            ? ' — values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
+            : ' — values are by-reference externrefs held in the Rust slab'}
         </p>
       </header>
 

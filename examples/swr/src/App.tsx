@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlazeSWR } from '@blaze-cache/swr';
 
-import { cache, fetchTodosPayload } from './blaze.js';
+import { cache, fetchTodosPayload, storage } from './blaze.js';
 
 type LogMarker = 'SYNC' | 'ERR' | 'LOG';
 
@@ -152,6 +152,15 @@ export default function App() {
           SWR seeded from WebAssembly. The persisted list is handed to SWR as{' '}
           <code>fallbackData</code>, so a reload paints instantly while SWR revalidates in the
           background — like plain <code>useSWR</code>, but the data survives the session.
+        </p>
+        <p className="muted">
+          value storage: <strong>{storage}</strong> —{' '}
+          <a href={`?storage=${storage === 'js' ? 'wasm' : 'js'}`}>
+            switch to {storage === 'js' ? 'wasm (default)' : 'js (hybrid)'}
+          </a>
+          {storage === 'js'
+            ? ' — values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
+            : ' — values are by-reference externrefs held in the Rust slab'}
         </p>
       </header>
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { blazeFetch, cache } from './blaze.js';
+import { blazeFetch, cache, storage } from './blaze.js';
 
 interface TodosPayload {
   items: string[];
@@ -165,6 +165,15 @@ export default function App() {
           A drop-in <code>fetch</code> backed by WebAssembly: TTLs, tags, <code>Cache-Control</code>
           support and IndexedDB persistence. Every read pays 400&nbsp;ms on a MISS and is instant
           on a HIT.
+        </p>
+        <p className="muted">
+          value storage: <strong>{storage}</strong> —{' '}
+          <a href={`?storage=${storage === 'js' ? 'wasm' : 'js'}`}>
+            switch to {storage === 'js' ? 'wasm (default)' : 'js (hybrid)'}
+          </a>
+          {storage === 'js'
+            ? ' — values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
+            : ' — values are by-reference externrefs held in the Rust slab'}
         </p>
       </header>
 

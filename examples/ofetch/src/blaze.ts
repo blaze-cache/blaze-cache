@@ -3,6 +3,13 @@ import type { BlazeCache } from '@blaze-cache/core';
 import { createBlazeOfetch } from '@blaze-cache/ofetch';
 import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
 
+/** Value ownership mode: `wasm` (default, externrefs in the Rust slab) or `js` (values in a JS Map). */
+export type ExampleStorage = 'wasm' | 'js';
+
+/** Set `?storage=js` in the URL to run the whole demo with `storage: 'js'`. */
+export const storage: ExampleStorage =
+  new URLSearchParams(window.location.search).get('storage') === 'js' ? 'js' : 'wasm';
+
 /**
  * One cache, one ofetch ($fetch) instance.
  *
@@ -13,7 +20,8 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
  */
 export const cache: BlazeCache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-ofetch', debounceMs: 250 },
+  storage,
+  persistence: { namespace: `blaze-example-ofetch-${storage}`, debounceMs: 250 },
   wasmUrl,
 });
 

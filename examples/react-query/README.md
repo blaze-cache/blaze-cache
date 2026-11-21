@@ -15,7 +15,11 @@ refetches in the background — TanStack's own stale-while-revalidate, surviving
 * **Request log** — every real network fetch is logged with its latency; cache reads taken at
   render time use `peek` and don't show up (they don't move the hit rate either).
 * **Cache statistics** — hits/misses/entries/evictions/expirations for the mirror.
-* **Reload** — entries persist to IndexedDB under `blaze-example-react-query`.
+* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+  open with `?storage=js` (or use the toggle in the page header) to run the same demo
+  with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
+  and stable ids. Each mode has its own IndexedDB namespace.
+* **Reload** — entries persist to IndexedDB under `blaze-example-react-query-wasm` / `blaze-example-react-query-js`.
 
 ## Run
 
