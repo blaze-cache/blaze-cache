@@ -11,6 +11,10 @@ use web_time::Instant;
 pub(crate) struct Node<K, V> {
     pub(crate) key: K,
     pub(crate) value: V,
+    /// Stable, never-reused identity of this entry across slab-slot reuse. JS-authoritative
+    /// mode keys its value `Map` by this id so a hot hit can address wasm without marshalling
+    /// the key string.
+    pub(crate) id: u32,
     pub(crate) prev: Option<usize>,
     pub(crate) next: Option<usize>,
     /// SIEVE "has been touched since the hand last passed" bit.
@@ -26,12 +30,14 @@ impl<K, V> Node<K, V> {
     pub(crate) fn new(
         key: K,
         value: V,
+        id: u32,
         expires_at: Option<Instant>,
         tags: SmallVec<[u32; 2]>,
     ) -> Self {
         Self {
             key,
             value,
+            id,
             prev: None,
             next: None,
             visited: false,

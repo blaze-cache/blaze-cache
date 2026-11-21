@@ -14,7 +14,7 @@ impl Slab {
     }
     fn push(&mut self, key: &'static str) -> usize {
         self.nodes
-            .push(Some(Node::new(key, 0, None, SmallVec::new())));
+            .push(Some(Node::new(key, 0, 0, None, SmallVec::new())));
         self.nodes.len() - 1
     }
 }
