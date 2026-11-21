@@ -163,11 +163,17 @@ under the new mode's label; see
 ## Stage 2: measured deltas
 
 Both opt-in modes were measured with the **same Stage 1 suite** (Node, capacity 10 000, 5
-samples × ~60 ms, small payload); raw rows are in
+samples × ~60 ms, small payload) via `pnpm bench -- --stage2`; raw rows are in
 [`stage2-node-object.json`](../../benchmarks/results/stage2-node-object.json) and
 [`stage2-node-bytes.json`](../../benchmarks/results/stage2-node-bytes.json). These runs use a
 different sample budget from the Stage 1 matrix above, so compare adapters **within** each run,
 not the absolute numbers across the two sections.
+
+`--stage2` is deliberately not the CI default. A js-storage validation fills 10 000 entries
+before the plain blaze row is measured, growing the shared Wasm heap and slowing later rows in
+the same process — an artifact of process-level measurement, not a product regression. The
+`bench:ci` gate therefore runs the original adapter set only, so base and head are compared
+like-for-like.
 
 | Scenario | Payload | `blaze-cache` (default) | `blaze-cache (js storage)` | `blaze-cache (bytes)` |
 |---|---|---:|---:|---:|
