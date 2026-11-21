@@ -30,15 +30,19 @@ function report(nsPerOp) {
   return { rows: [row('Map', 100), row('blaze-cache', nsPerOp)] };
 }
 
-async function compare(current, baseline) {
+async function compareReports(current, baseline) {
   const dir = await mkdtemp(join(tmpdir(), 'blaze-bench-gate-'));
   const currentPath = join(dir, 'current.json');
   const baselinePath = join(dir, 'baseline.json');
-  await writeFile(currentPath, JSON.stringify(report(current)));
-  await writeFile(baselinePath, JSON.stringify(report(baseline)));
+  await writeFile(currentPath, JSON.stringify(current));
+  await writeFile(baselinePath, JSON.stringify(baseline));
   return run(process.execPath, [SCRIPT, currentPath, baselinePath], {
     cwd: process.cwd(),
   });
+}
+
+function compare(current, baseline) {
+  return compareReports(report(current), report(baseline));
 }
 
 describe('bench:ci regression gate', () => {
@@ -61,5 +65,16 @@ describe('bench:ci regression gate', () => {
         return true;
       },
     );
+  });
+
+  it('ignores a new adapter without shifting the ratios of existing rows', async () => {
+    // A PR that adds a slow opt-in mode used to inflate the cell median, making every
+    // pre-existing row look regressed. The scale must come from the baseline's peer set only.
+    const baseline = report(100);
+    const current = report(100);
+    current.rows.push(row('blaze-cache (js storage)', 5000));
+    const { stdout } = await compareReports(current, baseline);
+    assert.match(stdout, /bench:ci passed/);
+    assert.match(stdout, /1 new rows \(no baseline\)/);
   });
 });
