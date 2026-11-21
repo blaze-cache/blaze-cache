@@ -140,10 +140,12 @@ real-IDB flush/hydration run is the natural follow-up once the browser harness i
 Some rows — notably the persistence pair and the short `--quick` gate — have wide spreads (up
 to ~500% on one hydration sample). The reported statistic is a **median**, so a single outlier
 does not move the central figure, but the range is printed rather than hidden. Gaps smaller
-than the spread are ties. The CI gate is scenario-normalised (each row divided by its cell's
-median), trims single-sample GC spikes, and allows for the remaining spread. Crucially, it
-measures the **base revision on the same runner** immediately before the PR head, so a laptop
-or hosted-runner difference cannot fail a PR; see
+than the spread are ties. The CI gate is scenario-normalised against a fixed peer set (the
+adapters common to both reports in each cell), trims single-sample GC spikes, and allows for the
+remaining spread — adding a new adapter cannot shift the other rows' scale. Crucially, it
+measures the **whole base tree on the same runner** immediately before the PR head (not just
+the engine with the PR's adapters), so a new opt-in mode is never timed against an older binary
+under the new mode's label; see
 [`scripts/compare-bench.mjs`](../../scripts/compare-bench.mjs) and
 [`.github/workflows/js.yml`](../../.github/workflows/js.yml).
 
