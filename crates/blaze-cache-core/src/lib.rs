@@ -43,6 +43,8 @@
 //! [SIEVE]: https://www.usenix.org/conference/fast24/presentation/yang
 #![forbid(unsafe_code)]
 
+/// The binary-value arena (opt-in for hosts that want zero-copy byte payloads).
+pub mod bytes;
 mod cache;
 mod entry;
 mod eviction;
@@ -50,6 +52,7 @@ mod node;
 mod stats;
 mod tags;
 
+pub use bytes::{BytesRef, Reservation};
 pub use cache::{Cache, DropReason, Dropped, EntryMeta, EntryView};
 pub use entry::EntryOptions;
 pub use stats::CacheStats;
