@@ -153,6 +153,30 @@ export default function App() {
     refresh();
   };
 
+  /**
+   * Simulates an origin fetch and writes the fresh value back. This is the usual follow-up to
+   * `invalidateTags`: invalidation removes entries, so the app refetches and `set`s them again.
+   */
+  const refetchEntry = () => {
+    if (!cache) return;
+    const key = keyInput.trim();
+    if (!key) {
+      pushLog('refetch skipped: key is empty');
+      return;
+    }
+    const ttl = parsedTtl();
+    if (ttl === null) {
+      pushLog('refetch skipped: ttl must be a finite number ≥ 0 (ms), or empty for no expiry');
+      return;
+    }
+    const tags = parseTags(tagsInput);
+    const fresh = `${valueInput || 'fresh'} @ ${new Date().toLocaleTimeString()}`;
+    cache.set(key, fresh, ttl === undefined ? { tags } : { ttlMs: ttl, tags });
+    pushLog(`refetch “${key}” → ${fresh}`);
+    setLookup(`refetched ${key}`);
+    refresh();
+  };
+
   const deleteEntry = () => {
     if (!cache) return;
     const key = keyInput.trim();
@@ -234,10 +258,17 @@ export default function App() {
           <button type="button" onClick={getEntry}>
             Get
           </button>
+          <button type="button" onClick={refetchEntry}>
+            Refetch
+          </button>
           <button type="button" onClick={deleteEntry}>
             Delete
           </button>
         </div>
+        <p className="muted">
+          “Refetch” simulates an origin fetch: it writes a fresh value under the current key with
+          the tags above — the normal follow-up to “Invalidate tag”.
+        </p>
         <p className="muted lookup" aria-live="polite">
           {lookup}
         </p>
