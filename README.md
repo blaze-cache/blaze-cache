@@ -684,14 +684,31 @@ generation.
 
 ### Multiple tabs
 
-Tabs share one IndexedDB namespace but nothing else: each holds its own wasm instance,
-hydrated once at startup, and each flushes the keys it wrote. There is no coordination
-between them — writes are **last-writer-wins per key**. That is what you want for
-ordinary use (the foreground tab refetches on focus and rewrites its own copy), but a tab
-that keeps working while hidden can flush a value older than the one the focused tab just
-wrote, and that older value is what hydration paints after a reload until revalidation
-corrects it. If it matters, use a short `ttlMs` on records written from background tabs,
-or filter on a timestamp stored inside the value.
+Tabs share one IndexedDB namespace but — by default — nothing else: each holds its own wasm
+instance, hydrated once at startup. Cross-tab coordination is **opt-in**:
+
+```ts
+const cache = await createCache({
+  capacity: 1000,
+  persistence: { namespace: 'app' },
+  multiTab: { enabled: true, strategy: 'value' },
+});
+```
+
+One `BroadcastChannel` per `namespace\0generation` carries `set`, `delete`, `clear`,
+tag-invalidation and rotation messages, plus a `hello`/`state` handshake on focus so a tab
+that was asleep can catch up. Writes are ordered by a hybrid logical clock plus per-client
+sequence and a deterministic `clientId` tiebreaker; each key remembers the version of its
+last write, so a late message from a hidden tab **never** overwrites a newer value. That
+directly fixes the old "hidden tab flushes a stale value" failure. JSON-like values are
+structured-cloned by the channel; a non-cloneable value falls back to an invalidate
+tombstone. Use `strategy: 'invalidate'` when the app refetches on focus instead of sharing
+values. Remote changes fire `remote-set` / `remote-delete` / `remote-clear` /
+`remote-invalidate` / `remote-rotate` events, are never re-broadcast (no echo storms), and
+IndexedDB flushes are serialised across tabs with a Web Lock where available.
+
+With the option omitted, behavior is byte-for-byte the old last-writer-wins model — no
+channel is opened and the hot path is untouched.
 
 ## axios
 

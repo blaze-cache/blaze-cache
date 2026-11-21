@@ -141,6 +141,19 @@ stop(); stopMany(); stopTag();         // idempotent — also safe from inside a
   Releasing the last subscription detaches everything again. `cache.off()` clears *event*
   listeners only — live subscriptions re-bind their own immediately.
 
+## Opt-in multi-tab sync
+
+`createCache({ multiTab: { enabled: true } })` opens one `BroadcastChannel` per
+`namespace\0generation` and propagates `set`, `delete`, `clear`, tag invalidation and rotation
+between tabs, with a `hello`/`state` handshake on focus. Every key tracks a hybrid-logical-clock
+version, so stale messages from a hidden tab cannot overwrite a newer value — the old
+last-writer-wins flush bug is fixed. `strategy: 'value'` (default) structured-clones payloads
+and falls back to a tombstone for non-cloneable values; `strategy: 'invalidate'` always sends
+tombstones. Remote mutations emit `remote-set` / `remote-delete` / `remote-clear` /
+`remote-invalidate` / `remote-rotate` events and are never re-broadcast. Flushes are guarded by
+a cross-tab Web Lock where available. The option is off by default; without it no channel is
+created and behavior is unchanged.
+
 ## Opt-in storage modes
 
 The default keeps values as by-reference externrefs in the Rust slab (see *Good to know*).
