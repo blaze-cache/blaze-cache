@@ -18,6 +18,7 @@ pnpm bench -- --capacity=5000
 pnpm bench -- --json        # results as JSON
 pnpm bench -- --payload=large --payload-kind=bytes
 pnpm bench -- --matrix      # all five payload sizes in one report
+pnpm bench -- --stage2      # include the opt-in js-storage / bytes adapters
 ```
 
 `pnpm bench` rebuilds the wasm and the core first, so the numbers are never taken against a
