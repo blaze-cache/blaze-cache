@@ -108,7 +108,13 @@ pub struct Cache<K, V> {
     index: HashMap<K, usize, foldhash::fast::RandomState>,
     /// Stable id → slab slot. Unlike slab slots, ids are never reused, so a host holding a
     /// `Map<id, V>` can never see a stale id alias a newer entry.
+    ///
+    /// **Empty and untouched in the default mode.** Maintaining it costs a hash on every
+    /// insert and every release, so it is enabled only by [`enable_ids`](Self::enable_ids),
+    /// which JS-authoritative mode calls before the first write.
     by_id: HashMap<u32, usize, foldhash::fast::RandomState>,
+    /// Whether `by_id` is live. Off by default; the hot path pays one branch.
+    track_ids: bool,
     /// Next id to hand out. Wraps only after 2³² writes; on wrap the oldest id is evicted from
     /// this index before reuse so no two live entries ever share one.
     next_id: u32,
@@ -151,10 +157,8 @@ where
                 capacity.min(INITIAL_INDEX_RESERVATION),
                 foldhash::fast::RandomState::default(),
             ),
-            by_id: HashMap::with_capacity_and_hasher(
-                capacity.min(INITIAL_INDEX_RESERVATION),
-                foldhash::fast::RandomState::default(),
-            ),
+            by_id: HashMap::default(),
+            track_ids: false,
             next_id: 0,
             queue: Sieve::new(),
             tags: TagIndex::default(),
@@ -163,6 +167,25 @@ where
             ttl_count: 0,
             drops: VecDeque::new(),
             track_drops: false,
+        }
+    }
+
+    /// Enables the stable-id index used by JS-authoritative storage.
+    ///
+    /// Off by default because maintaining it costs a hash on every insert and release. Call
+    /// before the first write; the map is reserved once, then kept in step by `insert_at` and
+    /// `release`. Enabling on an already-populated cache backfills the index from the slab.
+    pub fn enable_ids(&mut self) {
+        if self.track_ids {
+            return;
+        }
+        self.track_ids = true;
+        self.by_id
+            .reserve(self.index.len().max(INITIAL_INDEX_RESERVATION));
+        for (idx, slot) in self.nodes.iter().enumerate() {
+            if let Some(node) = slot {
+                self.by_id.insert(node.id, idx);
+            }
         }
     }
 
@@ -729,8 +752,10 @@ where
                 // index row first so no two live nodes answer to the same id.
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
-                if let Some(old_idx) = self.by_id.remove(&id) {
-                    debug_assert!(!self.nodes[old_idx].as_ref().is_some_and(|n| n.id == id));
+                if self.track_ids {
+                    if let Some(old_idx) = self.by_id.remove(&id) {
+                        debug_assert!(!self.nodes[old_idx].as_ref().is_some_and(|n| n.id == id));
+                    }
                 }
                 let node = Node::new(key.clone(), value, id, expires_at, new_tag_ids);
                 let idx = match self.free.pop() {
@@ -744,7 +769,9 @@ where
                     }
                 };
                 self.index.insert(key, idx);
-                self.by_id.insert(id, idx);
+                if self.track_ids {
+                    self.by_id.insert(id, idx);
+                }
                 // Read the ids back from the published node so `new_tag_ids` could be moved
                 // into it instead of cloned. The node is in the slab before we attach, so a
                 // failure here cannot leave a half-built entry registered under a tag.
@@ -758,7 +785,10 @@ where
         };
 
         debug_assert_eq!(self.queue.len(), self.index.len(), "queue/index desync");
-        debug_assert_eq!(self.by_id.len(), self.index.len(), "id/index desync");
+        debug_assert!(
+            !self.track_ids || self.by_id.len() == self.index.len(),
+            "id/index desync"
+        );
         (previous, id)
     }
 
@@ -872,7 +902,9 @@ where
         self.nodes.clear();
         self.free.clear();
         self.index.clear();
-        self.by_id.clear();
+        if self.track_ids {
+            self.by_id.clear();
+        }
         self.queue = Sieve::new();
         self.tags.clear();
         // `release()` never runs for these nodes, so reset the fast-path counter here.
@@ -927,7 +959,9 @@ where
         if indexed {
             self.index.remove(&node.key);
         }
-        self.by_id.remove(&node.id);
+        if self.track_ids {
+            self.by_id.remove(&node.id);
+        }
         for &id in &node.tags {
             self.tags.detach(id, idx);
         }

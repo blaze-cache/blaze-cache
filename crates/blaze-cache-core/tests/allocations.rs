@@ -108,6 +108,7 @@ fn by_id_lookups_do_not_allocate() {
     use blaze_cache_core::EntryOptions;
 
     let mut cache = Cache::new(16);
+    cache.enable_ids();
     let id = cache.insert_with_id("k", 7_u32, EntryOptions::new()).1;
     // Warm up any lazy index growth before counting.
     for _ in 0..8 {

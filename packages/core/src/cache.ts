@@ -307,6 +307,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // JS-authoritative mode needs the drop log permanently on: self-initiated evictions and
     // expirations are how JS learns which ids to delete from its value Map.
     if (storage === 'js') {
+      // Both indexes are opt-in in the Rust core: the default path pays nothing for them.
+      this.#wasm.enableIds();
       this.#wasm.setDropTracking(true);
       this.#dropTracking = true;
     }

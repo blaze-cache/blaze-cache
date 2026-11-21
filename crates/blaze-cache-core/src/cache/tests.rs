@@ -785,6 +785,7 @@ fn drop_log_trims_the_oldest_records_at_its_soft_cap() {
 #[test]
 fn ids_are_unique_preserved_on_overwrite_and_reported_in_drops() {
     let mut cache = Cache::new(4);
+    cache.enable_ids();
     let (_, first) = cache.insert_with_id("a", 1, EntryOptions::new());
     let (displaced, second) = cache.insert_with_id("b", 2, EntryOptions::new());
     assert_eq!(first, 0);
@@ -821,6 +822,7 @@ fn ids_are_unique_preserved_on_overwrite_and_reported_in_drops() {
 #[test]
 fn by_id_lookups_record_stats_and_reclaim_expired_entries() {
     let mut cache = Cache::new(4);
+    cache.enable_ids();
     cache.set_drop_tracking(true);
     cache.insert_with_id("forever", 1, EntryOptions::new());
     let id = cache
@@ -853,6 +855,7 @@ fn by_id_lookups_record_stats_and_reclaim_expired_entries() {
 #[test]
 fn slab_slots_are_reused_but_ids_never_are() {
     let mut cache = Cache::new(1);
+    cache.enable_ids();
     let first = cache.insert_with_id("a", 1, EntryOptions::new()).1;
     cache.insert("b", 2); // evicts "a", freeing its slab slot
     let third = cache.insert_with_id("c", 3, EntryOptions::new()).1;
@@ -862,4 +865,16 @@ fn slab_slots_are_reused_but_ids_never_are() {
     );
     assert!(!cache.get_by_id(first));
     assert!(cache.get_by_id(third));
+}
+
+#[test]
+fn the_id_index_is_opt_in_and_backfills_existing_entries() {
+    let mut cache = Cache::new(4);
+    cache.insert("a", 1);
+    // Default mode has no id index: by-id lookups cannot resolve anything.
+    assert!(!cache.get_by_id(0));
+
+    cache.enable_ids();
+    assert!(cache.get_by_id(0), "existing entries are indexed on enable");
+    assert_eq!(cache.entry_by_id(0).unwrap().key, &"a");
 }
