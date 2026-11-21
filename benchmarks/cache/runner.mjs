@@ -107,7 +107,7 @@ export async function runBenchmark(options = {}) {
   }
   const { createAdapter, adapterLabel } = adapters;
   const factory = createValueFactory({ payload, payloadKind });
-  const scenarios = buildScenarios({ capacity, ...factory }).filter(
+  const scenarios = buildScenarios({ capacity, ...factory, payloadKind }).filter(
     (scenario) => filter === null || scenario.id.includes(filter),
   );
   if (scenarios.length === 0) {

@@ -83,6 +83,23 @@ function makeValues(count, valueFor) {
   return Array.from({ length: count }, (_, index) => valueFor(index));
 }
 
+/**
+ * Probe comparison that works for both value modes. A bytes entry returns a fresh `Uint8Array`
+ * view (it cannot return the source reference), so identity alone would report a false miss.
+ * Returning a boolean keeps the probes deeply equal across adapters: every store either
+ * preserved the payload or it did not.
+ */
+function sameValue(actual, expected) {
+  if (actual === expected) return true;
+  if (actual instanceof Uint8Array && expected instanceof Uint8Array) {
+    return (
+      actual.length === expected.length &&
+      actual.every((byte, index) => byte === expected[index])
+    );
+  }
+  return false;
+}
+
 function makeLoadPlan(capacity) {
   const random = makeRandom(0xfeed);
   const kind = new Uint8Array(PLAN_LENGTH);
@@ -144,7 +161,7 @@ export function buildScenarios(options = {}) {
 
   const sizeNote = `payload ${payload}/${payloadKind}`;
 
-  return [
+  const scenariosResults = [
     {
       id: 'fill',
       category: 'diagnostic',
@@ -162,8 +179,8 @@ export function buildScenarios(options = {}) {
         fill(adapter);
         return [
           adapter.size() >= capacity,
-          adapter.get(keys[0]) === values[0],
-          adapter.get(keys[capacity - 1]) === values[capacity - 1],
+          sameValue(adapter.get(keys[0]), values[0]),
+          sameValue(adapter.get(keys[capacity - 1]), values[capacity - 1]),
           adapter.get('key:absent'),
         ];
       },
@@ -184,8 +201,8 @@ export function buildScenarios(options = {}) {
         fill(adapter);
         return [
           adapter.size() >= capacity,
-          adapter.get(keys[0]) === values[0],
-          adapter.get(keys[capacity - 1]) === values[capacity - 1],
+          sameValue(adapter.get(keys[0]), values[0]),
+          sameValue(adapter.get(keys[capacity - 1]), values[capacity - 1]),
           adapter.get('key:absent'),
         ];
       },
@@ -206,7 +223,7 @@ export function buildScenarios(options = {}) {
         fill(adapter);
         return [
           adapter.size() >= capacity,
-          adapter.get(keys[0]) === values[0],
+          sameValue(adapter.get(keys[0]), values[0]),
           adapter.get(absent[0]),
           adapter.get(absent[capacity - 1]),
         ];
@@ -234,8 +251,8 @@ export function buildScenarios(options = {}) {
         fill(adapter);
         return [
           adapter.size() >= capacity,
-          adapter.get(wideKeys[0]) === wideValues[0],
-          adapter.get(wideKeys[capacity - 1]) === wideValues[capacity - 1],
+          sameValue(adapter.get(wideKeys[0]), wideValues[0]),
+          sameValue(adapter.get(wideKeys[capacity - 1]), wideValues[capacity - 1]),
           adapter.get(wideKeys[capacity]),
         ];
       },
@@ -271,7 +288,7 @@ export function buildScenarios(options = {}) {
           adapter.set(keys[i], values[i], { ttlMs: HOUR_MS, tags: [TAGS[i % TAG_COUNT]] });
         }
         const held = adapter.size();
-        const readable = adapter.get(keys[0]) === values[0];
+        const readable = sameValue(adapter.get(keys[0]), values[0]);
 
         const removed = adapter.invalidateTags(TAGS[0]).length;
         const after = adapter.size();
@@ -306,7 +323,7 @@ export function buildScenarios(options = {}) {
         for (let i = 0; i < Math.min(capacity, 64); i += 1) {
           adapter.set(keys[i], values[i], { ttlMs: HOUR_MS });
         }
-        const live = adapter.get(keys[0]) === values[0];
+        const live = sameValue(adapter.get(keys[0]), values[0]);
         adapter.set('ttl:short', values[0], { ttlMs: 1 });
         await delay(10);
         return [live, adapter.get('ttl:short') === undefined];
@@ -336,7 +353,7 @@ export function buildScenarios(options = {}) {
         adapter.set('pressure:probe', values[0]);
         return [
           adapter.size() === capacity,
-          adapter.get('pressure:probe') === values[0],
+          sameValue(adapter.get('pressure:probe'), values[0]),
           adapter.get('absent:key:0') === undefined,
         ];
       },
@@ -376,7 +393,7 @@ export function buildScenarios(options = {}) {
           removed,
           adapter.size(),
           adapter.get(keys[0]) === undefined,
-          adapter.get(keys[1]) === values[1],
+          sameValue(adapter.get(keys[1]), values[1]),
         ];
       },
     },
@@ -409,7 +426,7 @@ export function buildScenarios(options = {}) {
         const writes = Math.min(capacity, 32);
         for (let i = 0; i < writes; i += 1) adapter.set(keys[i], values[i]);
         await adapter.flush();
-        return [adapter.storeSize(), adapter.get(keys[0]) === values[0]];
+        return [adapter.storeSize(), sameValue(adapter.get(keys[0]), values[0])];
       },
     },
 
@@ -442,10 +459,21 @@ export function buildScenarios(options = {}) {
         await adapter.hydrate();
         return [
           adapter.size(),
-          adapter.get(keys[0]) === values[0],
+          sameValue(adapter.get(keys[0]), values[0]),
           adapter.get('absent:key:0') === undefined,
         ];
       },
     },
   ];
+  // Stage 2 is opt-in: include both new modes in every scenario that already measures blaze.
+  // The bytes adapter only makes sense for Uint8Array payloads and point operations (it has no
+  // persistence surface), so it is excluded from the async persistence/TTL scenarios.
+  for (const scenario of scenariosResults) {
+    if (!scenario.adapters.includes('blaze')) continue;
+    scenario.adapters.push('blaze-js');
+    if (payloadKind === 'bytes' && !scenario.async) scenario.adapters.push('blaze-bytes');
+  }
+
+  return scenariosResults;
+
 }

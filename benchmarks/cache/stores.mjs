@@ -222,6 +222,100 @@ export class LruCacheAdapter {
   dispose() {}
 }
 
+/** `@blaze-cache/core` in opt-in JS-authoritative mode (`storage: 'js'`). */
+export class BlazeJsAdapter {
+  #cache;
+
+  constructor(cache) {
+    this.#cache = cache;
+  }
+
+  static async create({ capacity, wasm } = {}) {
+    const cache = await createCache({
+      ...(wasm === undefined ? {} : { wasm }),
+      persistence: false,
+      capacity,
+      storage: 'js',
+    });
+    return new BlazeJsAdapter(cache);
+  }
+
+  get(key) {
+    return this.#cache.get(key);
+  }
+
+  set(key, value, options) {
+    this.#cache.set(key, value, options);
+  }
+
+  delete(key) {
+    return this.#cache.delete(key);
+  }
+
+  invalidateTags(...tags) {
+    return this.#cache.invalidateTags(...tags);
+  }
+
+  size() {
+    return this.#cache.size();
+  }
+
+  clear() {
+    this.#cache.clear();
+  }
+
+  dispose() {
+    return this.#cache.dispose();
+  }
+}
+
+/** `@blaze-cache/core` using the optional zero-copy byte value path. */
+export class BlazeBytesAdapter {
+  #cache;
+
+  constructor(cache) {
+    this.#cache = cache;
+  }
+
+  static async create({ capacity, wasm } = {}) {
+    const cache = await createCache({
+      ...(wasm === undefined ? {} : { wasm }),
+      persistence: false,
+      capacity,
+    });
+    return new BlazeBytesAdapter(cache);
+  }
+
+  get(key) {
+    // The headline is the genuinely zero-copy read; the harness only consumes a boolean.
+    return this.#cache.getBytes(key);
+  }
+
+  set(key, value, options) {
+    this.#cache.setBytes(key, value, options);
+  }
+
+  delete(key) {
+    return this.#cache.delete(key);
+  }
+
+  invalidateTags(...tags) {
+    return this.#cache.invalidateTags(...tags);
+  }
+
+  size() {
+    return this.#cache.size();
+  }
+
+  clear() {
+    this.#cache.clear();
+  }
+
+  dispose() {
+    return this.#cache.dispose();
+  }
+}
+
 /** `@blaze-cache/core` over the real wasm module. */
 export class BlazeAdapter {
   #cache;
@@ -639,6 +733,14 @@ export function buildRegistry({ wasmProvider } = {}) {
       create: async ({ capacity }) => new LruCacheAdapter({ capacity }),
     },
     blaze: { label: 'blaze-cache', create: blaze },
+    'blaze-js': {
+      label: 'blaze-cache (js storage)',
+      create: async ({ capacity }) => BlazeJsAdapter.create({ capacity, wasm: await wasm() }),
+    },
+    'blaze-bytes': {
+      label: 'blaze-cache (bytes)',
+      create: async ({ capacity }) => BlazeBytesAdapter.create({ capacity, wasm: await wasm() }),
+    },
     'map-lru': {
       label: 'Map + LRU',
       create: async ({ capacity }) => new LruAdapter({ capacity }),
