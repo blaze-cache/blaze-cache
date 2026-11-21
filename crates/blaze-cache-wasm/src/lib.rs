@@ -22,7 +22,8 @@ use js_sys::Array;
 use std::cell::RefCell;
 use std::time::Duration;
 
-use blaze_cache_core::{Cache, EntryOptions};
+use blaze_cache_core::bytes as arena;
+use blaze_cache_core::{BytesRef, Cache, EntryOptions};
 use wasm_bindgen::prelude::*;
 
 /// Hard ceiling for a JS-supplied capacity: enough for any realistic workload. The core
@@ -37,10 +38,52 @@ thread_local! {
     static KEY_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// What a cache entry holds.
+///
+/// `Ref` is the default: a `JsValue` externref held by reference, never cloned or serialised.
+/// `Bytes` is the opt-in binary mode: an owning region in Wasm linear memory whose coordinates
+/// JS can read into a zero-copy `Uint8Array` view. Keeping both behind one enum means the
+/// metadata/eviction/stat machinery is shared; only the value-facing methods branch.
+#[derive(Debug)]
+enum Value {
+    Ref(JsValue),
+    Bytes(BytesRef),
+}
+
+impl Value {
+    /// The externref, when this entry was written with `set` — never a bytes entry.
+    fn as_ref_value(&self) -> Option<&JsValue> {
+        match self {
+            Value::Ref(value) => Some(value),
+            Value::Bytes(_) => None,
+        }
+    }
+
+    /// The byte coordinates, when this entry was written with `setBytes`.
+    fn as_bytes(&self) -> Option<(usize, usize)> {
+        match self {
+            Value::Bytes(bytes) => Some((bytes.ptr, bytes.len)),
+            Value::Ref(_) => None,
+        }
+    }
+
+    /// A structured-cloneable view for `entry()`/`entries()`/drop events and persistence.
+    /// Bytes are copied here on purpose: a snapshot must outlive the next arena reuse.
+    fn to_js(&self) -> JsValue {
+        match self {
+            Value::Ref(value) => value.clone(),
+            Value::Bytes(bytes) => match arena::to_vec(bytes.ptr, bytes.len) {
+                Some(owned) => js_sys::Uint8Array::from(owned.as_slice()).into(),
+                None => JsValue::UNDEFINED,
+            },
+        }
+    }
+}
+
 /// A JavaScript-visible Blaze Cache.
 #[wasm_bindgen]
 pub struct BlazeCache {
-    inner: Cache<String, JsValue>,
+    inner: Cache<String, Value>,
 }
 
 #[wasm_bindgen]
@@ -80,7 +123,7 @@ impl BlazeCache {
     /// A hit marks the entry *visited* for SIEVE, so this takes `&mut self`.
     #[wasm_bindgen(js_name = get)]
     pub fn get(&mut self, key: &str) -> Option<JsValue> {
-        self.inner.get(key).cloned()
+        self.inner.get(key).and_then(Value::as_ref_value).cloned()
     }
 
     /// Same lookup as [`get`](Self::get) — **without** recording a hit or a miss, and without
@@ -90,7 +133,7 @@ impl BlazeCache {
     /// exactly as it found them, and it never reclaims an expired entry.
     #[wasm_bindgen(js_name = peek)]
     pub fn peek(&self, key: &str) -> Option<JsValue> {
-        self.inner.peek(key).cloned()
+        self.inner.peek(key).and_then(Value::as_ref_value).cloned()
     }
 
     /// Milliseconds until `key` expires, or `undefined` when it carries no TTL or the key is
@@ -121,7 +164,7 @@ impl BlazeCache {
                 options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
         }
-        self.inner.insert_borrowed(key, value, options);
+        self.inner.insert_borrowed(key, Value::Ref(value), options);
     }
 
     /// Batch get: looks up every key in one boundary crossing. Returns `JsValue::UNDEFINED`
@@ -129,7 +172,13 @@ impl BlazeCache {
     #[wasm_bindgen(js_name = getMany)]
     pub fn get_many(&mut self, keys: Vec<String>) -> Vec<JsValue> {
         keys.iter()
-            .map(|k| self.inner.get(k).cloned().unwrap_or(JsValue::UNDEFINED))
+            .map(|k| {
+                self.inner
+                    .get(k)
+                    .and_then(Value::as_ref_value)
+                    .cloned()
+                    .unwrap_or(JsValue::UNDEFINED)
+            })
             .collect()
     }
 
@@ -175,7 +224,8 @@ impl BlazeCache {
                 options = options.ttl(Duration::from_millis((ms as u64).max(1)));
             }
             let value = values_arr.get(i as u32);
-            self.inner.insert_borrowed(keys[i].as_str(), value, options);
+            self.inner
+                .insert_borrowed(keys[i].as_str(), Value::Ref(value), options);
         }
     }
 
@@ -226,6 +276,188 @@ impl BlazeCache {
         self.inner.remove(key).is_some()
     }
 
+    // -------------------------------------------------------- binary value mode (opt-in)
+
+    /// The `WebAssembly.Memory` backing this instance, so JS can build `Uint8Array` views of
+    /// regions reserved by [`bytes_reserve`](Self::bytes_reserve).
+    #[wasm_bindgen(js_name = wasmMemory)]
+    pub fn wasm_memory() -> JsValue {
+        wasm_bindgen::memory()
+    }
+
+    /// Reserves `len` bytes in the shared arena and returns their absolute pointer.
+    ///
+    /// JS writes the payload into `new Uint8Array(memory.buffer, ptr, len)` and passes the same
+    /// `(ptr, len)` to [`set_bytes`](Self::set_bytes), which adopts the reservation and stores
+    /// it as the entry's value. No JS object is serialised: the bytes are already in linear
+    /// memory. A reservation that is never adopted simply stays reserved for the lifetime of
+    /// the instance (a fixed, bounded cost per abandoned `setBytes`).
+    #[wasm_bindgen(js_name = bytesReserve)]
+    pub fn bytes_reserve(len: usize) -> u32 {
+        arena::reserve_for_host(len)
+    }
+
+    /// Adopts a reserved byte region as the value for `key`.
+    ///
+    /// Every coordinate is validated against the arena before ownership is taken: a stale or
+    /// out-of-range `(ptr, len)` stores nothing and returns `false` instead of trapping.
+    #[wasm_bindgen(js_name = setBytes)]
+    pub fn set_bytes(
+        &mut self,
+        key: &str,
+        ptr: u32,
+        len: u32,
+        ttl_ms: Option<f64>,
+        tags: Vec<String>,
+    ) -> bool {
+        // `bytesReserve` is the only way to obtain a live reservation; validate by attempting
+        // adoption. On failure the reservation simply drops and frees its region.
+        let bytes = match arena::adopt(ptr as usize, len as usize) {
+            Some(bytes) => bytes,
+            None => return false,
+        };
+        let mut options = EntryOptions::new().tags(tags);
+        if let Some(ms) = ttl_ms {
+            if ms.is_finite() && ms > 0.0 {
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+            }
+        }
+        self.inner
+            .insert_borrowed(key, Value::Bytes(bytes), options);
+        true
+    }
+
+    /// Returns `[ptr, len]` for a bytes entry, or `undefined` when the key is missing or was
+    /// written with `set` instead of `setBytes`. A hit marks the entry visited for SIEVE.
+    ///
+    /// The coordinates are stable across `memory.grow`, but JS `ArrayBuffer` views are detached
+    /// by it — rebuild the view from the current `wasmMemory().buffer` before each read, and
+    /// never retain a view across an allocation. Use `getBytesCopy` for a long-lived snapshot.
+    #[wasm_bindgen(js_name = getBytes)]
+    pub fn get_bytes(&mut self, key: &str) -> Option<Array> {
+        let coordinates = self.inner.get(key)?.as_bytes()?;
+        let out = Array::new();
+        out.push(&JsValue::from_f64(coordinates.0 as f64));
+        out.push(&JsValue::from_f64(coordinates.1 as f64));
+        Some(out)
+    }
+
+    /// Like [`get_bytes`](Self::get_bytes) but returns an **owned copy** as a `Uint8Array`.
+    ///
+    /// Safe to retain: the copy is outside the arena and survives eviction, reuse and
+    /// `memory.grow`. This is the escape hatch for long-lived reads of byte values.
+    #[wasm_bindgen(js_name = getBytesCopy)]
+    pub fn get_bytes_copy(&mut self, key: &str) -> Option<js_sys::Uint8Array> {
+        let (ptr, len) = self.inner.get(key)?.as_bytes()?;
+        arena::to_vec(ptr, len).map(|owned| js_sys::Uint8Array::from(owned.as_slice()))
+    }
+
+    // --------------------------------------------------- JS-authoritative metadata mode
+
+    /// Inserts a sentinel-only entry and returns its stable id, for `storage: 'js'`.
+    ///
+    /// The value lives in a JS `Map<id, V>`; wasm keeps keys, TTL, tags, SIEVE and the id index.
+    /// An overwrite keeps the same id so JS can replace the value in place.
+    #[wasm_bindgen(js_name = setMeta)]
+    pub fn set_meta(&mut self, key: &str, ttl_ms: Option<f64>, tags: Vec<String>) -> u32 {
+        let mut options = EntryOptions::new().tags(tags);
+        if let Some(ms) = ttl_ms {
+            if ms.is_finite() && ms > 0.0 {
+                options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+            }
+        }
+        self.inner
+            .insert_borrowed_id(key, Value::Ref(JsValue::UNDEFINED), options)
+            .1
+    }
+
+    /// Batch form of [`set_meta`](Self::set_meta), returning one id per entry.
+    #[wasm_bindgen(js_name = setManyMeta)]
+    pub fn set_many_meta(
+        &mut self,
+        keys: Vec<String>,
+        ttl_ms: Vec<f64>,
+        tags_flat: Vec<String>,
+        tag_offsets: Vec<usize>,
+    ) -> Vec<u32> {
+        let flat_len = tags_flat.len();
+        keys.iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let start = tag_offsets.get(i).copied().unwrap_or(0).min(flat_len);
+                let end = tag_offsets
+                    .get(i + 1)
+                    .copied()
+                    .unwrap_or(start)
+                    .clamp(start, flat_len);
+                let mut options =
+                    EntryOptions::new().tags(tags_flat[start..end].iter().map(String::as_str));
+                let ms = ttl_ms.get(i).copied().unwrap_or(-1.0);
+                if ms.is_finite() && ms > 0.0 {
+                    options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+                }
+                self.inner
+                    .insert_borrowed_id(key, Value::Ref(JsValue::UNDEFINED), options)
+                    .1
+            })
+            .collect()
+    }
+
+    /// Hit/miss + SIEVE visit for a JS-owned id. No key string crosses the boundary.
+    #[wasm_bindgen(js_name = getById)]
+    pub fn get_by_id(&mut self, id: u32) -> bool {
+        self.inner.get_by_id(id)
+    }
+
+    /// Observational presence check by id (no stats, no eviction bookkeeping).
+    #[wasm_bindgen(js_name = peekById)]
+    pub fn peek_by_id(&self, id: u32) -> bool {
+        self.inner.peek_by_id(id)
+    }
+
+    /// `true` when `id` is present and not expired.
+    #[wasm_bindgen(js_name = hasById)]
+    pub fn has_by_id(&self, id: u32) -> bool {
+        self.inner.has_by_id(id)
+    }
+
+    /// Counts a miss for an absent key that was resolved locally, with no wasm lookup.
+    #[wasm_bindgen(js_name = recordMiss)]
+    pub fn record_miss(&mut self) {
+        self.inner.record_miss();
+    }
+
+    /// Metadata for one key with its stable id, for `entry()` in JS-authoritative mode.
+    /// The `value` field is `undefined`: JS fills it from its own `Map<id, V>`.
+    #[wasm_bindgen(js_name = entryMeta)]
+    pub fn entry_meta(&self, key: &str) -> JsValue {
+        let Some(entry) = self.inner.entry(key) else {
+            return JsValue::UNDEFINED;
+        };
+        entry_meta_object(
+            entry.key,
+            entry.id,
+            entry.meta.ttl_remaining,
+            &entry.meta.tags,
+        )
+        .into()
+    }
+
+    /// Metadata for every live entry with its stable id, for `entries()` in JS mode.
+    #[wasm_bindgen(js_name = entriesMeta)]
+    pub fn entries_meta(&self) -> Array {
+        let out = Array::new();
+        for entry in self.inner.entries() {
+            out.push(&entry_meta_object(
+                entry.key,
+                entry.id,
+                entry.meta.ttl_remaining,
+                &entry.meta.tags,
+            ));
+        }
+        out
+    }
+
     /// [`get`](Self::get) with the key already encoded into wasm memory by the host.
     ///
     /// The TypeScript wrapper encodes each distinct key once into the shared scratch (see
@@ -242,7 +474,10 @@ impl BlazeCache {
     /// behaviour (see [`with_raw_key`]).
     #[wasm_bindgen(js_name = getRaw)]
     pub fn get_raw(&mut self, ptr: u32, len: u32) -> Option<JsValue> {
-        with_raw_key(ptr, len, |key| self.inner.get(key).cloned()).flatten()
+        with_raw_key(ptr, len, |key| {
+            self.inner.get(key).and_then(Value::as_ref_value).cloned()
+        })
+        .flatten()
     }
 
     /// [`set`](Self::set) with a pre-encoded key and **no tags** — the untagged write fast
@@ -257,7 +492,7 @@ impl BlazeCache {
                     options = options.ttl(Duration::from_millis((ms as u64).max(1)));
                 }
             }
-            self.inner.insert_borrowed(key, value, options);
+            self.inner.insert_borrowed(key, Value::Ref(value), options);
         });
     }
 
@@ -275,7 +510,7 @@ impl BlazeCache {
         match self.inner.entry(key) {
             Some(entry) => entry_object(
                 entry.key,
-                entry.value.clone(),
+                entry.value.to_js(),
                 entry.meta.ttl_remaining,
                 &entry.meta.tags,
             )
@@ -318,7 +553,7 @@ impl BlazeCache {
         for entry in self.inner.entries() {
             out.push(&entry_object(
                 entry.key,
-                entry.value.clone(),
+                entry.value.to_js(),
                 entry.meta.ttl_remaining,
                 &entry.meta.tags,
             ));
@@ -376,7 +611,8 @@ impl BlazeCache {
         for dropped in self.inner.drain_drops() {
             let obj = js_sys::Object::new();
             set_field(&obj, "key", &JsValue::from_str(&dropped.key));
-            set_field(&obj, "value", &dropped.value);
+            set_field(&obj, "id", &JsValue::from_f64(dropped.id as f64));
+            set_field(&obj, "value", &dropped.value.to_js());
             set_field(
                 &obj,
                 "reason",
@@ -471,6 +707,20 @@ fn with_raw_key<R>(ptr: u32, len: u32, f: impl FnOnce(&str) -> R) -> Option<R> {
         let bytes = scratch.get(start..end)?;
         Some(f(std::str::from_utf8(bytes).ok()?))
     })
+}
+
+/// `{ key, id, ttlMs, tags }` — metadata-only entry shape for JS-authoritative mode.
+fn entry_meta_object(key: &str, id: u32, ttl: Option<Duration>, tags: &[String]) -> js_sys::Object {
+    let obj = js_sys::Object::new();
+    set_field(&obj, "key", &JsValue::from_str(key));
+    set_field(&obj, "id", &JsValue::from_f64(id as f64));
+    set_field(&obj, "ttlMs", &ttl_ms(ttl));
+    let tag_array = js_sys::Array::new();
+    for tag in tags {
+        tag_array.push(&JsValue::from_str(tag));
+    }
+    set_field(&obj, "tags", &tag_array);
+    obj
 }
 
 fn set_field(target: &js_sys::Object, key: &str, value: &JsValue) {
