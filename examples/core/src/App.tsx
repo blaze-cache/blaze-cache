@@ -32,6 +32,16 @@ function describe(event: CacheEvent<string>): string {
       return `hit ${event.key}`;
     case 'miss':
       return `miss ${event.key}`;
+    case 'remote-set':
+      return `remote set ${event.key}`;
+    case 'remote-delete':
+      return `remote delete ${event.key}`;
+    case 'remote-clear':
+      return 'remote clear';
+    case 'remote-invalidate':
+      return 'remote invalidate';
+    case 'remote-rotate':
+      return 'remote rotate';
   }
 }
 
