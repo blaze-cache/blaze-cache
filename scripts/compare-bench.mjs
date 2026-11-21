@@ -8,10 +8,11 @@
  * reported and ignored — this is a regression gate, not a leaderboard.
  *
  * Rows are matched on runtime + payload + payload kind + scenario + adapter. Each row is
- * normalised by the median ns/op of its own scenario+payload cell before comparison, so a
- * faster or slower CI runner scales every adapter together and cannot trigger a false alarm.
- * What is gated is therefore the *shape* of the result — blaze against its peers — not the
- * absolute clock. Refresh the baseline deliberately when the workload itself changes.
+ * normalised by a **fixed peer set** taken from the baseline — the adapters present in both
+ * reports for that scenario — so a faster or slower CI runner scales every adapter together
+ * without a PR that adds adapters (or a new opt-in mode) shifting the cell median and making
+ * every existing row look regressed. What is gated is the *shape* of the result, not the clock.
+ * Refresh the baseline deliberately when the workload itself changes.
  */
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -71,22 +72,41 @@ function group(row) {
   ].join('|');
 }
 
-/** Normalises each row by its cell's median so hardware speed cancels out. */
-function index(report) {
-  const rows = report.rows ?? [];
+/**
+ * Builds one scale per scenario cell from the adapters present in **both** reports.
+ *
+ * Using each report's own cell median is unstable the moment a PR adds an adapter: the new
+ * row changes the median, so every pre-existing row's ratio moves and the gate reports
+ * phantom regressions. The base run in CI measures the base tree, which by definition lacks
+ * new adapters, so we can only compare rows that share a peer set.
+ */
+function buildScales(currentRows, baselineRows) {
+  const currentKeys = new Set(currentRows.map(key));
   const byGroup = new Map();
-  for (const row of rows) {
+  for (const row of baselineRows) {
     const groupKey = group(row);
     if (!byGroup.has(groupKey)) byGroup.set(groupKey, []);
     byGroup.get(groupKey).push(row);
   }
-  const scales = new Map(
-    [...byGroup].map(([groupKey, groupRows]) => [groupKey, median(groupRows.map(steadyNs))]),
-  );
+  const scales = new Map();
+  for (const [groupKey, groupRows] of byGroup) {
+    const common = groupRows.filter((row) => currentKeys.has(key(row)));
+    // With no shared adapter there is no honest reference point for this cell: skip it.
+    if (common.length > 0) {
+      scales.set(groupKey, median(common.map(steadyNs)));
+    }
+  }
+  return scales;
+}
+
+/** Normalises each row by the baseline's peer median so hardware speed cancels out. */
+function index(report, scales) {
   const map = new Map();
-  for (const row of rows) {
+  for (const row of report.rows ?? []) {
+    const scale = scales.get(group(row));
+    if (scale === undefined) continue;
     map.set(key(row), {
-      ratio: steadyNs(row) / Math.max(scales.get(group(row)), 1),
+      ratio: steadyNs(row) / Math.max(scale, 1),
       nsPerOp: steadyNs(row),
       spread: steadySpread(row),
     });
@@ -107,8 +127,11 @@ async function main() {
     return;
   }
 
-  const current = index(await load(currentPath));
-  const baseline = index(await load(baselinePath));
+  const currentReport = await load(currentPath);
+  const baselineReport = await load(baselinePath);
+  const scales = buildScales(currentReport.rows ?? [], baselineReport.rows ?? []);
+  const current = index(currentReport, scales);
+  const baseline = index(baselineReport, scales);
 
   const changes = [];
   const unmatched = [];
