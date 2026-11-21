@@ -31,8 +31,14 @@ describe('adapters', () => {
           assert.equal(typeof adapter[method], 'function', `${name}.${method} exists`);
         }
         assert.equal(adapter.size(), 0, `${name} starts empty`);
-        adapter.set('k', 1);
-        assert.equal(adapter.get('k'), 1, `${name} round-trips a value`);
+        if (name === 'blaze-bytes') {
+          const bytes = new Uint8Array([1, 2, 3]);
+          adapter.set('k', bytes);
+          assert.deepEqual([...adapter.get('k')], [...bytes], `${name} round-trips bytes`);
+        } else {
+          adapter.set('k', 1);
+          assert.equal(adapter.get('k'), 1, `${name} round-trips a value`);
+        }
         assert.equal(adapter.size(), 1);
         adapter.clear();
         assert.equal(adapter.size(), 0, `${name} clears`);
