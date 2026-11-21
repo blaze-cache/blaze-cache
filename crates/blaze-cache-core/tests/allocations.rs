@@ -102,3 +102,38 @@ fn overwrite_with_spilled_tags_allocates_only_once() {
     // that vector again to fill the node, making this two; moving it into the node makes one.
     assert!(allocations <= 1, "overwrite cloned the interned id vector");
 }
+
+#[test]
+fn by_id_lookups_do_not_allocate() {
+    use blaze_cache_core::EntryOptions;
+
+    let mut cache = Cache::new(16);
+    let id = cache.insert_with_id("k", 7_u32, EntryOptions::new()).1;
+    // Warm up any lazy index growth before counting.
+    for _ in 0..8 {
+        let _ = cache.get_by_id(id);
+    }
+
+    let (alive, allocations) = count(|| cache.get_by_id(id));
+    assert!(alive);
+    assert_eq!(allocations, 0, "a hot by-id hit must not allocate");
+}
+
+#[test]
+fn byte_region_reuse_does_not_allocate() {
+    use blaze_cache_core::bytes::{reserve, with_region};
+
+    let reservation = reserve(128);
+    let (ptr, len) = (reservation.ptr, reservation.len);
+    let bytes = reservation.adopt(ptr, len).unwrap();
+    assert_eq!(with_region(ptr, len, |b| b.len()), Some(len));
+    drop(bytes); // region returns to the free list
+
+    // First reuse must come from the free list, not a new chunk or Vec growth.
+    let (reservation, allocations) = count(|| reserve(128));
+    assert_eq!(
+        allocations, 0,
+        "a freed region is reused without allocating"
+    );
+    drop(reservation);
+}
