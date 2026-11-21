@@ -153,11 +153,18 @@ jobs:
             echo "no usable base revision — using the checked-in baseline"
             exit 0
           fi
-          git checkout "$BASE_SHA" -- crates packages/core Cargo.lock Cargo.toml
+          # Always restore the PR tree, even if the base build or benchmark fails.
+          trap 'git checkout HEAD -- .' EXIT
+          # Check out the WHOLE base tree, not just the engine sources. The PR may add a new
+          # adapter or opt-in mode; if the harness/scenarios come from the PR but the wasm comes
+          # from the base, that adapter measures the base implementation under a PR label and
+          # shows up as a 600% "regression". The compare script ignores rows with no baseline.
+          git checkout "$BASE_SHA" -- .
+          pnpm install --frozen-lockfile
           pnpm build:wasm
           pnpm --filter @blaze-cache/core build
           pnpm --filter blaze-cache-bench bench -- --quick --out=benchmarks/results/base.node.json > /dev/null
-          git checkout HEAD -- crates packages/core Cargo.lock Cargo.toml
+          # the EXIT trap restores the PR tree
 
       - name: Compare (scenario-normalised, outlier-trimmed)
         run: node scripts/compare-bench.mjs benchmarks/results/current.node.json benchmarks/results/base.node.json
