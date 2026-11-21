@@ -347,6 +347,25 @@ The sharing is deliberate, not an oversight: the hot path never clones or serial
 value, which is what keeps `get`/`set` allocation-free. The contract is ownership
 transfer, not deep-copy semantics.
 
+#### Opt-in storage modes
+
+Two 0.4.0 capabilities sit alongside the default, both off unless you ask:
+
+* **Binary values (zero-copy reads).** `cache.setBytes(key, arrayBufferView, options?)`
+  reserves a region in Wasm linear memory, copies the raw bytes into it once, and stores the
+  `(offset, length)` pair as the value. `cache.getBytes(key)` returns a `Uint8Array` **view**
+  onto that region — no copy, no serialisation. Views are short-lived: `memory.grow` detaches
+  them and an evicted region may be reused, so use `cache.getBytesCopy(key)` for a snapshot
+  you need to keep. `set`/`get` keep working exactly as before in the same cache.
+* **JS-authoritative values.** `createCache({ storage: 'js' })` leaves keys, TTL, tags, SIEVE
+  and stable entry ids in Wasm, but moves the values into a JS `Map<id, V>`. Hot reads call
+  Wasm by id, so no key string is marshalled. Events, tag invalidation, `entry()`/`entries()`,
+  statistics and persistence behave identically; the only ownership change is *where the value
+  lives*. Measure before enabling — see
+  [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md#stage-2-measured-deltas): on the
+  Stage 1 workloads the JS store is **slower** than the default, because the key scratch
+  already removed the cost this mode was meant to avoid.
+
 ### Stats
 
 ```ts

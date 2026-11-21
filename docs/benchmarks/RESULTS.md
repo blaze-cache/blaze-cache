@@ -158,6 +158,32 @@ or hosted-runner difference cannot fail a PR; see
 | `eviction-pressure` | Map + LRU, QuickLRU, lru-cache, blaze | lifetime |
 | `persistence-flush`, `hydration` | blaze + persistence, Map + queue, QuickLRU + queue | persistence |
 
+## Stage 2: measured deltas
+
+Both opt-in modes were measured with the **same Stage 1 suite** (Node, capacity 10 000, 5
+samples × ~60 ms, small payload); raw rows are in
+[`stage2-node-object.json`](../../benchmarks/results/stage2-node-object.json) and
+[`stage2-node-bytes.json`](../../benchmarks/results/stage2-node-bytes.json). These runs use a
+different sample budget from the Stage 1 matrix above, so compare adapters **within** each run,
+not the absolute numbers across the two sections.
+
+| Scenario | Payload | `blaze-cache` (default) | `blaze-cache (js storage)` | `blaze-cache (bytes)` |
+|---|---|---:|---:|---:|
+| `get-hit` | object | 125.4 | 150.8 (+20%) | — |
+| `fill` | object | 140.2 | 259.0 (+85%) | — |
+| `full-featured` | object | 212.7 | 353.1 (+66%) | — |
+| `get-hit` | bytes | 123.5 | 155.7 (+26%) | 171.9 (+39%) |
+| `fill` | bytes | 133.8 | 257.1 (+92%) | 1063.2 (+695%) |
+| `full-featured` | bytes | 175.3 | 292.0 (+67%) | 259.4 (+48%) |
+
+**The hypothesis did not survive measurement.** The JS-authoritative store is *slower* than
+the default on every measured workload: a hot hit still crosses the Wasm boundary (now by id)
+and then pays an extra JS `Map.get`, while the default `getRaw` already avoids key marshalling
+with the shared scratch buffer. The bytes mode trades a copy on `set` for a view on `get`, but
+the default never copies values at all — so it is a **capability** (genuine zero-copy for
+binary payloads that must live in linear memory), not a speed win on these workloads. Both stay
+opt-in for exactly this reason; enabling them is a deliberate trade, not an upgrade.
+
 ## Framework cache stores (Node, cache-store microbenchmark only)
 
 `pnpm bench:framework` compares the real `@tanstack/query-core` `QueryClient` store and the real

@@ -141,6 +141,42 @@ stop(); stopMany(); stopTag();         // idempotent — also safe from inside a
   Releasing the last subscription detaches everything again. `cache.off()` clears *event*
   listeners only — live subscriptions re-bind their own immediately.
 
+## Opt-in storage modes
+
+The default keeps values as by-reference externrefs in the Rust slab (see *Good to know*).
+Two opt-in modes are available for workloads with different ownership needs:
+
+```ts
+import { createCache } from '@blaze-cache/core';
+
+// 1. Raw bytes live in Wasm linear memory; reads are zero-copy views.
+const bytesCache = await createCache({ capacity: 1000 });
+bytesCache.setBytes('image', new Uint8Array(buffer), { ttlMs: 30_000 });
+const view = bytesCache.getBytes('image');        // Uint8Array view onto Wasm memory
+const copy = bytesCache.getBytesCopy('image');    // owned snapshot, safe to retain
+// set()/get() still work on the same cache and are unchanged.
+
+// 2. Values live in a JS Map; Wasm keeps metadata + stable ids.
+const hybrid = await createCache({ capacity: 1000, storage: 'js' });
+hybrid.set('user:42', user, { tags: ['user'] });   // value stays in JS
+hybrid.get('user:42');                            // Wasm by id, then Map.get — same reference
+```
+
+**Bytes mode** copies the payload once into an arena region, then hands out a view with no
+second copy. A view is valid only until the next allocation: `memory.grow` detaches the old
+`ArrayBuffer`, and an evicted region can be reused. Use `getBytesCopy` for anything long-lived.
+`entries()`/`entry()` and persistence see a copied `Uint8Array`, so those paths stay
+structured-cloneable. `setBytes` is unavailable with `storage: 'js'` and throws a clear error.
+
+**`storage: 'js'`** preserves by-reference semantics, tag invalidation, events, statistics,
+`entry()`/`entries()` and persistence: Wasm still owns the policy and reports evictions by
+stable id, and the JS layer deletes the corresponding value from its `Map` (the `evict`/`expire`
+events carry the real value, exactly as in the default mode). The cost is one extra `Map` lookup
+per read and an extra `Map` write per set — the key scratch buffer already makes the default
+path cheap, so **measure before enabling** (see the published deltas linked from the root
+README). Both modes are strictly opt-in; a cache created with no options is byte-for-byte the
+same implementation as before.
+
 ## Good to know
 
 * **The `.wasm` ships inside this package** — no CDN setup, no separate asset download.
