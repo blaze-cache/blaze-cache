@@ -668,6 +668,7 @@ fn set_bytes_rejects_a_stale_pointer_without_trapping() {
 #[wasm_bindgen_test]
 fn id_metadata_and_by_id_lookups_drive_js_authoritative_mode() {
     let mut cache = BlazeCache::new(4.0);
+    cache.enable_ids();
     let first = cache.set_meta("a", None, vec!["tag".into()]);
     assert_eq!(first, 0);
     assert_eq!(
@@ -695,6 +696,7 @@ fn id_metadata_and_by_id_lookups_drive_js_authoritative_mode() {
 #[wasm_bindgen_test]
 fn drain_drops_carries_the_stable_id() {
     let mut cache = BlazeCache::new(1.0);
+    cache.enable_ids();
     cache.set_drop_tracking(true);
     let first = cache.set_meta("a", None, vec![]);
     cache.set_meta("b", None, vec![]); // evicts "a"

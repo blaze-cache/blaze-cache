@@ -354,6 +354,15 @@ impl BlazeCache {
 
     // --------------------------------------------------- JS-authoritative metadata mode
 
+    /// Turns on the stable-id index before the first write (`storage: 'js'` only).
+    ///
+    /// The default mode never calls this, so the id map — and the hash on every insert and
+    /// release it entails — is completely absent from the default hot path.
+    #[wasm_bindgen(js_name = enableIds)]
+    pub fn enable_ids(&mut self) {
+        self.inner.enable_ids();
+    }
+
     /// Inserts a sentinel-only entry and returns its stable id, for `storage: 'js'`.
     ///
     /// The value lives in a JS `Map<id, V>`; wasm keeps keys, TTL, tags, SIEVE and the id index.
