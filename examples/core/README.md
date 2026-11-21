@@ -6,8 +6,12 @@ WebAssembly cache itself — no HTTP layer involved.
 What you can do:
 
 * **Set / Get / Delete** entries with optional TTL (empty = no expiry) and comma-separated tags.
+* **Refetch** — simulates an origin fetch by writing a fresh timestamped value under the current
+  key with the same TTL/tags. This is the normal follow-up to an invalidation: `invalidateTags`
+  removes entries, the app refetches and `set`s them again.
 * **Inspect live entries** — key, value, remaining TTL and tags, refreshed after every action.
-* **Invalidate by tag** — removes every entry carrying that tag.
+* **Invalidate by tag** — **removes** every entry carrying that tag (it does not mark it stale);
+  use **Refetch** afterwards to repopulate it from a simulated origin.
 * **Prune / Clear / Reset stats** — reclaim expired entries, empty the cache, zero the counters.
 * **Watch the event log** — `set`, `get` hits/misses, `delete`, `invalidate`, `prune`,
   `evict`/`expire`, live as they happen.
