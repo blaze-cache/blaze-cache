@@ -24,7 +24,7 @@ docs/
 
 | Category | Document | Version / date | Description |
 |---|---|---|---|
-| Plan | [0.4.0 Roadmap](plan/0.4.0-roadmap.md) | Target `0.4.0`, staged under `0.4.0-beta.3` | Planned 0.4.0 changes: benchmarks, hybrid/zero-copy memory, multi-tab sync, with stage sequence and acceptance criteria. |
+| Plan | [0.4.0 Roadmap](plan/0.4.0-roadmap.md) | Target `0.4.0`, staged under `0.4.0-beta.3` | Planned 0.4.0 changes: benchmarks, hybrid/zero-copy memory, multi-tab sync and a final data-driven speed-optimization stage, with stage sequence and acceptance criteria. |
 | Plan | [0.5.0 Roadmap](plan/0.5.0-roadmap.md) | Target `0.5.0`, beta → `rc.1` final test | Planned devtools packages for monitoring caches and performing actions: version ladder, design, browser tests, final-test matrix. |
 | Security | [Vulnerability Assessment](security/security-assessment-2026-11-20.md) | 2026-11-20, `0.4.0-beta.2` | Dependency, secret, CI/CD, Wasm memory-safety and application-design review with findings and status. |
 | Benchmarks | [Published Results](benchmarks/RESULTS.md) | 2026-11-20, `0.4.0-beta.3` Stage 1 | Node + browser numbers across five payload sizes and two value representations, raw JSON, methodology and the boundary-cost caveat. |
