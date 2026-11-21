@@ -6,12 +6,17 @@ WebAssembly cache itself — no HTTP layer involved.
 What you can do:
 
 * **Set / Get / Delete** entries with optional TTL (empty = no expiry) and comma-separated tags.
-* **Refetch** — simulates an origin fetch by writing a fresh timestamped value under the current
-  key with the same TTL/tags. This is the normal follow-up to an invalidation: `invalidateTags`
-  removes entries, the app refetches and `set`s them again.
+* **Multi-tab sync** — on by default: each cache opens a `BroadcastChannel` on the shared
+  namespace, so a `set`/`delete`/`clear`/tag-invalidation in one tab reaches every other open
+  tab. The toggle recreates the cache when changed.
+* **Persistence** — on by default: writes go through to IndexedDB (`writeMode: 'immediate'`, so
+  a refetch in another tab sees them at once). Turn it off for a memory-only cache — multi-tab
+  sync still works, but a reload no longer restores entries.
+* **Refetch** — re-reads the key from the shared IndexedDB bucket when persistence is on (and
+  from the other tab when sync is on), or just from the current cache when it is off. It shows
+  the newest value rather than inventing a local one — the normal follow-up to an invalidation.
 * **Inspect live entries** — key, value, remaining TTL and tags, refreshed after every action.
-* **Invalidate by tag** — **removes** every entry carrying that tag (it does not mark it stale);
-  use **Refetch** afterwards to repopulate it from a simulated origin.
+* **Invalidate by tag** — **removes** every entry carrying that tag (it does not mark it stale).
 * **Prune / Clear / Reset stats** — reclaim expired entries, empty the cache, zero the counters.
 * **Watch the event log** — `set`, `get` hits/misses, `delete`, `invalidate`, `prune`,
   `evict`/`expire`, live as they happen.
