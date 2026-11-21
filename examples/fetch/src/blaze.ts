@@ -6,9 +6,14 @@ import wasmUrl from '@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm?url';
 /** Value ownership mode: `wasm` (default, externrefs in the Rust slab) or `js` (values in a JS Map). */
 export type ExampleStorage = 'wasm' | 'js';
 
+const params = new URLSearchParams(window.location.search);
+
 /** Set `?storage=js` in the URL to run the whole demo with `storage: 'js'`. */
-export const storage: ExampleStorage =
-  new URLSearchParams(window.location.search).get('storage') === 'js' ? 'js' : 'wasm';
+export const storage: ExampleStorage = params.get('storage') === 'js' ? 'js' : 'wasm';
+
+/** `?sync=off` disables multi-tab sync; `?persistence=off` makes the cache memory-only. */
+export const multiTab = params.get('sync') !== 'off';
+export const persistence = params.get('persistence') !== 'off';
 
 /**
  * One cache, one `fetch` replacement.
@@ -21,7 +26,8 @@ export const storage: ExampleStorage =
 export const cache: BlazeCache = await createCache({
   capacity: 500,
   storage,
-  persistence: { namespace: `blaze-example-fetch-${storage}`, debounceMs: 250 },
+  persistence: persistence ? { namespace: `blaze-example-fetch-${storage}`, writeMode: 'immediate' } : false,
+  ...(multiTab ? { multiTab: { enabled: true } } : {}),
   wasmUrl,
 });
 
