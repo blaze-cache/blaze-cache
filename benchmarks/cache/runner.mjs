@@ -97,6 +97,7 @@ export async function runBenchmark(options = {}) {
     warmupBatches,
     payload,
     payloadKind,
+    includeStage2 = false,
     filter = null,
     onProgress = null,
     adapters,
@@ -107,7 +108,7 @@ export async function runBenchmark(options = {}) {
   }
   const { createAdapter, adapterLabel } = adapters;
   const factory = createValueFactory({ payload, payloadKind });
-  const scenarios = buildScenarios({ capacity, ...factory, payloadKind }).filter(
+  const scenarios = buildScenarios({ capacity, ...factory, payloadKind, includeStage2 }).filter(
     (scenario) => filter === null || scenario.id.includes(filter),
   );
   if (scenarios.length === 0) {
