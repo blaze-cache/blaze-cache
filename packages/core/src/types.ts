@@ -111,7 +111,17 @@ export type CacheEventType =
   | 'evict'
   | 'expire'
   | 'hit'
-  | 'miss';
+  | 'miss'
+  /** A set applied from another tab (`multiTab`). */
+  | 'remote-set'
+  /** A delete/tombstone applied from another tab (`multiTab`). */
+  | 'remote-delete'
+  /** A clear applied from another tab (`multiTab`). */
+  | 'remote-clear'
+  /** A tag invalidation applied from another tab (`multiTab`). */
+  | 'remote-invalidate'
+  /** A persistence generation rotation applied from another tab (`multiTab`). */
+  | 'remote-rotate';
 
 /**
  * Per-event payload shapes, keyed by {@link CacheEventType}.
@@ -140,6 +150,16 @@ export interface CacheEventMap<V = any> {
   hit: { type: 'hit'; key: string; value: V };
   /** A lookup found nothing — the key was absent or expired. */
   miss: { type: 'miss'; key: string };
+  /** A remote tab's set was applied. `value` is the structured-cloned payload. */
+  'remote-set': { type: 'remote-set'; key: string; value: V };
+  /** A remote tab's delete/tombstone was applied. */
+  'remote-delete': { type: 'remote-delete'; key: string };
+  /** A remote tab cleared its cache. */
+  'remote-clear': { type: 'remote-clear' };
+  /** A remote tab invalidated one or more tags. */
+  'remote-invalidate': { type: 'remote-invalidate' };
+  /** A remote tab rotated the persistence generation. */
+  'remote-rotate': { type: 'remote-rotate' };
 }
 
 /** One event of any type — what a wildcard listener receives. */
@@ -174,7 +194,10 @@ export type CacheListener = (change: CacheChange) => void;
  * `evict`/`expire` carry the dropped entry's live reference (exactly what `get` would have
  * returned a moment earlier); every other member is the very object the event system emits.
  */
-export type CacheMutation<V = any> = CacheEventMap<V>[Exclude<CacheEventType, 'hit' | 'miss'>];
+export type CacheMutation<V = any> = CacheEventMap<V>[Exclude<
+  CacheEventType,
+  'hit' | 'miss' | 'remote-set' | 'remote-delete' | 'remote-clear' | 'remote-invalidate' | 'remote-rotate'
+>];
 
 /**
  * What a {@link BlazeCache.subscribeTag} listener receives: which tag woke it, which of its

@@ -16,6 +16,8 @@ import type {
   TouchOptions,
 } from './types.js';
 import { CacheEventBus } from './events.js';
+import { MultiTabSync } from './multitab.js';
+import type { MultiTabOptions, Version } from './multitab.js';
 import { CacheSubscriptions } from './reactivity.js';
 import { loadBlazeWasm, keyScratch, wasmLinearMemory, WasmCache } from './wasm.js';
 import type { WasmLoadOptions } from './wasm.js';
@@ -107,6 +109,11 @@ export interface BlazeCacheOptions extends WasmLoadOptions {
    * {@link BlazeCache.persistence}.
    */
   persistence?: false | CachePersistenceOptions | IndexedDbPersistenceOptions;
+  /**
+   * Opt-in cross-tab synchronization over `BroadcastChannel`. Off by default; a cache created
+   * without it behaves exactly as before. See {@link MultiTabOptions}.
+   */
+  multiTab?: MultiTabOptions;
   /**
    * Where values live. `wasm` (default) keeps the current by-reference externref contract:
    * the value is stored in the Rust slab and every read crosses the Wasm boundary.
@@ -222,6 +229,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * ordinary string path.
    */
   readonly #raw: boolean;
+  /** Opt-in cross-tab sync. `null` unless `multiTab.enabled` is set. */
+  #multiTab: MultiTabSync<V> | null = null;
+  /** Last version seen for each key — the stale-message guard. */
+  readonly #versions = new Map<string, Version>();
   /** Where values live. See {@link BlazeCacheOptions.storage}. */
   readonly #storage: 'wasm' | 'js';
   /** `key → stable id`, only populated in `storage: 'js'` mode. */
@@ -349,6 +360,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     }
     const cache = new BlazeCache<V>(new WasmCache(options.capacity ?? DEFAULT_CAPACITY), storage);
     await cache.#setupPersistence(options.persistence);
+    cache.#setupMultiTab(options.multiTab);
     return cache;
   }
 
@@ -732,20 +744,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   /** Removes `key`, returning whether it was there. */
   delete(key: string): boolean {
-    let removed: boolean;
-    if (this.#storage === 'js') {
-      removed = this.#wasm.delete(key);
-      if (removed) {
-        const id = this.#ids.get(key);
-        if (id !== undefined) this.#values.delete(id);
-        this.#ids.delete(key);
-      }
-    } else if (this.#raw) {
-      keyScratch.encode(key);
-      removed = this.#wasm.deleteRaw(keyScratch.ptr, keyScratch.len);
-    } else {
-      removed = this.#wasm.delete(key);
-    }
+    const removed = this.#deleteLocal(key);
     if (removed && this.#hasChangeConsumers) this.#notify({ type: 'delete', key });
     return removed;
   }
@@ -780,6 +779,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (this.#storage === 'js') this.#forgetKeys(removed);
     if (removed.length > 0 && this.#hasChangeConsumers) {
       this.#notify({ type: 'invalidate', keys: removed });
+      this.#multiTab?.publishInvalidateTags(tags);
+      this.#multiTab?.markEpoch();
     }
     return removed;
   }
@@ -1047,7 +1048,18 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
-    // Chain instead of guarding: a change landing *during* a flush starts a follow-up pass.
+    // With sync on, IndexedDB writes are serialised across tabs by a Web Lock. A tab that is
+    // still hidden cannot commit a stale snapshot over a peer's newer row: remote mutations
+    // update this tab's queues first, and only the lock holder writes.
+    const locks = (globalThis as { navigator?: { locks?: { request(name: string, fn: () => Promise<void>): Promise<void> } } }).navigator?.locks;
+    if (this.#multiTab?.active && locks) {
+      return locks.request(this.#multiTab.channelName, () => this.#flushChain());
+    }
+    return this.#flushChain();
+  }
+
+  /** The serialised flush chain, without the optional cross-tab Web Lock. */
+  #flushChain(): Promise<void> {
     this.#chain = this.#chain.then(
       () => this.#runFlush(),
       () => this.#runFlush(),
@@ -1077,6 +1089,8 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   /** The one teardown pass: flush, unbind, close storage, free wasm. See {@link BlazeCache.dispose}. */
   async #teardown(): Promise<void> {
+    // Stop listening first: a dispose handshake must not be mistaken for a live peer.
+    this.#multiTab?.close();
     try {
       await this.flush();
     } finally {
@@ -1099,6 +1113,126 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       this.#persist = null;
       this.#wasm.free();
     }
+  }
+
+  // -------------------------------------------------------------- multi-tab (opt-in)
+
+  /**
+   * Attaches the optional cross-tab channel. Runs *after* persistence hydration so a tab that
+   * woke up from IndexedDB can answer a peer's `hello` with its real state.
+   */
+  #setupMultiTab(spec: MultiTabOptions | undefined): void {
+    if (!spec?.enabled) return;
+    if (typeof spec.channel === 'string' && (spec.channel.length === 0 || spec.channel.includes('\0'))) {
+      throw new RangeError('[blaze-cache] multiTab.channel must be a non-empty string without NUL.');
+    }
+    const strategy = spec.strategy ?? 'value';
+    if (strategy !== 'value' && strategy !== 'invalidate') {
+      throw new TypeError(`[blaze-cache] multiTab.strategy must be "value" or "invalidate", got ${String(strategy)}.`);
+    }
+    const self = this;
+    this.#multiTab = new MultiTabSync<V>({
+      channel: spec.channel ?? `blaze-cache:${this.#namespace}\0${this.#generation}`,
+      generation: this.#generation,
+      strategy,
+      bridge: {
+        applySet(key, value, ttlMs, tags) {
+          self.#writeDirect(key, value as V, ttlMs, tags);
+          if (self.#hasChangeConsumers) self.#notify({ type: 'set', key }, false);
+        },
+        applyDelete(key) {
+          if (self.#deleteLocal(key) && self.#hasChangeConsumers) {
+            self.#notify({ type: 'delete', key }, false);
+          }
+        },
+        applyClear() {
+          self.#wasm.clear();
+          self.#ids.clear();
+          self.#values.clear();
+          self.#versions.clear();
+          if (self.#hasChangeConsumers) self.#notify({ type: 'clear' }, false);
+        },
+        applyInvalidateTags(tags) {
+          const removed = self.#wasm.invalidateTags(tags);
+          self.#forgetKeys(removed);
+          if (removed.length > 0 && self.#hasChangeConsumers) {
+            self.#notify({ type: 'invalidate', keys: removed }, false);
+          }
+        },
+        applyRotate(generation) {
+          void self.#rotate(generation, false).catch((error: unknown) => {
+            self.#notifyError(error, '[blaze-cache] remote rotate failed.');
+          });
+        },
+        emitRemote(type, key, value) {
+          self.#emitRemote(type, key, value);
+        },
+        snapshot() {
+          return (self.#wasm.entries() as Array<{
+            key: string;
+            value: V;
+            ttlMs: number | null;
+            tags: string[];
+          }>).map((entry) => ({
+            key: entry.key,
+            value: entry.value,
+            ttlMs: entry.ttlMs,
+            tags: entry.tags,
+            version: self.#versions.get(entry.key),
+          }));
+        },
+        versionOf(key) {
+          return self.#versions.get(key);
+        },
+        setVersion(key, version) {
+          self.#versions.set(key, version);
+        },
+        resetVersions() {
+          self.#versions.clear();
+        },
+      },
+    });
+  }
+
+  /** Emits a `remote-*` event, isolated by the bus exactly like every other listener. */
+  #emitRemote(type: CacheEventType, key: string | null, value: V | undefined): void {
+    if (!this.#events.hears(type)) return;
+    switch (type) {
+      case 'remote-set':
+        this.#events.emit('remote-set', { type: 'remote-set', key: key!, value: value as V });
+        break;
+      case 'remote-delete':
+        this.#events.emit('remote-delete', { type: 'remote-delete', key: key! });
+        break;
+      case 'remote-clear':
+        this.#events.emit('remote-clear', { type: 'remote-clear' });
+        break;
+      case 'remote-invalidate':
+        this.#events.emit('remote-invalidate', { type: 'remote-invalidate' });
+        break;
+      case 'remote-rotate':
+        this.#events.emit('remote-rotate', { type: 'remote-rotate' });
+        break;
+    }
+  }
+
+  /** The un-notified half of `delete()`, shared with the remote-apply path. */
+  #deleteLocal(key: string): boolean {
+    let removed: boolean;
+    if (this.#storage === 'js') {
+      removed = this.#wasm.delete(key);
+      if (removed) {
+        const id = this.#ids.get(key);
+        if (id !== undefined) this.#values.delete(id);
+        this.#ids.delete(key);
+      }
+    } else if (this.#raw) {
+      keyScratch.encode(key);
+      removed = this.#wasm.deleteRaw(keyScratch.ptr, keyScratch.len);
+    } else {
+      removed = this.#wasm.delete(key);
+    }
+    return removed;
   }
 
   // ----------------------------------------------------------- persistence
@@ -1565,7 +1699,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * caller's to drop (`cache.clear()`), and a full-clear queued by that call is already
    * neutralised here — the queues it would have set are gone.
    */
-  async #rotate(generation: string): Promise<void> {
+  async #rotate(generation: string, publish = true): Promise<void> {
     if (typeof generation !== 'string') {
       throw new TypeError(
         `[blaze-cache] persistence.rotate expects a string generation, got ${typeof generation}.`,
@@ -1603,6 +1737,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     }
     this.#statRotations += 1;
     this.#activity({ type: 'rotate', generation });
+    if (publish) {
+      this.#multiTab?.publishRotate(generation);
+      this.#multiTab?.markEpoch();
+    }
   }
 
   /** A fresh snapshot of the counters behind `persistence.stats()`. */
@@ -1677,10 +1815,58 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * the `!#disposed` check inside `#notify` cannot change the outcome here.
    */
   get #hasChangeConsumers(): boolean {
-    return this.#events.size > 0 || this.#persist !== null;
+    return this.#events.size > 0 || this.#persist !== null || this.#multiTab?.active === true;
   }
 
-  #notify(change: CacheChange): void {
+  /**
+   * Bookkeeping + event delivery for a mutation.
+   *
+   * `publish` is `false` only for mutations applied *from* another tab: those still wake local
+   * listeners and the persistence queue, but are never sent back to the channel. That single
+   * flag is what makes echo storms impossible.
+   */
+  #notify(change: CacheChange, publish = true): void {
+    const sync = this.#multiTab;
+    if (publish && sync?.active) {
+      switch (change.type) {
+        case 'set': {
+          const entry = this.#entryFor(change.key);
+          sync.publishSet(
+            change.key,
+            entry?.value,
+            entry?.ttlMs ?? null,
+            entry?.tags ?? [],
+          );
+          const version = sync.lastVersion;
+          if (version) this.#versions.set(change.key, version);
+          break;
+        }
+        case 'touch': {
+          const entry = this.#entryFor(change.key);
+          sync.publishSet(change.key, entry?.value, entry?.ttlMs ?? null, entry?.tags ?? []);
+          const version = sync.lastVersion;
+          if (version) this.#versions.set(change.key, version);
+          break;
+        }
+        case 'delete': {
+          sync.publishDelete(change.key);
+          const version = sync.lastVersion;
+          if (version) this.#versions.set(change.key, version);
+          break;
+        }
+        case 'clear':
+          sync.publishClear();
+          sync.markEpoch();
+          this.#versions.clear();
+          break;
+        case 'invalidate':
+        case 'prune':
+          // Invalidation publishes the original tag list from `invalidateTags()` itself (the
+          // change only carries keys). `prune` is a local reclamation — no peer needs it.
+          break;
+      }
+    }
+
     if (this.#persist && !this.#disposed) {
       switch (change.type) {
         case 'set':
