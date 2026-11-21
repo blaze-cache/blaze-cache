@@ -17,6 +17,10 @@ latency and the server counts its own hits). From there you can watch the adapte
   from the cache.
 * **Invalidate / Clear / Prune** — drop everything the adapter stored (`invalidateTags('ky')`),
   empty the cache, or reclaim expired entries.
+* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+  open with `?storage=js` (or use the toggle in the page header) to run the same demo
+  with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
+  and stable ids. Each mode has its own IndexedDB namespace.
 * **Reload** — entries are persisted to IndexedDB, so the list paints instantly on reload and
   revalidates in the background.
 
@@ -48,7 +52,8 @@ interface and calls the adapter:
 ```ts
 const cache = await createCache({
   capacity: 500,
-  persistence: { namespace: 'blaze-example-ky', debounceMs: 250 },
+  storage, // "wasm" (default) or "js" — from ?storage=js
+  persistence: { namespace: `blaze-example-ky-${storage}`, debounceMs: 250 },
   wasmUrl,                     // `?url` import — the binary ships inside @blaze-cache/core
 });
 

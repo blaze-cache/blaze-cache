@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, cache } from './blaze.js';
+import { api, cache, storage } from './blaze.js';
 
 interface TodosPayload {
   items: string[];
@@ -160,6 +160,15 @@ export default function App() {
           The axios adapter caches GET responses in WebAssembly. Every read pays 400&nbsp;ms of
           artificial latency on a MISS and is instant on a HIT — reload the page and the list
           paints from persisted storage before revalidating.
+        </p>
+        <p className="muted">
+          value storage: <strong>{storage}</strong> —{' '}
+          <a href={`?storage=${storage === 'js' ? 'wasm' : 'js'}`}>
+            switch to {storage === 'js' ? 'wasm (default)' : 'js (hybrid)'}
+          </a>
+          {storage === 'js'
+            ? ' — values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
+            : ' — values are by-reference externrefs held in the Rust slab'}
         </p>
       </header>
 
