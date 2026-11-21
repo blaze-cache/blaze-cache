@@ -21,6 +21,8 @@ refetches in the background — TanStack's own stale-while-revalidate, surviving
   and stable ids. Each mode has its own IndexedDB namespace.
 * **Reload** — entries persist to IndexedDB under `blaze-example-react-query-wasm` / `blaze-example-react-query-js`.
 
+* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+
 ## Run
 
 From the repository root:

@@ -21,6 +21,8 @@ cast the response).
 * **Reload** — entries persist to IndexedDB under `blaze-example-axios-wasm` / `blaze-example-axios-js`; the list paints
   instantly on return.
 
+* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+
 ## Run
 
 From the repository root:
