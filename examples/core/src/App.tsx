@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { cache } from './blaze.js';
-import type { CacheEvent } from '@blaze-cache/core';
+import { createExampleCache } from './blaze.js';
+import type { ExampleStorage } from './blaze.js';
+import type { BlazeCache, CacheEvent } from '@blaze-cache/core';
 
 interface EventLine {
   id: number;
@@ -38,6 +39,13 @@ const truncate = (value: string, limit = 48): string =>
   value.length > limit ? `${value.slice(0, limit)}…` : value;
 
 export default function App() {
+  // The cache is recreated when the storage mode changes: values move between the Rust slab
+  // and a JS Map, so a fresh instance (and its own persistence namespace) is the only honest
+  // way to show what each mode owns.
+  const [storage, setStorage] = useState<ExampleStorage>(() =>
+    new URLSearchParams(window.location.search).get('storage') === 'js' ? 'js' : 'wasm',
+  );
+  const [cache, setCache] = useState<BlazeCache<string> | null>(null);
   const [keyInput, setKeyInput] = useState('greeting');
   const [valueInput, setValueInput] = useState('hello from Blaze Cache');
   const [ttlInput, setTtlInput] = useState('30000');
@@ -60,18 +68,41 @@ export default function App() {
     setEntriesVersion((version) => version + 1);
   };
 
-  const stats = useMemo(() => cache.stats(), [statsVersion]);
-  const entries = useMemo(() => cache.entries().slice(0, 25), [entriesVersion]);
+  const stats = useMemo(
+    () => cache?.stats() ?? null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cache, statsVersion],
+  );
+  const entries = useMemo(
+    () => cache?.entries().slice(0, 25) ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cache, entriesVersion],
+  );
 
-  useEffect(
-    () =>
-      cache.on((event) => {
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    const pending = createExampleCache(storage);
+    void pending.then((next) => {
+      if (!active) {
+        void next.dispose();
+        return;
+      }
+      off = next.on((event) => {
         pushLog(describe(event));
         refresh();
-      }),
+      });
+      setCache(next);
+      pushLog(`storage: ${storage === 'js' ? 'js (values in a JS Map)' : 'wasm (values in the Rust slab)'}`);
+      refresh();
+    });
+    return () => {
+      active = false;
+      off?.();
+      void pending.then((next) => next.dispose());
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  }, [storage]);
 
   const parsedTtl = (): number | null | undefined => {
     const raw = ttlInput.trim();
@@ -87,6 +118,7 @@ export default function App() {
       .filter((tag) => tag.length > 0);
 
   const setEntry = () => {
+    if (!cache) return;
     const key = keyInput.trim();
     if (!key) {
       pushLog('set skipped: key is empty');
@@ -104,6 +136,7 @@ export default function App() {
   };
 
   const getEntry = () => {
+    if (!cache) return;
     const key = keyInput.trim();
     const value = cache.get(key);
     setLookup(value === undefined ? `miss: ${key}` : value);
@@ -111,12 +144,14 @@ export default function App() {
   };
 
   const deleteEntry = () => {
+    if (!cache) return;
     const key = keyInput.trim();
     setLookup(cache.delete(key) ? `deleted ${key}` : `not found: ${key}`);
     refresh();
   };
 
   const invalidateTag = () => {
+    if (!cache) return;
     const tag = tagInput.trim();
     if (!tag) {
       pushLog('invalidate skipped: tag is empty');
@@ -134,8 +169,32 @@ export default function App() {
         <p>
           A WebAssembly cache with SIEVE eviction, TTLs, tags and IndexedDB persistence. Write
           entries, read them back, watch events, then reload — everything under the{' '}
-          <code>blaze-example-core</code> namespace comes back from storage.
+          <code>blaze-example-core-&lt;storage&gt;</code> namespace comes back from storage.
         </p>
+        <div className="row" aria-label="value storage mode">
+          <span className="muted">value storage</span>
+          <button
+            type="button"
+            aria-pressed={storage === 'wasm'}
+            disabled={storage === 'wasm'}
+            onClick={() => setStorage('wasm')}
+          >
+            wasm (default)
+          </button>
+          <button
+            type="button"
+            aria-pressed={storage === 'js'}
+            disabled={storage === 'js'}
+            onClick={() => setStorage('js')}
+          >
+            js (hybrid)
+          </button>
+          <span className="muted">
+            {storage === 'js'
+              ? 'values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
+              : 'values are by-reference externrefs held in the Rust slab'}
+          </span>
+        </div>
       </header>
 
       <section className="panel" aria-labelledby="editor-title">
@@ -209,15 +268,15 @@ export default function App() {
           <button type="button" onClick={invalidateTag}>
             Invalidate tag
           </button>
-          <button type="button" onClick={() => { const removed = cache.prune(); pushLog(`prune → ${removed.length} expired`); refresh(); }}>
+          <button type="button" onClick={() => { if (!cache) return; const removed = cache.prune(); pushLog(`prune → ${removed.length} expired`); refresh(); }}>
             Prune expired
           </button>
-          <button type="button" onClick={() => { cache.clear(); setLookup('cache cleared'); refresh(); }}>
+          <button type="button" onClick={() => { if (!cache) return; cache.clear(); setLookup('cache cleared'); refresh(); }}>
             Clear cache
           </button>
         </div>
         <div className="row">
-          <button type="button" onClick={() => { cache.resetStats(); refresh(); }}>
+          <button type="button" onClick={() => { if (!cache) return; cache.resetStats(); refresh(); }}>
             Reset stats
           </button>
         </div>
@@ -227,19 +286,19 @@ export default function App() {
         <h2 id="stats-title">Cache statistics</h2>
         <dl className="stats">
           <dt>hits</dt>
-          <dd>{stats.hits}</dd>
+          <dd>{stats?.hits ?? 0}</dd>
           <dt>misses</dt>
-          <dd>{stats.misses}</dd>
+          <dd>{stats?.misses ?? 0}</dd>
           <dt>hit rate</dt>
-          <dd>{(stats.hitRate * 100).toFixed(0)}%</dd>
+          <dd>{((stats?.hitRate ?? 0) * 100).toFixed(0)}%</dd>
           <dt>entries</dt>
           <dd>
-            {stats.size} / {stats.capacity}
+            {stats?.size ?? 0} / {stats?.capacity ?? 0}
           </dd>
           <dt>evictions</dt>
-          <dd>{stats.evictions}</dd>
+          <dd>{stats?.evictions ?? 0}</dd>
           <dt>expirations</dt>
-          <dd>{stats.expirations}</dd>
+          <dd>{stats?.expirations ?? 0}</dd>
         </dl>
       </section>
 

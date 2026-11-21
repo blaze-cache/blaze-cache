@@ -9,10 +9,24 @@ import type { BlazeCache } from '@blaze-cache/core';
  * `@blaze-cache/core` from Vite's pre-bundle (see `vite.config.ts`) — pre-bundling would
  * rewrite `import.meta.url`, which is exactly when you pass `wasmUrl` instead.
  *
- * Entries are written straight into one cache, persisted to IndexedDB under the
- * `blaze-example-core` namespace, so a reload paints them back from storage.
+ * Entries are written straight into one cache, persisted to IndexedDB under a
+ * storage-specific namespace, so a reload paints them back from storage. The playground can
+ * recreate the cache in either supported storage mode:
+ *
+ * * `wasm` (default) — values are by-reference externrefs held in the Rust slab.
+ * * `js` — values live in a JS `Map<id, V>`; Wasm keeps metadata and stable entry ids.
+ *
+ * The namespaces differ so switching modes cannot hydrate rows written by the other mode's
+ * value store into a cache that expects a different ownership shape.
  */
-export const cache: BlazeCache<string> = await createCache<string>({
-  capacity: 100,
-  persistence: { namespace: 'blaze-example-core', debounceMs: 250 },
-});
+export type ExampleStorage = 'wasm' | 'js';
+
+export async function createExampleCache(
+  storage: ExampleStorage = 'wasm',
+): Promise<BlazeCache<string>> {
+  return createCache<string>({
+    capacity: 100,
+    storage,
+    persistence: { namespace: `blaze-example-core-${storage}`, debounceMs: 250 },
+  });
+}
