@@ -235,3 +235,138 @@ describe('JS-authoritative storage (opt-in)', () => {
     await cache.dispose();
   });
 });
+
+describe('JS-authoritative storage — conflict safety', () => {
+  it('keeps two js-storage instances fully independent', async () => {
+    const a = await makeCache({ storage: 'js', capacity: 2 });
+    const b = await makeCache({ storage: 'js', capacity: 2 });
+    const va = { owner: 'a' };
+    const vb = { owner: 'b' };
+
+    a.set('shared', va, { tags: ['t'] });
+    b.set('shared', vb, { tags: ['t'] });
+    assert.equal(a.get('shared'), va);
+    assert.equal(b.get('shared'), vb, 'the same key holds a different value in each cache');
+
+    // Evict in one instance; the other must be untouched, including its drop log.
+    const bDrops = [];
+    b.on('evict', (event) => bDrops.push(event));
+    a.set('a2', { id: 2 });
+    a.set('a3', { id: 3 });
+    // `shared` was read in both caches, so SIEVE protects it; the unvisited `a2` is the one
+    // a evicts. The point is that a's state changed while b's did not.
+    assert.equal(a.get('a2'), undefined, 'a evicted its own unvisited entry');
+    assert.equal(a.get('shared'), va, 'a kept its visited entry');
+    assert.equal(b.get('shared'), vb, 'b still holds its value');
+    assert.equal(bDrops.length, 0, 'a’s eviction never reached b’s listeners');
+    assert.deepEqual(b.invalidateTags('t'), ['shared']);
+    assert.equal(b.get('shared'), undefined);
+
+    await a.dispose();
+    await b.dispose();
+  });
+
+  it('never lets a stale id alias a newer entry after slab-slot reuse', async () => {
+    const cache = await makeCache({ storage: 'js', capacity: 1 });
+    const dropped = [];
+    cache.on('evict', (event) => dropped.push(event.value));
+
+    const values = [1, 2, 3, 4, 5].map((id) => ({ id }));
+    for (let i = 0; i < values.length; i += 1) cache.set(`k${i}`, values[i]);
+
+    // Capacity 1 means every write after the first evicts the previous entry. The slab slot is
+    // reused each time, but ids are not — a stale `Map<id, V>` row must never resurrect a value.
+    assert.deepEqual(dropped, values.slice(0, -1));
+    assert.equal(cache.size(), 1);
+    assert.equal(cache.get(`k${values.length - 1}`), values.at(-1));
+    for (let i = 0; i < values.length - 1; i += 1) {
+      assert.equal(cache.get(`k${i}`), undefined, `k${i} was evicted and must stay absent`);
+      assert.equal(cache.entry(`k${i}`), undefined);
+    }
+
+    await cache.dispose();
+  });
+
+  it('coexists with wasm-storage and bytes caches using the same keys and tags', async () => {
+    const js = await makeCache({ storage: 'js', capacity: 4 });
+    const wasm = await makeCache({ capacity: 4 });
+    const bytes = await makeCache({ capacity: 4 });
+    const shared = { id: 'shared' };
+
+    js.set('same', shared, { tags: ['t'] });
+    wasm.set('same', shared, { tags: ['t'] });
+    bytes.setBytes('same', Uint8Array.from([1, 2, 3]), { tags: ['t'] });
+
+    assert.equal(js.get('same'), shared);
+    assert.equal(wasm.get('same'), shared);
+    assert.deepEqual([...bytes.getBytes('same')], [1, 2, 3]);
+
+    // Each cache owns its own tag index; invalidating in one leaves the others intact.
+    assert.deepEqual(js.invalidateTags('t'), ['same']);
+    assert.equal(js.get('same'), undefined);
+    assert.equal(wasm.get('same'), shared);
+    assert.deepEqual([...bytes.getBytes('same')], [1, 2, 3]);
+    assert.deepEqual(wasm.invalidateTags('t'), ['same']);
+    assert.deepEqual(bytes.invalidateTags('t'), ['same']);
+    assert.equal(wasm.get('same'), undefined);
+    assert.equal(bytes.getBytes('same'), undefined);
+
+    await Promise.all([js.dispose(), wasm.dispose(), bytes.dispose()]);
+  });
+
+  it('keeps the JS value Map in sync under interleaved mutations', async () => {
+    const cache = await makeCache({ storage: 'js', capacity: 1000 });
+    // Deterministic PRNG so a failure is reproducible.
+    let state = 0xc0ffee;
+    const random = () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+
+    const keys = Array.from({ length: 12 }, (_, i) => `k${i}`);
+    const expected = new Map(); // key → { value, tags }
+    const values = Array.from({ length: 40 }, (_, i) => ({ id: i }));
+
+    for (let step = 0; step < 400; step += 1) {
+      const key = keys[Math.floor(random() * keys.length)];
+      const op = Math.floor(random() * 8);
+      if (op <= 2) {
+        const value = values[Math.floor(random() * values.length)];
+        const tags = step % 5 === 0 ? ['even'] : [];
+        cache.set(key, value, { tags });
+        expected.set(key, { value, tags });
+      } else if (op === 3) {
+        assert.equal(cache.delete(key), expected.has(key));
+        expected.delete(key);
+      } else if (op === 4) {
+        const wanted = expected.get(key)?.value;
+        assert.equal(cache.get(key), wanted, `get(${key}) at step ${step}`);
+      } else if (op === 5) {
+        assert.equal(cache.has(key), expected.has(key), `has(${key}) at step ${step}`);
+      } else if (op === 6) {
+        const doomed = keys.filter((k) => expected.get(k)?.tags.includes('even'));
+        assert.deepEqual([...cache.invalidateTags('even')].sort(), doomed.sort());
+        for (const key of doomed) expected.delete(key);
+      } else {
+        const batch = keys.slice(0, 4).map((k) => ({ key: k, value: values[step % values.length] }));
+        cache.setMany(batch);
+        for (const entry of batch) expected.set(entry.key, { value: entry.value, tags: [] });
+        assert.deepEqual(
+          cache.getMany(keys),
+          keys.map((k) => expected.get(k)?.value),
+          `getMany at step ${step}`,
+        );
+      }
+
+      // Invariant: what the cache returns is exactly what the model says, with no stale ids.
+      for (const key of keys) {
+        assert.equal(cache.entry(key)?.value, expected.get(key)?.value, `entry(${key}) at step ${step}`);
+      }
+    }
+
+    assert.equal(cache.size(), expected.size);
+    await cache.dispose();
+  });
+});
