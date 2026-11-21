@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, cache, storage } from './blaze.js';
+import { api, cache, storage, multiTab, persistence } from './blaze.js';
+
+/** Rebuilds the demo URL with one option flipped; changing it recreates the page's cache. */
+function withOption(patch: { sync?: string; persistence?: string }): string {
+  const params = new URLSearchParams({
+    storage,
+    sync: multiTab ? 'on' : 'off',
+    persistence: persistence ? 'on' : 'off',
+  });
+  for (const [key, value] of Object.entries(patch)) params.set(key, value);
+  return `?${params.toString()}`;
+}
 
 interface TodosPayload {
   items: string[];
@@ -162,6 +173,18 @@ export default function App() {
           {storage === 'js'
             ? ' — values live in a JS Map; Wasm keeps keys, TTL, tags and stable ids'
             : ' — values are by-reference externrefs held in the Rust slab'}
+        </p>
+        <p className="muted">
+          multi-tab sync: <strong>{multiTab ? 'on' : 'off'}</strong> —{' '}
+          <a href={withOption({ sync: multiTab ? 'off' : 'on' })}>
+            switch sync {multiTab ? 'off' : 'on'}
+          </a>
+          {' · '}persistence: <strong>{persistence ? 'on' : 'off'}</strong> —{' '}
+          <a href={withOption({ persistence: persistence ? 'off' : 'on' })}>
+            switch persistence {persistence ? 'off' : 'on'}
+          </a>
+          <br />
+          sync shares mutations between tabs; persistence off keeps the cache memory-only.
         </p>
       </header>
 
