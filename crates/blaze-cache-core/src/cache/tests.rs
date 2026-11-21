@@ -626,6 +626,7 @@ fn drop_log_records_capacity_evictions() {
     assert_eq!(
         drops,
         vec![Dropped {
+            id: 0,
             key: "a",
             value: 1,
             reason: DropReason::Evicted,
@@ -647,6 +648,7 @@ fn drop_log_records_lazy_expiry_on_access() {
     assert_eq!(
         drops,
         vec![Dropped {
+            id: 0,
             key: "gone",
             value: 7,
             reason: DropReason::Expired,
@@ -776,4 +778,88 @@ fn drop_log_trims_the_oldest_records_at_its_soft_cap() {
     );
     assert_eq!(cache.len(), 1, "the cache itself keeps working");
     assert!(cache.drain_drops().is_empty(), "drain empties the log");
+}
+
+// -------------------------------------------------------- stable entry ids (JS-authoritative)
+
+#[test]
+fn ids_are_unique_preserved_on_overwrite_and_reported_in_drops() {
+    let mut cache = Cache::new(4);
+    let (_, first) = cache.insert_with_id("a", 1, EntryOptions::new());
+    let (displaced, second) = cache.insert_with_id("b", 2, EntryOptions::new());
+    assert_eq!(first, 0);
+    assert_eq!(second, 1);
+    assert!(displaced.is_none());
+
+    // An overwrite keeps the id: a host's `Map<id, V>` can update in place.
+    assert_eq!(cache.insert_with_id("a", 3, EntryOptions::new()).1, first);
+    assert_eq!(cache.get("a"), Some(&3));
+    assert_eq!(cache.entry("a").unwrap().id, first);
+    assert_eq!(cache.entry_by_id(second).unwrap().key, &"b");
+
+    // Explicit removal is known to the caller and must NOT appear in the drop log…
+    assert_eq!(cache.remove("a"), Some(3));
+    assert!(cache.drain_drops().is_empty());
+    assert!(
+        !cache.get_by_id(first),
+        "the removed id is gone from the index"
+    );
+    assert!(cache.get_by_id(second), "other ids are unaffected");
+
+    // …but a capacity eviction does, and it carries the stable id for the host's Map.
+    cache.set_capacity(1);
+    cache.set_drop_tracking(true);
+    assert_eq!(cache.insert_with_id("c", 4, EntryOptions::new()).1, 2);
+    let drops = cache.drain_drops();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(
+        drops[0].id, second,
+        "the drop carries the stable id, not a slab slot"
+    );
+}
+
+#[test]
+fn by_id_lookups_record_stats_and_reclaim_expired_entries() {
+    let mut cache = Cache::new(4);
+    cache.set_drop_tracking(true);
+    cache.insert_with_id("forever", 1, EntryOptions::new());
+    let id = cache
+        .insert_with_id(
+            "dying",
+            2,
+            EntryOptions::new().ttl(Duration::from_millis(1)),
+        )
+        .1;
+
+    assert!(cache.get_by_id(id));
+    assert!(cache.peek_by_id(id));
+    assert!(cache.has_by_id(id));
+    assert!(!cache.get_by_id(999), "unknown ids are misses");
+    let stats = cache.stats();
+    assert_eq!(stats.hits, 1);
+    assert_eq!(stats.misses, 1);
+
+    sleep(5);
+    assert!(
+        !cache.get_by_id(id),
+        "expired ids are reclaimed through the drop log"
+    );
+    let drops = cache.drain_drops();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(drops[0].id, id);
+    assert_eq!(drops[0].reason, DropReason::Expired);
+}
+
+#[test]
+fn slab_slots_are_reused_but_ids_never_are() {
+    let mut cache = Cache::new(1);
+    let first = cache.insert_with_id("a", 1, EntryOptions::new()).1;
+    cache.insert("b", 2); // evicts "a", freeing its slab slot
+    let third = cache.insert_with_id("c", 3, EntryOptions::new()).1;
+    assert_ne!(
+        third, first,
+        "a reused slab slot must not resurrect an old id"
+    );
+    assert!(!cache.get_by_id(first));
+    assert!(cache.get_by_id(third));
 }

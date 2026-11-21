@@ -37,6 +37,8 @@ pub struct EntryMeta {
 pub struct EntryView<'a, K, V> {
     pub key: &'a K,
     pub value: &'a V,
+    /// Stable entry identity (see [`Cache::get_by_id`]).
+    pub id: u32,
     pub meta: EntryMeta,
 }
 
@@ -60,6 +62,9 @@ pub enum DropReason {
 pub struct Dropped<K, V> {
     pub key: K,
     pub value: V,
+    /// The id of the dropped entry, so an external value store can release it without a key
+    /// lookup (JS-authoritative mode).
+    pub id: u32,
     pub reason: DropReason,
 }
 
@@ -101,6 +106,12 @@ pub struct Cache<K, V> {
     /// read and write, cache keys are short strings, and foldhash keeps per-process random
     /// seeding (hash-flooding resistance) at a fraction of SipHash's cost.
     index: HashMap<K, usize, foldhash::fast::RandomState>,
+    /// Stable id → slab slot. Unlike slab slots, ids are never reused, so a host holding a
+    /// `Map<id, V>` can never see a stale id alias a newer entry.
+    by_id: HashMap<u32, usize, foldhash::fast::RandomState>,
+    /// Next id to hand out. Wraps only after 2³² writes; on wrap the oldest id is evicted from
+    /// this index before reuse so no two live entries ever share one.
+    next_id: u32,
     queue: Sieve,
     tags: TagIndex,
     capacity: usize,
@@ -140,6 +151,11 @@ where
                 capacity.min(INITIAL_INDEX_RESERVATION),
                 foldhash::fast::RandomState::default(),
             ),
+            by_id: HashMap::with_capacity_and_hasher(
+                capacity.min(INITIAL_INDEX_RESERVATION),
+                foldhash::fast::RandomState::default(),
+            ),
+            next_id: 0,
             queue: Sieve::new(),
             tags: TagIndex::default(),
             capacity,
@@ -182,7 +198,7 @@ where
     ///
     /// Explicit `remove` / `invalidate_tags` / `clear` / `prune` never call this — the
     /// caller initiated those and already knows the outcome.
-    fn log_drop(&mut self, key: K, value: V, reason: DropReason) {
+    fn log_drop(&mut self, id: u32, key: K, value: V, reason: DropReason) {
         if self.track_drops {
             // Soft cap: a listener that stops draining must not grow this forever.
             // Older records are sacrificed first (FIFO semantics).
@@ -190,7 +206,12 @@ where
             if self.drops.len() >= MAX_DROPS {
                 self.drops.pop_front();
             }
-            self.drops.push_back(Dropped { key, value, reason });
+            self.drops.push_back(Dropped {
+                id,
+                key,
+                value,
+                reason,
+            });
         }
     }
 
@@ -274,8 +295,8 @@ where
             if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
                 self.stats.expirations += 1;
                 self.stats.misses += 1;
-                let (key, value) = self.free(idx);
-                self.log_drop(key, value, DropReason::Expired);
+                let (key, value, id) = self.free(idx);
+                self.log_drop(id, key, value, DropReason::Expired);
                 return None;
             }
         }
@@ -313,6 +334,79 @@ where
         V: Clone,
     {
         self.get(key).cloned()
+    }
+
+    /// Looks up a live entry by its stable [`id`](EntryView::id) instead of by key.
+    ///
+    /// This is the hot path for JS-authoritative storage: the host holds the value in a JS
+    /// `Map<id, V>` and only needs wasm to answer "is this id still alive, and was it read?".
+    /// No key string crosses the boundary. An expired id counts as a miss and is reclaimed
+    /// eagerly, exactly as [`get`](Self::get) does for an expired key.
+    pub fn get_by_id(&mut self, id: u32) -> bool {
+        let Some(&idx) = self.by_id.get(&id) else {
+            self.stats.misses += 1;
+            return false;
+        };
+        if self.ttl_count > 0 {
+            let now = Instant::now();
+            if self.nodes[idx].as_ref().expect("live slot").is_expired(now) {
+                self.stats.expirations += 1;
+                self.stats.misses += 1;
+                let (key, value, id) = self.free(idx);
+                self.log_drop(id, key, value, DropReason::Expired);
+                return false;
+            }
+        }
+        self.nodes[idx].as_mut().expect("live slot").visited = true;
+        self.stats.hits += 1;
+        true
+    }
+
+    /// [`peek`](Self::peek) by stable id: observational, no stats and no eviction bookkeeping.
+    #[must_use]
+    pub fn peek_by_id(&self, id: u32) -> bool {
+        let Some(&idx) = self.by_id.get(&id) else {
+            return false;
+        };
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        if self.ttl_count == 0 {
+            return true;
+        }
+        !node.is_expired(Instant::now())
+    }
+
+    /// `true` when `id` is present and not expired. Never mutates the cache or its counters.
+    #[must_use]
+    pub fn has_by_id(&self, id: u32) -> bool {
+        self.peek_by_id(id)
+    }
+
+    /// Full view of a live entry by id. Used by hosts that own the value but still need the
+    /// key/TTL/tag metadata to answer `entry(id)` and persistence queries.
+    pub fn entry_by_id(&self, id: u32) -> Option<EntryView<'_, K, V>> {
+        let idx = *self.by_id.get(&id)?;
+        let node = self.nodes[idx].as_ref().expect("live slot");
+        let now = if self.ttl_count == 0 {
+            None
+        } else {
+            let now = Instant::now();
+            if node.is_expired(now) {
+                return None;
+            }
+            Some(now)
+        };
+        Some(EntryView {
+            key: &node.key,
+            value: &node.value,
+            id: node.id,
+            meta: self.meta_for(node, now),
+        })
+    }
+
+    /// Records a miss without a lookup, for hosts that own the key index (JS-authoritative
+    /// mode) and therefore never send an absent key across the boundary.
+    pub fn record_miss(&mut self) {
+        self.stats.misses += 1;
     }
 
     /// `true` when the key is present **and** not expired. Never mutates the cache.
@@ -392,6 +486,7 @@ where
         Some(EntryView {
             key: &node.key,
             value: &node.value,
+            id: node.id,
             meta: self.meta_for(node, now),
         })
     }
@@ -414,6 +509,7 @@ where
             out.push(EntryView {
                 key: &node.key,
                 value: &node.value,
+                id: node.id,
                 meta: self.meta_for(node, now),
             });
         }
@@ -509,6 +605,14 @@ where
     /// Re-inserting an existing key refreshes its value, its deadline **and** its tags, and
     /// re-queues it as the newest entry (unvisited).
     pub fn insert_with(&mut self, key: K, value: V, options: EntryOptions) -> Option<V> {
+        self.insert_with_id(key, value, options).0
+    }
+
+    /// [`insert_with`](Self::insert_with) that also reports the entry's stable id.
+    ///
+    /// An overwrite keeps its id (only the value/TTL/tags change), so a host that stores values
+    /// by id can update in place instead of re-indexing.
+    pub fn insert_with_id(&mut self, key: K, value: V, options: EntryOptions) -> (Option<V>, u32) {
         let existing = self.index.get(&key).copied();
         self.insert_at(existing, Some(key), value, options)
     }
@@ -521,6 +625,20 @@ where
     /// up by slice first), where the owned variant would clone the key purely to throw it
     /// away again on the very next line.
     pub fn insert_borrowed<Q>(&mut self, key: &Q, value: V, options: EntryOptions) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized + ToOwned<Owned = K>,
+    {
+        self.insert_borrowed_id(key, value, options).0
+    }
+
+    /// [`insert_borrowed`](Self::insert_borrowed) that also reports the stable id.
+    pub fn insert_borrowed_id<Q>(
+        &mut self,
+        key: &Q,
+        value: V,
+        options: EntryOptions,
+    ) -> (Option<V>, u32)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized + ToOwned<Owned = K>,
@@ -543,7 +661,7 @@ where
         owned: Option<K>,
         value: V,
         options: EntryOptions,
-    ) -> Option<V> {
+    ) -> (Option<V>, u32) {
         // The clock is only needed when a TTL is actually requested — a plain write must not
         // pay a wasm→JS `performance.now()` call just to discard the result.
         let expires_at = options
@@ -551,8 +669,9 @@ where
             .filter(|ttl| !ttl.is_zero())
             .and_then(|ttl| Instant::now().checked_add(ttl));
 
-        let previous = match existing {
+        let (previous, id) = match existing {
             Some(idx) => {
+                let id = self.nodes[idx].as_ref().expect("live slot").id;
                 // An overwrite never grows the index, so nothing can be swept away here:
                 // the ids interned now are exactly the ones the node ends up keeping.
                 let new_tag_ids = self
@@ -584,10 +703,13 @@ where
                 // A write makes the entry the newest one; it has not been visited yet.
                 self.queue.unlink(&mut self.nodes, idx);
                 self.queue.push_back(&mut self.nodes, idx);
-                Some(std::mem::replace(
-                    &mut self.nodes[idx].as_mut().expect("live slot").value,
-                    value,
-                ))
+                (
+                    Some(std::mem::replace(
+                        &mut self.nodes[idx].as_mut().expect("live slot").value,
+                        value,
+                    )),
+                    id,
+                )
             }
             None => {
                 let key = owned.expect("insert_at: a new entry needs an owned key");
@@ -602,7 +724,15 @@ where
                 let new_tag_ids = self
                     .tags
                     .intern_all(options.tags_ref().iter().map(String::as_str));
-                let node = Node::new(key.clone(), value, expires_at, new_tag_ids);
+                // Ids are never reused, so a stale host-side `Map<id, V>` entry cannot alias a
+                // newer cache entry. On the (astronomically unlikely) wrap, drop the old id's
+                // index row first so no two live nodes answer to the same id.
+                let id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                if let Some(old_idx) = self.by_id.remove(&id) {
+                    debug_assert!(!self.nodes[old_idx].as_ref().is_some_and(|n| n.id == id));
+                }
+                let node = Node::new(key.clone(), value, id, expires_at, new_tag_ids);
                 let idx = match self.free.pop() {
                     Some(idx) => {
                         self.nodes[idx] = Some(node);
@@ -614,6 +744,7 @@ where
                     }
                 };
                 self.index.insert(key, idx);
+                self.by_id.insert(id, idx);
                 // Read the ids back from the published node so `new_tag_ids` could be moved
                 // into it instead of cloned. The node is in the slab before we attach, so a
                 // failure here cannot leave a half-built entry registered under a tag.
@@ -622,12 +753,13 @@ where
                 }
                 self.queue.push_back(&mut self.nodes, idx);
                 self.shift_ttl(None, expires_at);
-                None
+                (None, id)
             }
         };
 
         debug_assert_eq!(self.queue.len(), self.index.len(), "queue/index desync");
-        previous
+        debug_assert_eq!(self.by_id.len(), self.index.len(), "id/index desync");
+        (previous, id)
     }
 
     /// Marks `key` as recently used and optionally renews its deadline.
@@ -683,7 +815,7 @@ where
         // second time on every delete.
         let idx = self.index.remove(key)?;
         self.unlink(idx);
-        let (_, value) = self.release(idx, false);
+        let (_, value, _) = self.release(idx, false);
         self.stats.invalidations += 1;
         Some(value)
     }
@@ -702,7 +834,7 @@ where
         }
         let mut removed = Vec::with_capacity(members.len());
         for idx in members {
-            let (key, _) = self.free(idx);
+            let (key, _, _) = self.free(idx);
             removed.push(key);
         }
         self.stats.invalidations += removed.len() as u64;
@@ -727,7 +859,7 @@ where
             .collect();
         let mut removed = Vec::with_capacity(expired.len());
         for idx in expired {
-            let (key, _) = self.free(idx);
+            let (key, _, _) = self.free(idx);
             removed.push(key);
         }
         self.stats.expirations += removed.len() as u64;
@@ -740,6 +872,7 @@ where
         self.nodes.clear();
         self.free.clear();
         self.index.clear();
+        self.by_id.clear();
         self.queue = Sieve::new();
         self.tags.clear();
         // `release()` never runs for these nodes, so reset the fast-path counter here.
@@ -770,7 +903,7 @@ where
     }
 
     /// Unlinks `idx` if it is still linked, then frees its slab slot.
-    fn free(&mut self, idx: usize) -> (K, V) {
+    fn free(&mut self, idx: usize) -> (K, V, u32) {
         self.unlink(idx);
         self.release(idx, true)
     }
@@ -787,18 +920,19 @@ where
     /// `indexed` says whether the index still maps the key to `idx`: `false` when the
     /// caller already removed the entry under its own query key (see [`remove`](Self::remove)),
     /// which is what keeps a delete down to a single hash of the key.
-    fn release(&mut self, idx: usize, indexed: bool) -> (K, V) {
+    fn release(&mut self, idx: usize, indexed: bool) -> (K, V, u32) {
         let node = self.nodes[idx].take().expect("release of a free slot");
         // Single point where an entry dies: keep the fast-path counter in step.
         self.shift_ttl(node.expires_at, None);
         if indexed {
             self.index.remove(&node.key);
         }
+        self.by_id.remove(&node.id);
         for &id in &node.tags {
             self.tags.detach(id, idx);
         }
         self.free.push(idx);
-        (node.key, node.value)
+        (node.key, node.value, node.id)
     }
 
     /// Applies SIEVE once and counts *why* the entry died.
@@ -813,13 +947,13 @@ where
         let idx = self.queue.evict_candidate(&mut self.nodes, now)?;
         let was_expired =
             now.is_some_and(|now| self.nodes[idx].as_ref().expect("live slot").is_expired(now));
-        let (key, value) = self.release(idx, true); // `evict_candidate` already unlinked it
+        let (key, value, id) = self.release(idx, true); // `evict_candidate` already unlinked it
         if was_expired {
             self.stats.expirations += 1;
-            self.log_drop(key, value, DropReason::Expired);
+            self.log_drop(id, key, value, DropReason::Expired);
         } else {
             self.stats.evictions += 1;
-            self.log_drop(key, value, DropReason::Evicted);
+            self.log_drop(id, key, value, DropReason::Evicted);
         }
         Some(())
     }
