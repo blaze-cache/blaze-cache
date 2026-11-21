@@ -11,8 +11,13 @@ What you can do:
 * **Prune / Clear / Reset stats** — reclaim expired entries, empty the cache, zero the counters.
 * **Watch the event log** — `set`, `get` hits/misses, `delete`, `invalidate`, `prune`,
   `evict`/`expire`, live as they happen.
-* **Reload** — entries persist to IndexedDB under the `blaze-example-core` namespace and are
-  painted back from storage on the next visit.
+* **Switch value storage** — `wasm` (default) keeps values as by-reference externrefs in the
+  Rust slab; `js (hybrid)` keeps them in a JS `Map<id, V>` while Wasm owns keys, TTL, tags and
+  stable ids. Switching recreates the cache under a storage-specific IndexedDB namespace
+  (`blaze-example-core-wasm` / `blaze-example-core-js`), so the two modes never mix values.
+  Every operation — tags, events, stats, persistence — behaves the same in both.
+* **Reload** — entries persist to IndexedDB under that namespace and are painted back from
+  storage on the next visit.
 
 ## Run
 
@@ -36,9 +41,10 @@ serves it (this example has no fake API — the playground writes straight into 
 
 ## What it wires up
 
-`src/blaze.ts` creates one `BlazeCache<string>` with 100 entries of capacity, persisted to
-IndexedDB (`namespace: 'blaze-example-core'`, 250 ms debounce), loading the wasm binary
-through the package's zero-config default — no `?url` import, the binary ships inside
-`@blaze-cache/core` and is fetched relative to the package's own module (which is why
-`vite.config.ts` keeps the package out of the pre-bundle). `src/App.tsx` renders the
-playground and subscribes to every cache event with `cache.on(...)`.
+`src/blaze.ts` exposes `createExampleCache(storage)` — a `BlazeCache<string>` with 100 entries
+of capacity and a 250 ms IndexedDB debounce, under the `blaze-example-core-<storage>`
+namespace. It loads the wasm binary through the package's zero-config default — no `?url`
+import, the binary ships inside `@blaze-cache/core` and is fetched relative to the package's
+own module (which is why `vite.config.ts` keeps the package out of the pre-bundle).
+`src/App.tsx` renders the playground; it recreates the cache and re-subscribes with
+`cache.on(...)` whenever the storage toggle changes, disposing the previous instance.
