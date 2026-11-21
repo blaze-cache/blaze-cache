@@ -33,6 +33,7 @@ Options
   --payload=NAME    tiny | small | medium | large | massive (default small)
   --payload-kind=K  object | bytes                        (default object)
   --matrix          run all five payload sizes and merge the results
+  --stage2          include the opt-in js-storage / bytes adapters in the matrix
   --filter=TEXT     only scenarios whose id contains TEXT
   --quick           fast smoke run
   --list            print the scenario ids and exit
@@ -42,7 +43,7 @@ Options
 `;
 
 /** Options this CLI accepts — anything else is a typo that must not pass silently. */
-const KNOWN_FLAGS = new Set(['help', 'list', 'quick', 'json', 'matrix']);
+const KNOWN_FLAGS = new Set(['help', 'list', 'quick', 'json', 'matrix', 'stage2']);
 const KNOWN_OPTIONS = new Set([
   'capacity',
   'samples',
@@ -205,6 +206,7 @@ async function main() {
     warmupBatches: quick ? 2 : DEFAULTS.warmupBatches,
     payload,
     payloadKind,
+    includeStage2: flags.has('stage2'),
     adapters,
     filter: values.filter ?? null,
     onProgress: ({ scenario, adapter, payload: cell }) =>

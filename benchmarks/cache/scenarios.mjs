@@ -127,6 +127,7 @@ export function buildScenarios(options = {}) {
     valueFor = (index) => ({ id: index }),
     payload = 'small',
     payloadKind = 'object',
+    includeStage2 = false,
   } = opts;
 
   const keys = makeKeys(capacity);
@@ -465,13 +466,18 @@ export function buildScenarios(options = {}) {
       },
     },
   ];
-  // Stage 2 is opt-in: include both new modes in every scenario that already measures blaze.
-  // The bytes adapter only makes sense for Uint8Array payloads and point operations (it has no
-  // persistence surface), so it is excluded from the async persistence/TTL scenarios.
-  for (const scenario of scenariosResults) {
-    if (!scenario.adapters.includes('blaze')) continue;
-    scenario.adapters.push('blaze-js');
-    if (payloadKind === 'bytes' && !scenario.async) scenario.adapters.push('blaze-bytes');
+  // Stage 2 adapters are opt-in in the *suite* as well as in the product. Besides matching
+  // "opt-in by default", this keeps bench:ci honest: a js-storage validation fills 10 000
+  // entries and grows the shared Wasm heap, which measurably slows the blaze row measured
+  // after it in the same process. The gate must compare like-for-like against the base tree,
+  // so these rows live in the separate Stage 2 reports until a per-adapter process isolation
+  // is in place. Use `--stage2` (or the stage2Json reports) to see them.
+  if (includeStage2) {
+    for (const scenario of scenariosResults) {
+      if (!scenario.adapters.includes('blaze')) continue;
+      scenario.adapters.push('blaze-js');
+      if (payloadKind === 'bytes' && !scenario.async) scenario.adapters.push('blaze-bytes');
+    }
   }
 
   return scenariosResults;
