@@ -17,7 +17,7 @@ import type {
 } from './types.js';
 import { CacheEventBus } from './events.js';
 import { CacheSubscriptions } from './reactivity.js';
-import { loadBlazeWasm, keyScratch, WasmCache } from './wasm.js';
+import { loadBlazeWasm, keyScratch, wasmLinearMemory, WasmCache } from './wasm.js';
 import type { WasmLoadOptions } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
 import type {
@@ -107,6 +107,17 @@ export interface BlazeCacheOptions extends WasmLoadOptions {
    * {@link BlazeCache.persistence}.
    */
   persistence?: false | CachePersistenceOptions | IndexedDbPersistenceOptions;
+  /**
+   * Where values live. `wasm` (default) keeps the current by-reference externref contract:
+   * the value is stored in the Rust slab and every read crosses the Wasm boundary.
+   *
+   * `js` is an **opt-in** hybrid: wasm keeps keys, TTL, tags, SIEVE and stable entry ids, while
+   * values live in a JS `Map<id, V>`. Hot reads call wasm by id (no key string marshalled) and
+   * then look the value up locally. By-reference semantics, tag invalidation, events,
+   * persistence and `entry()`/`entries()` behave identically; only the ownership of values
+   * moves from the slab to JS. Feature is off unless you ask for it.
+   */
+  storage?: 'wasm' | 'js';
 }
 
 /** The options {@link createCache} takes — an alias for {@link BlazeCacheOptions}. */
@@ -211,6 +222,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * ordinary string path.
    */
   readonly #raw: boolean;
+  /** Where values live. See {@link BlazeCacheOptions.storage}. */
+  readonly #storage: 'wasm' | 'js';
+  /** `key → stable id`, only populated in `storage: 'js'` mode. */
+  readonly #ids = new Map<string, number>();
+  /** `id → value`, only populated in `storage: 'js'` mode. */
+  readonly #values = new Map<number, V>();
   readonly #events = new CacheEventBus<V>(() => this.#syncDropTracking());
   /**
    * Mirrors {@link CacheEventBus.wantsDrops} onto the wasm core: `true` while the Rust
@@ -283,9 +300,16 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   readonly #control: PersistenceControl;
 
-  private constructor(wasm: WasmCache) {
+  private constructor(wasm: WasmCache, storage: 'wasm' | 'js' = 'wasm') {
     this.#wasm = wasm;
     this.#raw = keyScratch.enabled;
+    this.#storage = storage;
+    // JS-authoritative mode needs the drop log permanently on: self-initiated evictions and
+    // expirations are how JS learns which ids to delete from its value Map.
+    if (storage === 'js') {
+      this.#wasm.setDropTracking(true);
+      this.#dropTracking = true;
+    }
     // The getters below need *the instance* for private-field access: inside an object
     // literal `this` would be the control object itself.
     const self = this;
@@ -317,7 +341,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   static async create<V = any>(options: BlazeCacheOptions = {}): Promise<BlazeCache<V>> {
     await loadBlazeWasm(options);
-    const cache = new BlazeCache<V>(new WasmCache(options.capacity ?? DEFAULT_CAPACITY));
+    const storage = options.storage ?? 'wasm';
+    if (storage !== 'wasm' && storage !== 'js') {
+      throw new TypeError(`[blaze-cache] storage must be "wasm" or "js", got ${String(storage)}.`);
+    }
+    const cache = new BlazeCache<V>(new WasmCache(options.capacity ?? DEFAULT_CAPACITY), storage);
     await cache.#setupPersistence(options.persistence);
     return cache;
   }
@@ -334,7 +362,18 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   get(key: string): V | undefined {
     let value: V | undefined;
-    if (this.#raw) {
+    if (this.#storage === 'js') {
+      const id = this.#ids.get(key);
+      // Hot path: no key string crosses the boundary — wasm only answers "is this id alive?".
+      if (id === undefined) {
+        this.#wasm.recordMiss();
+      } else {
+        const alive = this.#wasm.getById(id);
+        value = alive ? this.#values.get(id) : undefined;
+        // An expired id is reclaimed inside wasm; #drainDrops releases its value and hands
+        // listeners the real reference, so do not delete it here first.
+      }
+    } else if (this.#raw) {
       // Pre-encode into the shared scratch: a repeated key costs one identity check instead
       // of a wasm-side malloc + copy + free (see `KeyScratch`).
       keyScratch.encode(key);
@@ -362,7 +401,17 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * emits one `hit`/`miss` event per key.
    */
   getMany(keys: string[]): (V | undefined)[] {
-    const values = this.#wasm.getMany(keys) as (V | undefined)[];
+    const values: (V | undefined)[] =
+      this.#storage === 'js'
+        ? keys.map((key) => {
+            const id = this.#ids.get(key);
+            if (id === undefined) {
+              this.#wasm.recordMiss();
+              return undefined;
+            }
+            return this.#wasm.getById(id) ? this.#values.get(id) : undefined;
+          })
+        : (this.#wasm.getMany(keys) as (V | undefined)[]);
     const wantsHit = this.#events.hears('hit');
     const wantsMiss = this.#events.hears('miss');
     if (wantsHit || wantsMiss) {
@@ -389,6 +438,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * exactly like {@link BlazeCache.get}.
    */
   peek(key: string): V | undefined {
+    if (this.#storage === 'js') {
+      const id = this.#ids.get(key);
+      return id !== undefined && this.#wasm.peekById(id) ? this.#values.get(id) : undefined;
+    }
     return this.#wasm.peek(key) as V | undefined;
   }
 
@@ -405,6 +458,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
   /** `true` when `key` is present and not expired. Never changes eviction state. */
   has(key: string): boolean {
+    if (this.#storage === 'js') {
+      const id = this.#ids.get(key);
+      return id !== undefined && this.#wasm.hasById(id);
+    }
     return this.#wasm.has(key);
   }
 
@@ -413,6 +470,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * Crosses the wasm boundary once instead of once per key.
    */
   hasMany(keys: string[]): boolean[] {
+    if (this.#storage === 'js') {
+      return keys.map((key) => {
+        const id = this.#ids.get(key);
+        return id !== undefined && this.#wasm.hasById(id);
+      });
+    }
     const flags = this.#wasm.hasMany(keys) as unknown as Uint8Array;
     const result = new Array<boolean>(flags.length);
     for (let i = 0; i < flags.length; i += 1) result[i] = flags[i] === 1;
@@ -424,7 +487,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * field is the cache's live reference — see *Value ownership* on the class.
    */
   entry(key: string): CacheEntry<V> | undefined {
-    return this.#wasm.entry(key) as CacheEntry<V> | undefined;
+    return this.#entryFor(key);
   }
 
   /**
@@ -432,6 +495,20 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * references — see *Value ownership* on the class.
    */
   entries(): CacheEntry<V>[] {
+    if (this.#storage === 'js') {
+      const metas = this.#wasm.entriesMeta() as Array<{
+        key: string;
+        id: number;
+        ttlMs: number | null;
+        tags: string[];
+      }>;
+      return metas.map(({ key, id, ttlMs, tags }) => ({
+        key,
+        value: this.#values.get(id) as V,
+        ttlMs,
+        tags,
+      }));
+    }
     return this.#wasm.entries() as CacheEntry<V>[];
   }
 
@@ -491,7 +568,13 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // Untagged writes share `NO_TAGS` (see its doc).
     const tags = (options?.tags ?? NO_TAGS) as string[];
     const ttlMs = options?.ttlMs ?? null;
-    if (this.#raw && tags.length === 0) {
+    if (this.#storage === 'js') {
+      // wasm keeps metadata and hands back a stable id; the value itself never crosses the
+      // boundary. An overwrite keeps its id, so this is one Map.set rather than two.
+      const id = this.#wasm.setMeta(key, ttlMs, tags);
+      this.#values.set(id, value);
+      this.#ids.set(key, id);
+    } else if (this.#raw && tags.length === 0) {
       // Untagged write via the pre-encoded-key path: skips both the key allocation and the
       // empty-tags array crossing — the two avoidable costs of the string `set`.
       keyScratch.encode(key);
@@ -533,19 +616,100 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       tagOffsets[i + 1] = tagsFlat.length;
     }
 
-    this.#wasm.setMany(
-      keys,
-      values as unknown as any[],
-      ttlMs,
-      tagsFlat,
-      tagOffsets,
-    );
+    if (this.#storage === 'js') {
+      const ids = this.#wasm.setManyMeta(keys, ttlMs as unknown as Float64Array, tagsFlat, tagOffsets);
+      for (let i = 0; i < n; i += 1) {
+        const id = ids[i]!;
+        this.#values.set(id, entries[i]!.value);
+        this.#ids.set(entries[i]!.key, id);
+      }
+    } else {
+      this.#wasm.setMany(
+        keys,
+        values as unknown as any[],
+        ttlMs,
+        tagsFlat,
+        tagOffsets,
+      );
+    }
 
     if (this.#hasChangeConsumers) {
       for (let i = 0; i < n; i += 1) this.#notify({ type: 'set', key: entries[i]!.key });
     }
     // One sweep can span the whole batch — drain once, after every write landed.
     if (this.#dropTracking) this.#drainDrops();
+  }
+
+  // ------------------------------------------------------------- binary value mode (opt-in)
+
+  /**
+   * Stores raw bytes **directly in Wasm linear memory** and reads them back as a zero-copy
+   * `Uint8Array` view. Only available in the default `storage: 'wasm'` mode.
+   *
+   * The payload is copied once into a reserved arena region (a raw byte copy, not JS object
+   * serialisation); `getBytes` then returns a view onto that region with no copy at all. This
+   * is the only genuine zero-copy value path, because arbitrary JS objects cannot live in
+   * linear memory. Prefer `getBytesCopy` when a view must outlive the next write or eviction.
+   */
+  setBytes(
+    key: string,
+    value: ArrayBufferView | ArrayBuffer,
+    options?: SetOptions,
+  ): boolean {
+    if (this.#storage !== 'wasm') {
+      throw new Error('[blaze-cache] setBytes requires storage: "wasm" (the default).');
+    }
+    const source = ArrayBuffer.isView(value)
+      ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+      : new Uint8Array(value);
+    const length = source.byteLength;
+    const ptr = WasmCache.bytesReserve(length);
+    const memory = wasmLinearMemory();
+    new Uint8Array(memory.buffer, ptr, length).set(source);
+
+    const tags = (options?.tags ?? NO_TAGS) as string[];
+    const ttlMs = options?.ttlMs ?? null;
+    const stored = this.#wasm.setBytes(key, ptr, length, ttlMs, tags);
+    if (stored && this.#hasChangeConsumers) this.#notify({ type: 'set', key });
+    if (this.#dropTracking) this.#drainDrops();
+    return stored;
+  }
+
+  /**
+   * A zero-copy view of a byte value, or `undefined` when the key is missing or was written
+   * with `set`. Counts a hit/miss exactly like {@link BlazeCache.get}.
+   *
+   * The view is valid until the next Wasm allocation: `memory.grow` detaches the old
+   * `ArrayBuffer`, and an evicted region may be reused. Read it promptly, or use
+   * {@link BlazeCache.getBytesCopy} for a long-lived snapshot.
+   */
+  getBytes(key: string): Uint8Array | undefined {
+    const coordinates = this.#wasm.getBytes(key) as [number, number] | undefined;
+    if (!coordinates) {
+      if (this.#events.hears('miss')) this.#events.emit('miss', { type: 'miss', key });
+      if (this.#dropTracking) this.#drainDrops();
+      return undefined;
+    }
+    const value = new Uint8Array(
+      wasmLinearMemory().buffer,
+      coordinates[0],
+      coordinates[1],
+    );
+    if (this.#events.hears('hit')) this.#events.emit('hit', { type: 'hit', key, value: value as V });
+    if (this.#dropTracking) this.#drainDrops();
+    return value;
+  }
+
+  /** An owned copy of a byte value — safe to retain across writes, eviction and `memory.grow`. */
+  getBytesCopy(key: string): Uint8Array | undefined {
+    const value = this.#wasm.getBytesCopy(key);
+    if (value === undefined) {
+      if (this.#events.hears('miss')) this.#events.emit('miss', { type: 'miss', key });
+    } else if (this.#events.hears('hit')) {
+      this.#events.emit('hit', { type: 'hit', key, value: value as V });
+    }
+    if (this.#dropTracking) this.#drainDrops();
+    return value;
   }
 
   /**
@@ -567,7 +731,14 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   /** Removes `key`, returning whether it was there. */
   delete(key: string): boolean {
     let removed: boolean;
-    if (this.#raw) {
+    if (this.#storage === 'js') {
+      removed = this.#wasm.delete(key);
+      if (removed) {
+        const id = this.#ids.get(key);
+        if (id !== undefined) this.#values.delete(id);
+        this.#ids.delete(key);
+      }
+    } else if (this.#raw) {
       keyScratch.encode(key);
       removed = this.#wasm.deleteRaw(keyScratch.ptr, keyScratch.len);
     } else {
@@ -584,7 +755,14 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   deleteMany(keys: string[]): boolean[] {
     const removed = this.#wasm.deleteMany(keys) as unknown as Uint8Array;
     const result = new Array<boolean>(removed.length);
-    for (let i = 0; i < removed.length; i += 1) result[i] = removed[i] === 1;
+    for (let i = 0; i < removed.length; i += 1) {
+      result[i] = removed[i] === 1;
+      if (result[i] && this.#storage === 'js') {
+        const id = this.#ids.get(keys[i]!);
+        if (id !== undefined) this.#values.delete(id);
+        this.#ids.delete(keys[i]!);
+      }
+    }
     if (this.#hasChangeConsumers) {
       for (let i = 0; i < removed.length; i += 1) {
         if (result[i]) this.#notify({ type: 'delete', key: keys[i]! });
@@ -597,6 +775,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   invalidateTags(...tags: string[]): string[] {
     if (tags.length === 0) return [];
     const removed = this.#wasm.invalidateTags(tags);
+    if (this.#storage === 'js') this.#forgetKeys(removed);
     if (removed.length > 0 && this.#hasChangeConsumers) {
       this.#notify({ type: 'invalidate', keys: removed });
     }
@@ -606,6 +785,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   /** Removes every expired entry, returning the removed keys. */
   prune(): string[] {
     const removed = this.#wasm.prune();
+    if (this.#storage === 'js') this.#forgetKeys(removed);
     if (removed.length > 0 && this.#hasChangeConsumers) {
       this.#notify({ type: 'prune', keys: removed });
     }
@@ -615,6 +795,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   /** Empties the cache. */
   clear(): void {
     this.#wasm.clear();
+    if (this.#storage === 'js') {
+      this.#ids.clear();
+      this.#values.clear();
+    }
     if (this.#hasChangeConsumers) this.#notify({ type: 'clear' });
   }
 
@@ -1078,13 +1262,13 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
           }
           // Opt-in resurrection: the original TTL window, restarted from now. Fresh but
           // not forever — and never the dead remainder, which reads as "never expires".
-          this.#wasm.set(record.key, record.value, record.ttlMs, record.tags);
+          this.#writeDirect(record.key, record.value as V, record.ttlMs, record.tags);
           restored += 1;
           continue;
         }
         // Direct wasm call: hydration is not a user write, so it emits no event — nor any
         // change for persistence (the adapter it came from is already up to date).
-        this.#wasm.set(record.key, record.value, remaining, record.tags);
+        this.#writeDirect(record.key, record.value as V, remaining, record.tags);
         restored += 1;
       } catch (error) {
         skip('the wasm core refused the write', record, error);
@@ -1192,7 +1376,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
 
       const records: PersistedRecord[] = [];
       for (const key of dirty.slice(-this.#maxRecords)) {
-        const entry = this.#wasm.entry(key);
+        const entry = this.#entryFor(key);
         if (!entry) continue;
         records.push({
           key,
@@ -1526,6 +1710,51 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     this.#events.emit(change);
   }
 
+  // ------------------------------------------------- JS-authoritative internals (storage: 'js')
+
+  /** Drops a key/id pair from the local value store. Idempotent. */
+  #forget(key: string, id: number): void {
+    this.#values.delete(id);
+    this.#ids.delete(key);
+  }
+
+  /** Same, for a batch of keys returned by wasm. */
+  #forgetKeys(keys: string[]): void {
+    for (const key of keys) {
+      const id = this.#ids.get(key);
+      if (id !== undefined) this.#values.delete(id);
+      this.#ids.delete(key);
+    }
+  }
+
+  /** Full entry with the value from the right store — used by `entry()` and persistence. */
+  #entryFor(key: string): CacheEntry<V> | undefined {
+    if (this.#storage === 'js') {
+      const meta = this.#wasm.entryMeta(key) as
+        | { key: string; id: number; ttlMs: number | null; tags: string[] }
+        | undefined;
+      if (!meta) return undefined;
+      return {
+        key: meta.key,
+        value: this.#values.get(meta.id) as V,
+        ttlMs: meta.ttlMs,
+        tags: meta.tags,
+      };
+    }
+    return this.#wasm.entry(key) as CacheEntry<V> | undefined;
+  }
+
+  /** A write from hydrate: metadata + value, with no event or persistence bookkeeping. */
+  #writeDirect(key: string, value: V, ttlMs: number | null, tags: readonly string[]): void {
+    if (this.#storage === 'js') {
+      const id = this.#wasm.setMeta(key, ttlMs, tags as string[]);
+      this.#values.set(id, value);
+      this.#ids.set(key, id);
+    } else {
+      this.#wasm.set(key, value, ttlMs, tags as string[]);
+    }
+  }
+
   /**
    * Emits `evict`/`expire` for every entry the Rust core reclaimed during the operation
    * that just ran — a capacity sweep inside `set`, or lazy TTL reclamation inside `get`.
@@ -1536,12 +1765,18 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   #drainDrops(): void {
     const drops = this.#wasm.drainDrops() as Array<{
+      id: number;
       key: string;
       value: V;
       reason: 'evict' | 'expire';
     }>;
     for (let i = 0; i < drops.length; i += 1) {
-      const { key, value, reason } = drops[i]!;
+      const { id, key, reason } = drops[i]!;
+      // The wasm drop's `value` is a sentinel in JS-authoritative mode; the real value lives
+      // in `#values` under the id the core now reports. Release it and deliver it to listeners
+      // exactly as in wasm mode, so `evict`/`expire` stay indistinguishable to callers.
+      const value = (this.#storage === 'js' ? this.#values.get(id) : drops[i]!.value) as V;
+      if (this.#storage === 'js') this.#forget(key, id);
       if (reason === 'evict') this.#events.emit('evict', { type: 'evict', key, value });
       else this.#events.emit('expire', { type: 'expire', key, value });
     }
@@ -1559,7 +1794,9 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   #syncDropTracking(): void {
     if (this.#disposed) return;
-    const wanted = this.#events.wantsDrops;
+    // In JS-authoritative mode the drop log is structural (it drives Map cleanup), not just
+    // an observer convenience — it must stay on even with zero event listeners.
+    const wanted = this.#storage === 'js' || this.#events.wantsDrops;
     if (wanted === this.#dropTracking) return;
     this.#dropTracking = wanted;
     this.#wasm.setDropTracking(wanted);
