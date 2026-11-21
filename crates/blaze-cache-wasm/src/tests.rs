@@ -621,3 +621,87 @@ fn raw_key_methods_ignore_invalid_utf8_in_the_scratch() {
     assert_eq!(cache.get_raw(base, 1), None, "nor be served as a key");
     assert!(!cache.delete_raw(base, 1));
 }
+
+// -------------------------------------------------------- binary values + JS-authoritative ids
+
+#[wasm_bindgen_test]
+fn bytes_round_trip_through_the_arena() {
+    let mut cache = BlazeCache::new(4.0);
+    let ptr = BlazeCache::bytes_reserve(8) as usize;
+    assert!(blaze_cache_core::bytes::copy_into(ptr, 8, b"abcdefgh"));
+
+    assert!(cache.set_bytes("bin", ptr as u32, 8, None, vec![]));
+    let coordinates: Array = cache
+        .get_bytes("bin")
+        .expect("a bytes entry")
+        .unchecked_into();
+    assert_eq!(coordinates.length(), 2);
+    let read_ptr = coordinates.get(0).as_f64().unwrap() as usize;
+    let read_len = coordinates.get(1).as_f64().unwrap() as usize;
+    assert_eq!((read_ptr, read_len), (ptr, 8));
+    assert_eq!(
+        blaze_cache_core::bytes::to_vec(read_ptr, read_len).unwrap(),
+        b"abcdefgh"
+    );
+
+    let copy: js_sys::Uint8Array = cache.get_bytes_copy("bin").expect("copy");
+    assert_eq!(copy.length(), 8);
+    assert_eq!(copy.get_index(0), b'a');
+
+    // A `set` entry is not readable as bytes, and vice versa.
+    cache.set("obj", JsValue::from_str("x"), None, vec![]);
+    assert!(cache.get_bytes("obj").is_none());
+    assert!(
+        cache.get("bin").is_none(),
+        "bytes entries are not externrefs"
+    );
+}
+
+#[wasm_bindgen_test]
+fn set_bytes_rejects_a_stale_pointer_without_trapping() {
+    let mut cache = BlazeCache::new(4.0);
+    assert!(!cache.set_bytes("bad", u32::MAX, 8, None, vec![]));
+    assert_eq!(cache.size(), 0);
+    assert!(cache.get_bytes("bad").is_none());
+}
+
+#[wasm_bindgen_test]
+fn id_metadata_and_by_id_lookups_drive_js_authoritative_mode() {
+    let mut cache = BlazeCache::new(4.0);
+    let first = cache.set_meta("a", None, vec!["tag".into()]);
+    assert_eq!(first, 0);
+    assert_eq!(
+        cache.set_meta("a", Some(5_000.0), vec!["tag".into()]),
+        first,
+        "overwrite keeps id"
+    );
+    let second = cache.set_meta("b", None, vec![]);
+    assert_eq!(second, 1);
+
+    assert!(cache.get_by_id(first));
+    assert!(cache.peek_by_id(first));
+    assert!(cache.has_by_id(second));
+    assert!(!cache.get_by_id(999));
+
+    let meta = cache.entry_meta("a");
+    assert_eq!(field(&meta, "id").as_f64(), Some(0.0));
+    // `field` would panic on a missing/undefined property; read this one directly.
+    let value = js_sys::Reflect::get(&meta, &JsValue::from_str("value")).unwrap();
+    assert!(value.is_undefined(), "no value is stored in wasm");
+    assert_eq!(field(&meta, "key").as_string().as_deref(), Some("a"));
+    assert_eq!(cache.entries_meta().length(), 2);
+}
+
+#[wasm_bindgen_test]
+fn drain_drops_carries_the_stable_id() {
+    let mut cache = BlazeCache::new(1.0);
+    cache.set_drop_tracking(true);
+    let first = cache.set_meta("a", None, vec![]);
+    cache.set_meta("b", None, vec![]); // evicts "a"
+
+    let drops = cache.drain_drops();
+    assert_eq!(drops.length(), 1);
+    let drop: JsValue = drops.get(0);
+    assert_eq!(field(&drop, "id").as_f64(), Some(first as f64));
+    assert_eq!(field(&drop, "key").as_string().as_deref(), Some("a"));
+}
