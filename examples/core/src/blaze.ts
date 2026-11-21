@@ -18,15 +18,24 @@ import type { BlazeCache } from '@blaze-cache/core';
  *
  * The namespaces differ so switching modes cannot hydrate rows written by the other mode's
  * value store into a cache that expects a different ownership shape.
+ *
+ * Multi-tab sync is enabled here so two open copies of this page behave like two tabs: a `set`
+ * in one reaches the other over BroadcastChannel, and both write through to the same IndexedDB
+ * bucket. Writes use `immediate` mode so a Refetch in another tab sees the value right away.
+ * Persistence itself is optional — turning it off keeps the cache memory-only (sync still works).
  */
 export type ExampleStorage = 'wasm' | 'js';
 
 export async function createExampleCache(
   storage: ExampleStorage = 'wasm',
+  multiTab = true,
+  persistence = true,
 ): Promise<BlazeCache<string>> {
+  const namespace = `blaze-example-core-${storage}`;
   return createCache<string>({
     capacity: 100,
     storage,
-    persistence: { namespace: `blaze-example-core-${storage}`, debounceMs: 250 },
+    persistence: persistence ? { namespace, writeMode: 'immediate' } : false,
+    ...(multiTab ? { multiTab: { enabled: true } } : {}),
   });
 }
