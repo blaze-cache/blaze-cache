@@ -188,6 +188,15 @@ class KeyScratch {
 /** The one key scratch shared by every {@link WasmCache} instance (see {@link KeyScratch}). */
 export const keyScratch = new KeyScratch();
 
+/**
+ * The current Wasm linear memory, for the opt-in bytes value mode. Read it fresh for every
+ * view: `memory.grow` swaps the `ArrayBuffer` and detaches views built from the old one.
+ * Offsets themselves are stable (see `bytesReserve` in the binding).
+ */
+export function wasmLinearMemory(): WebAssembly.Memory {
+  return WasmCache.wasmMemory() as WebAssembly.Memory;
+}
+
 let pending: Promise<void> | null = null;
 
 /**
