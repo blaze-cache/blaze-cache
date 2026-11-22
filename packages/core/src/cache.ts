@@ -19,7 +19,7 @@ import { CacheEventBus } from './events.js';
 import { MultiTabSync } from './multitab.js';
 import type { MultiTabOptions, Version } from './multitab.js';
 import { CacheSubscriptions } from './reactivity.js';
-import { loadBlazeWasm, keyScratch, wasmLinearMemory, WasmCache } from './wasm.js';
+import { loadBlazeWasm, keyScratch, tagScratch, wasmLinearMemory, WasmCache } from './wasm.js';
 import type { WasmLoadOptions } from './wasm.js';
 import { indexedDbPersistence } from './persistence/indexeddb.js';
 import type {
@@ -588,6 +588,32 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       const id = this.#wasm.setMeta(key, ttlMs, tags);
       this.#values.set(id, value);
       this.#ids.set(key, id);
+    } else if (this.#raw && tagScratch.enabled && tags.length === 1) {
+      // Single-tag fast path: no offset table and no cache-key allocation on the host.
+      keyScratch.encode(key);
+      const encoded = tagScratch.encodeOne(tags[0]!);
+      this.#wasm.setRawWithOneTag(
+        keyScratch.ptr,
+        keyScratch.len,
+        value,
+        ttlMs,
+        encoded.ptr,
+        encoded.len,
+      );
+    } else if (this.#raw && tagScratch.enabled && tags.length > 0) {
+      // Tagged raw path: key and tag bytes are already in Wasm memory, so neither is
+      // marshalled per write. Offsets are validated again inside the binding.
+      keyScratch.encode(key);
+      const encoded = tagScratch.encode(tags);
+      this.#wasm.setRawWithTags(
+        keyScratch.ptr,
+        keyScratch.len,
+        value,
+        ttlMs,
+        encoded.ptr,
+        encoded.len,
+        encoded.offsetsView,
+      );
     } else if (this.#raw && tags.length === 0) {
       // Untagged write via the pre-encoded-key path: skips both the key allocation and the
       // empty-tags array crossing — the two avoidable costs of the string `set`.
@@ -637,6 +663,22 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
         this.#values.set(id, entries[i]!.value);
         this.#ids.set(entries[i]!.key, id);
       }
+    } else if (this.#raw && tagScratch.enabled) {
+      // Keys and tags are encoded into the two scratch buffers; only the values array crosses
+      // the boundary. This is the batched counterpart of the tagged raw write path.
+      const encodedKeys = keyScratch.encodeMany(keys);
+      const groups = entries.map((entry) => entry.options?.tags ?? []);
+      const encodedTags = tagScratch.encodeRanges(groups);
+      this.#wasm.setManyRaw(
+        encodedKeys.ptr,
+        encodedKeys.offsets,
+        encodedKeys.lengths,
+        values as unknown as any[],
+        ttlMs,
+        encodedTags.ptr,
+        encodedTags.len,
+        encodedTags.offsetsView,
+      );
     } else {
       this.#wasm.setMany(
         keys,
@@ -712,6 +754,31 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (this.#events.hears('hit')) this.#events.emit('hit', { type: 'hit', key, value: value as V });
     if (this.#dropTracking) this.#drainDrops();
     return value;
+  }
+
+  /**
+   * Advanced bytes-producer path: stores an already-reserved arena region by its `(ptr, len)`
+   * coordinates, with no JS→Wasm copy. Obtain `ptr` from `WasmCache.bytesReserve(len)` and write
+   * the payload into `new Uint8Array(wasmLinearMemory().buffer, ptr, len)` first — a decoder can
+   * therefore write straight into Wasm memory and hand the region to the cache. A rejected or
+   * stale pointer stores nothing and returns `false`. The public `setBytes` remains the safe
+   * default; this entry point is opt-in and shares its view-lifetime contract.
+   */
+  setBytesReserved(
+    key: string,
+    ptr: number,
+    length: number,
+    options?: SetOptions,
+  ): boolean {
+    if (this.#storage !== 'wasm') {
+      throw new Error('[blaze-cache] setBytesReserved requires storage: "wasm" (the default).');
+    }
+    const tags = (options?.tags ?? NO_TAGS) as string[];
+    const ttlMs = options?.ttlMs ?? null;
+    const stored = this.#wasm.setBytes(key, ptr, length, ttlMs, tags);
+    if (stored && this.#hasChangeConsumers) this.#notify({ type: 'set', key });
+    if (this.#dropTracking) this.#drainDrops();
+    return stored;
   }
 
   /** An owned copy of a byte value — safe to retain across writes, eviction and `memory.grow`. */

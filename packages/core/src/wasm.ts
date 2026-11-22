@@ -1,6 +1,7 @@
 import init, {
   setPanicHook,
   ensureScratch,
+  ensureTagScratch,
   BlazeCache as WasmCache,
 } from '../pkg/blaze_cache_wasm.js';
 import type { InitInput, InitOutput } from '../pkg/blaze_cache_wasm.js';
@@ -183,10 +184,200 @@ class KeyScratch {
     this.#cap = want;
     this.#view = null; // the old view addressed the pre-growth buffer
   }
+
+  /** Encodes a whole batch of keys into one contiguous region for `setManyRaw`. */
+  encodeMany(keys: readonly string[]): {
+    ptr: number;
+    offsets: Uint32Array;
+    lengths: Uint32Array;
+  } {
+    const need = Math.max(SCRATCH_MIN, keys.reduce((sum, key) => sum + key.length * 3, 0));
+    if (need > this.#cap) this.#grow(need);
+    const view = this.#viewForWrite();
+    const offsets = new Uint32Array(keys.length);
+    const lengths = new Uint32Array(keys.length);
+    let position = 0;
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i]!;
+      const written = encodeInto(view, this.#base + position, key);
+      offsets[i] = position;
+      lengths[i] = written;
+      position += written;
+    }
+    this.#last = null;
+    return { ptr: this.#base, offsets, lengths };
+  }
+
+  /** Returns a current view of wasm memory, rebuilding it after `memory.grow`. */
+  #viewForWrite(): Uint8Array {
+    const memory = this.#memory!;
+    let view = this.#view;
+    if (view === null || view.buffer !== memory.buffer) {
+      view = new Uint8Array(memory.buffer);
+      this.#view = view;
+    }
+    return view;
+  }
+}
+
+/** Writes one JS string into `view` at `offset` and returns the UTF-8 byte count. */
+function encodeInto(view: Uint8Array, offset: number, value: string): number {
+  const n = value.length;
+  let j = 0;
+  for (; j < n; j += 1) {
+    const code = value.charCodeAt(j);
+    if (code > 0x7f) break;
+    view[offset + j] = code;
+  }
+  return j === n ? n : textEncoder.encodeInto(value, view.subarray(offset, offset + n * 3)).written;
+}
+
+/**
+ * Flat tag-name scratch for the tagged raw-write path. One encode per distinct tag list means
+ * the common `full-featured` workload crosses the boundary with two pointers and an offset
+ * table instead of a freshly allocated `Vec<String>` on every `set`.
+ */
+class TagScratch {
+  ptr = 0;
+  len = 0;
+  offsets = new Uint32Array(1);
+  /** A zero-copy view of exactly the live offset range — avoids a subarray per write. */
+  offsetsView = new Uint32Array(1);
+  enabled = false;
+
+  #memory: WebAssembly.Memory | null = null;
+  #view: Uint8Array | null = null;
+  #base = 0;
+  #cap = 0;
+  #last: string | null = null;
+
+  setup(exports: InitOutput): void {
+    const memory = exports.memory;
+    if (!(memory instanceof WebAssembly.Memory)) return;
+    if (
+      typeof exports.blazecache_setRawWithTags !== 'function' ||
+      typeof exports.blazecache_setManyRaw !== 'function' ||
+      typeof exports.ensureTagScratch !== 'function'
+    ) {
+      return;
+    }
+    try {
+      this.#base = ensureTagScratch(SCRATCH_MIN);
+      this.#cap = SCRATCH_MIN;
+    } catch {
+      return;
+    }
+    this.#memory = memory;
+    this.enabled = true;
+  }
+
+  /** Makes the flat tag buffer and its offset table describe `tags`. */
+  encode(tags: readonly string[]): this {
+    // The hot path writes exactly one tag; use it directly as the cache key instead of
+    // allocating a JSON string on every set.
+    const cacheKey = tags.length === 1 ? `1:${tags[0]}` : JSON.stringify(tags);
+    if (cacheKey === this.#last) return this;
+
+    const need = Math.max(
+      SCRATCH_MIN,
+      tags.reduce((sum, tag) => sum + tag.length * 3, 0),
+    );
+    if (need > this.#cap) {
+      this.#base = ensureTagScratch(need);
+      this.#cap = need;
+      this.#view = null;
+    }
+    const memory = this.#memory!;
+    let view = this.#view;
+    if (view === null || view.buffer !== memory.buffer) {
+      view = new Uint8Array(memory.buffer);
+      this.#view = view;
+    }
+    if (this.offsets.length < tags.length + 1) this.offsets = new Uint32Array(tags.length + 1);
+    let position = 0;
+    this.offsets[0] = 0;
+    for (let i = 0; i < tags.length; i += 1) {
+      position += encodeInto(view, this.#base + position, tags[i]!);
+      this.offsets[i + 1] = position;
+    }
+    this.len = position;
+    this.ptr = this.#base;
+    this.offsetsView = this.offsets.subarray(0, tags.length + 1);
+    this.#last = cacheKey;
+    return this;
+  }
+
+  /** Encodes a single tag — the common case — with no cache-key allocation. */
+  encodeOne(tag: string): this {
+    if (this.#last === tag && this.len > 0) return this;
+    const need = Math.max(SCRATCH_MIN, tag.length * 3);
+    if (need > this.#cap) {
+      this.#base = ensureTagScratch(need);
+      this.#cap = need;
+      this.#view = null;
+    }
+    const memory = this.#memory!;
+    let view = this.#view;
+    if (view === null || view.buffer !== memory.buffer) {
+      view = new Uint8Array(memory.buffer);
+      this.#view = view;
+    }
+    this.len = encodeInto(view, this.#base, tag);
+    this.ptr = this.#base;
+    if (this.offsets.length < 2) this.offsets = new Uint32Array(2);
+    this.offsets[0] = 0;
+    this.offsets[1] = this.len;
+    this.offsetsView = this.offsets.subarray(0, 2);
+    this.#last = tag;
+    return this;
+  }
+
+  /**
+   * Encodes per-entry tag groups into one flat buffer with one offset per entry (plus a final
+   * sentinel), matching the `tag_offsets` contract of `setManyRaw`.
+   */
+  encodeRanges(groups: readonly (readonly string[])[]): this {
+    const cacheKey = `ranges:${JSON.stringify(groups)}`;
+    if (cacheKey === this.#last) return this;
+    const need = Math.max(
+      SCRATCH_MIN,
+      groups.reduce((sum, group) => sum + group.reduce((n, tag) => n + tag.length * 3, 0), 0),
+    );
+    if (need > this.#cap) {
+      this.#base = ensureTagScratch(need);
+      this.#cap = need;
+      this.#view = null;
+    }
+    const memory = this.#memory!;
+    let view = this.#view;
+    if (view === null || view.buffer !== memory.buffer) {
+      view = new Uint8Array(memory.buffer);
+      this.#view = view;
+    }
+    if (this.offsets.length < groups.length + 1) {
+      this.offsets = new Uint32Array(groups.length + 1);
+    }
+    let position = 0;
+    this.offsets[0] = 0;
+    for (let i = 0; i < groups.length; i += 1) {
+      for (const tag of groups[i]!) {
+        position += encodeInto(view, this.#base + position, tag);
+      }
+      this.offsets[i + 1] = position;
+    }
+    this.len = position;
+    this.ptr = this.#base;
+    this.offsetsView = this.offsets.subarray(0, groups.length + 1);
+    this.#last = cacheKey;
+    return this;
+  }
 }
 
 /** The one key scratch shared by every {@link WasmCache} instance (see {@link KeyScratch}). */
 export const keyScratch = new KeyScratch();
+
+/** The one tag scratch shared by every {@link WasmCache} instance. */
+export const tagScratch = new TagScratch();
 
 /**
  * The current Wasm linear memory, for the opt-in bytes value mode. Read it fresh for every
@@ -216,6 +407,7 @@ export function initBlazeWasm(input?: WasmInitInput): Promise<void> {
     // resolved value is the module's exports — needed for the raw-key scratch.
     const exports = await init({ module_or_path: input ?? wasmUrl });
     keyScratch.setup(exports);
+    tagScratch.setup(exports);
     // Forward Rust panics to `console.error` so devtools shows something useful.
     setPanicHook();
   })();
