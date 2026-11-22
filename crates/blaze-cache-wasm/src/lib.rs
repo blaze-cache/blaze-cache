@@ -36,6 +36,11 @@ thread_local! {
     /// `BlazeCache`), which is exactly what lets the TypeScript wrapper keep a single
     /// "last encoded key" cache across cache instances.
     static KEY_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+
+    /// Flat UTF-8 tag names, written once per distinct tag list by the host and addressed by
+    /// `(offset, length)` pairs. Same lifetime rules as [`KEY_SCRATCH`] but kept separate so
+    /// a tag buffer can never alias a key pointer.
+    static TAG_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What a cache entry holds.
@@ -505,6 +510,134 @@ impl BlazeCache {
         });
     }
 
+    /// Fast path for the overwhelmingly common single-tag write: no offset vector crosses
+    /// the boundary, just the tag's `(ptr, len)` in the flat scratch.
+    #[wasm_bindgen(js_name = setRawWithOneTag)]
+    pub fn set_raw_with_one_tag(
+        &mut self,
+        ptr: u32,
+        len: u32,
+        value: JsValue,
+        ttl_ms: Option<f64>,
+        tag_ptr: u32,
+        tag_len: u32,
+    ) -> bool {
+        with_raw_key(ptr, len, |key| {
+            let mut options = TAG_SCRATCH.with(|cell| {
+                let scratch = cell.borrow();
+                let base = scratch.as_ptr() as usize;
+                let mut options = EntryOptions::new();
+                if let (Some(start), Some(end)) = (
+                    (tag_ptr as usize).checked_sub(base),
+                    (tag_ptr as usize)
+                        .checked_sub(base)
+                        .and_then(|start| start.checked_add(tag_len as usize)),
+                ) {
+                    if let Some(bytes) = scratch.get(start..end) {
+                        if let Ok(tag) = std::str::from_utf8(bytes) {
+                            options = options.tag(tag);
+                        }
+                    }
+                }
+                options
+            });
+            if let Some(ms) = ttl_ms {
+                if ms.is_finite() && ms > 0.0 {
+                    options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+                }
+            }
+            self.inner.insert_borrowed(key, Value::Ref(value), options);
+        })
+        .is_some()
+    }
+
+    /// Tagged write whose key and tags are already encoded into the two shared scratch
+    /// buffers by the host. This is the hot path for the "full-featured" workload: it avoids
+    /// both `passStringToWasm0` for the key and the `Vec<String>` tag crossing.
+    ///
+    /// `tag_offsets` is the offset table from [`ensureTagScratch`]: `tag_offsets[i]..tag_offsets[i+1]`
+    /// indexes the flat tag bytes. Non-monotonic or out-of-range pairs degrade to no tags,
+    /// exactly like `setMany` — a hostile host can never trap the instance.
+    // Flat boundary signatures avoid an extra object allocation per batch.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setRawWithTags)]
+    pub fn set_raw_with_tags(
+        &mut self,
+        ptr: u32,
+        len: u32,
+        value: JsValue,
+        ttl_ms: Option<f64>,
+        tag_ptr: u32,
+        tag_len: u32,
+        tag_offsets: Vec<u32>,
+    ) -> bool {
+        with_raw_key(ptr, len, |key| {
+            let mut options = with_raw_tags(tag_ptr, tag_len, &tag_offsets, |tags| {
+                let mut options = EntryOptions::new();
+                for tag in tags {
+                    options = options.tag(*tag);
+                }
+                options
+            })
+            .unwrap_or_default();
+            if let Some(ms) = ttl_ms {
+                if ms.is_finite() && ms > 0.0 {
+                    options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+                }
+            }
+            self.inner.insert_borrowed(key, Value::Ref(value), options);
+        })
+        .is_some()
+    }
+
+    /// Batch form of [`set_raw_with_tags`](Self::set_raw_with_tags): keys and tags both come
+    /// from scratch buffers, values stay a `JsValue` array (one boundary crossing for all).
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setManyRaw)]
+    pub fn set_many_raw(
+        &mut self,
+        keys_ptr: u32,
+        key_offsets: Vec<u32>,
+        key_lengths: Vec<u32>,
+        values: JsValue,
+        ttl_ms: Vec<f64>,
+        tag_ptr: u32,
+        tag_len: u32,
+        tag_offsets: Vec<u32>,
+    ) {
+        let values_arr = Array::from(&values);
+        // `keys` borrows KEY_SCRATCH; each tag range borrows TAG_SCRATCH only for the
+        // duration of its closure, so no reference outlives its scratch buffer.
+        with_raw_keys(keys_ptr, &key_offsets, &key_lengths, |keys| {
+            let len = keys
+                .len()
+                .min(values_arr.length() as usize)
+                .min(ttl_ms.len());
+            for i in 0..len {
+                let start = tag_offsets.get(i).copied().unwrap_or(0);
+                let end = tag_offsets
+                    .get(i + 1)
+                    .copied()
+                    .unwrap_or(start)
+                    .clamp(start, tag_len);
+                let mut options = with_raw_tags(tag_ptr, tag_len, &[start, end], |tags| {
+                    let mut options = EntryOptions::new();
+                    for tag in tags {
+                        options = options.tag(*tag);
+                    }
+                    options
+                })
+                .unwrap_or_default();
+                let ms = ttl_ms[i];
+                if ms.is_finite() && ms > 0.0 {
+                    options = options.ttl(Duration::from_millis((ms as u64).max(1)));
+                }
+                self.inner
+                    .insert_borrowed(keys[i], Value::Ref(values_arr.get(i as u32)), options);
+            }
+        });
+    }
+
     /// [`delete`](Self::delete) with a pre-encoded key. See [`getRaw`](Self::get_raw) for
     /// the host contract.
     #[wasm_bindgen(js_name = deleteRaw)]
@@ -715,6 +848,77 @@ fn with_raw_key<R>(ptr: u32, len: u32, f: impl FnOnce(&str) -> R) -> Option<R> {
         let end = start.checked_add(len as usize)?;
         let bytes = scratch.get(start..end)?;
         Some(f(std::str::from_utf8(bytes).ok()?))
+    })
+}
+
+/// Reserves `len` bytes in the flat tag scratch and returns its absolute pointer.
+#[wasm_bindgen(js_name = ensureTagScratch)]
+pub fn ensure_tag_scratch(len: usize) -> u32 {
+    TAG_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        if scratch.len() < len {
+            scratch.resize(len, 0);
+        }
+        scratch.as_mut_ptr() as u32
+    })
+}
+
+/// Decodes `offsets.windows(2)` slices of the flat tag scratch, validating every offset before
+/// any UTF-8 slice is built. An invalid range or byte sequence skips the closure entirely.
+fn with_raw_tags<R>(
+    ptr: u32,
+    len: u32,
+    offsets: &[u32],
+    f: impl FnOnce(&[&str]) -> R,
+) -> Option<R> {
+    if offsets.len() < 2 {
+        return None;
+    }
+    TAG_SCRATCH.with(|cell| {
+        let scratch = cell.borrow();
+        let base = scratch.as_ptr() as usize;
+        let start = (ptr as usize).checked_sub(base)?;
+        let end = start.checked_add(len as usize)?;
+        let bytes = scratch.get(start..end)?;
+        let mut tags = Vec::with_capacity(offsets.len() - 1);
+        for pair in offsets.windows(2) {
+            let (from, to) = (pair[0] as usize, pair[1] as usize);
+            if from > to || to > bytes.len() {
+                return None;
+            }
+            tags.push(std::str::from_utf8(&bytes[from..to]).ok()?);
+        }
+        Some(f(&tags))
+    })
+}
+
+/// Decodes a batch of keys from one scratch region. Offsets/lengths are host-supplied and
+/// validated against the current buffer before any slice is made.
+fn with_raw_keys<R>(
+    ptr: u32,
+    offsets: &[u32],
+    lengths: &[u32],
+    f: impl FnOnce(&[&str]) -> R,
+) -> Option<R> {
+    if offsets.len() != lengths.len() {
+        return None;
+    }
+    KEY_SCRATCH.with(|cell| {
+        let scratch = cell.borrow();
+        let base = scratch.as_ptr() as usize;
+        // The batch encoder always hands out the buffer's base pointer; individual offsets
+        // are validated against the buffer below.
+        if ptr as usize != base {
+            return None;
+        }
+        let mut keys = Vec::with_capacity(offsets.len());
+        for (&offset, &length) in offsets.iter().zip(lengths) {
+            let from = offset as usize;
+            let to = from.checked_add(length as usize)?;
+            let bytes = scratch.get(from..to)?;
+            keys.push(std::str::from_utf8(bytes).ok()?);
+        }
+        Some(f(&keys))
     })
 }
 
