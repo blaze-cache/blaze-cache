@@ -707,3 +707,124 @@ fn drain_drops_carries_the_stable_id() {
     assert_eq!(field(&drop, "id").as_f64(), Some(first as f64));
     assert_eq!(field(&drop, "key").as_string().as_deref(), Some("a"));
 }
+
+#[wasm_bindgen_test]
+fn raw_tagged_writes_validate_offsets_and_round_trip() {
+    let mut cache = BlazeCache::new(8.0);
+    let key_base = crate::ensure_scratch(32);
+    let tag_base = crate::ensure_tag_scratch(64);
+    crate::KEY_SCRATCH.with(|cell| cell.borrow_mut()[..3].copy_from_slice(b"key"));
+    crate::TAG_SCRATCH.with(|cell| {
+        let mut tags = cell.borrow_mut();
+        tags[..3].copy_from_slice(b"one");
+        tags[3..6].copy_from_slice(b"two");
+    });
+
+    assert!(cache.set_raw_with_tags(
+        key_base,
+        3,
+        JsValue::from_str("v"),
+        Some(1_000.0),
+        tag_base,
+        6,
+        vec![0, 3, 6],
+    ));
+    assert_eq!(
+        cache.get("key").and_then(|value| value.as_string()),
+        Some("v".to_string())
+    );
+    assert!(cache.has_tag("key", "one"));
+    assert!(cache.has_tag("key", "two"));
+
+    // A non-monotonic tag range degrades to no tags instead of trapping.
+    assert!(cache.set_raw_with_tags(
+        key_base,
+        3,
+        JsValue::from_str("v2"),
+        None,
+        tag_base,
+        6,
+        vec![3, 0],
+    ));
+    assert!(cache.tags_of("key").is_empty());
+
+    // A stale key pointer is rejected outright.
+    assert!(!cache.set_raw_with_tags(
+        u32::MAX,
+        3,
+        JsValue::UNDEFINED,
+        None,
+        tag_base,
+        6,
+        vec![0, 3],
+    ));
+}
+
+#[wasm_bindgen_test]
+fn raw_batch_writes_round_trip_keys_values_and_tags() {
+    let mut cache = BlazeCache::new(8.0);
+    let key_base = crate::ensure_scratch(32);
+    let tag_base = crate::ensure_tag_scratch(32);
+    crate::KEY_SCRATCH.with(|cell| {
+        let mut keys = cell.borrow_mut();
+        keys[..2].copy_from_slice(b"aa");
+        keys[2..4].copy_from_slice(b"bb");
+    });
+    crate::TAG_SCRATCH.with(|cell| {
+        let mut tags = cell.borrow_mut();
+        tags[..3].copy_from_slice(b"one");
+        tags[3..6].copy_from_slice(b"two");
+    });
+    let values = Array::new();
+    values.push(&JsValue::from_str("a"));
+    values.push(&JsValue::from_str("b"));
+    let ttl = vec![-1.0, -1.0];
+
+    cache.set_many_raw(
+        key_base,
+        vec![0, 2],
+        vec![2, 2],
+        values.into(),
+        ttl,
+        tag_base,
+        6,
+        vec![0, 3, 6],
+    );
+
+    assert_eq!(
+        cache
+            .get("aa")
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        cache
+            .get("bb")
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("b")
+    );
+    assert!(cache.has_tag("aa", "one"));
+    assert!(cache.has_tag("bb", "two"));
+}
+
+#[wasm_bindgen_test]
+fn raw_single_tag_write_round_trips_and_rejects_bad_pointers() {
+    let mut cache = BlazeCache::new(4.0);
+    let key_base = crate::ensure_scratch(16);
+    let tag_base = crate::ensure_tag_scratch(16);
+    crate::KEY_SCRATCH.with(|cell| cell.borrow_mut()[..3].copy_from_slice(b"one"));
+    crate::TAG_SCRATCH.with(|cell| cell.borrow_mut()[..3].copy_from_slice(b"hot"));
+
+    assert!(cache.set_raw_with_one_tag(key_base, 3, JsValue::from_str("v"), None, tag_base, 3));
+    assert!(cache.has_tag("one", "hot"));
+    assert_eq!(
+        cache
+            .get("one")
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("v")
+    );
+    assert!(!cache.set_raw_with_one_tag(u32::MAX, 3, JsValue::UNDEFINED, None, tag_base, 3));
+}
