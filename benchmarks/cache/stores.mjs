@@ -786,7 +786,7 @@ export function buildRegistry({ wasmProvider } = {}) {
     },
     'map-persist': {
       label: 'Map + written queue',
-      create: async ({ capacity }) => {
+      create: async () => {
         const store = new MemoryPersistence();
         return new PersistenceSurface(new MapAdapter(), store);
       },

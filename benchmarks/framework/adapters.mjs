@@ -141,7 +141,9 @@ export class SWRAdapter extends BaseAdapter {
   dispose() {
     try {
       this.clear();
-    } catch {}
+    } catch {
+      // best-effort teardown — a failed clear must not fail dispose()
+    }
   }
 }
 

@@ -27,7 +27,7 @@ function npmComponents() {
     if (inPackages && /^\S/.test(line)) break;
     if (!inPackages) continue;
 
-    const match = /^  (?<key>'[^']+'|[^:]+):\s*$/.exec(line);
+    const match = /^ {2}(?<key>'[^']+'|[^:]+):\s*$/.exec(line);
     if (!match) continue;
     const key = match.groups.key.replace(/^'|'$/g, '');
     const at = key.lastIndexOf('@');

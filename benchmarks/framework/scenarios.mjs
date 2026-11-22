@@ -1,10 +1,6 @@
 import process from 'node:process';
 
-import {
-  BlazeAdapter,
-  SWRAdapter,
-  TanStackQueryAdapter,
-} from './adapters.mjs';
+import { BlazeAdapter, SWRAdapter, TanStackQueryAdapter } from './adapters.mjs';
 
 /**
  * Deterministic payload strings. `--value-bytes` controls per-entry string size;
@@ -94,16 +90,9 @@ function adapters() {
   ];
 }
 
-export function buildScenarios({
-  capacity,
-  iterations,
-  samples,
-  warmup = 2,
-  valueBytes = 256,
-}) {
+export function buildScenarios({ capacity, iterations, samples, warmup = 2, valueBytes = 256 }) {
   const key = 'key:0';
   const missKey = 'absent:key:0';
-  const value = makeValue(0, valueBytes);
 
   return [
     {

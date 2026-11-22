@@ -104,10 +104,10 @@ function renderTable(rows, showPayload) {
   const widths = headers.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i].length)));
   const left = showPayload ? 3 : 2;
   const line = (row) =>
-    row
-      .map((cell, i) => (i < left ? cell.padEnd(widths[i]) : cell.padStart(widths[i])))
-      .join('  ');
-  return [line(headers), widths.map((w) => '-'.repeat(w)).join('  '), ...cells.map(line)].join('\n');
+    row.map((cell, i) => (i < left ? cell.padEnd(widths[i]) : cell.padStart(widths[i]))).join('  ');
+  return [line(headers), widths.map((w) => '-'.repeat(w)).join('  '), ...cells.map(line)].join(
+    '\n',
+  );
 }
 
 function render(result) {
@@ -145,6 +145,7 @@ async function launchBrowser() {
   } catch (error) {
     throw new Error(
       `could not launch Chrome (${error.message}). Install Google Chrome or set BLAZE_CHROME_PATH.`,
+      { cause: error },
     );
   }
 }
@@ -201,7 +202,8 @@ async function main() {
         filter: opts.filter,
         adapters: bench.adapters,
       });
-      output.environment.browser = navigator.userAgent.match(/(Chrome|Chromium)\/[\d.]+/)?.[0] ?? null;
+      output.environment.browser =
+        navigator.userAgent.match(/(Chrome|Chromium)\/[\d.]+/)?.[0] ?? null;
       return output;
     }, options);
   } finally {
