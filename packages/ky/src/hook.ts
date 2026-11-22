@@ -59,10 +59,15 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
  * — any header they add is folded into the cache key — and *your* `afterResponse` hooks
  * run before the store sees the response.
  */
-export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOptions = {}): BlazeKyHooks {
+export function blazeKyHook(
+  cache: BlazeKyCacheLike,
+  options: BlazeKyCacheOptions = {},
+): BlazeKyHooks {
   const markerHeader =
     options.markerHeader === undefined ? DEFAULT_MARKER_HEADER : options.markerHeader;
-  const methods = new Set((options.methods ?? DEFAULT_METHODS).map((method) => method.toUpperCase()));
+  const methods = new Set(
+    (options.methods ?? DEFAULT_METHODS).map((method) => method.toUpperCase()),
+  );
   const cacheControl = options.cacheControl ?? true;
   const varyHeaders = options.varyHeaders ?? DEFAULT_VARY_HEADERS;
   const shouldCache = options.shouldCache ?? defaultShouldCache;
@@ -144,7 +149,9 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
 
     // The caller's instruction (`Request.cache`), the caller's headers, and the server's
     // `Cache-Control` — with `cacheControl: false` only the first two are still obeyed.
-    const control = cacheControl ? parseCacheControl(request.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = cacheControl
+      ? parseCacheControl(request.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     // `max-age=0` is, per RFC 9111 §5.2.2.1, a demand to revalidate before reuse. This
     // cache has no conditional requests, so the closest honest reading is a full refetch
     // — exactly what skipping the read does — rather than replaying the entry untouched.
@@ -200,7 +207,9 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     // it, never re-mark it. See `servedFromCache`.
     if (servedFromCache.has(request)) return undefined;
 
-    const control = cacheControl ? parseCacheControl(request.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = cacheControl
+      ? parseCacheControl(request.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     // `no-store` on the request: neither read (above) nor write. The read-only directives
     // (`no-cache`, `max-age=0`, `reload`) skip the read but still refresh the entry.
     const bypassWrite = control.noStore || request.cache === 'no-store';
@@ -270,13 +279,18 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     // An opaque response (`no-cors`) exposes no status, headers or body: nothing to store.
     if (response.status === 0) return;
 
-    const control = cacheControl ? parseCacheControl(response.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = cacheControl
+      ? parseCacheControl(response.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     // `no-store` forbids storing; `no-cache` demands revalidation on every use, and this
     // cache has no conditional requests — so neither is worth an entry.
     if (control.noStore || control.noCache) return;
 
     const configured = options.ttlMs;
-    const ttl = typeof configured === 'function' ? configured(response, request) : (configured ?? DEFAULT_TTL_MS);
+    const ttl =
+      typeof configured === 'function'
+        ? configured(response, request)
+        : (configured ?? DEFAULT_TTL_MS);
     // The response's own `max-age` wins; the option is the fallback for servers that never
     // send one. `Age` spends the origin's freshness budget before it reaches us: a
     // `max-age=60, Age: 50` response has ten seconds of life left, not sixty.
@@ -321,10 +335,11 @@ export function blazeKyHook(cache: BlazeKyCacheLike, options: BlazeKyCacheOption
     const headers = headersFromRecord(record.headers);
     if (markerHeader !== false) headers.set(markerHeader, marker);
 
-    const response = new Response(
-      NULL_BODY_STATUSES.has(record.status) ? null : record.body,
-      { status: record.status, statusText: record.statusText, headers },
-    );
+    const response = new Response(NULL_BODY_STATUSES.has(record.status) ? null : record.body, {
+      status: record.status,
+      statusText: record.statusText,
+      headers,
+    });
     // `url`/`redirected` are read-only accessors on the prototype; an own property shadows
     // them so a hit carries the metadata of the network response it stands in for.
     defineOwn(response, 'url', record.url);
@@ -383,10 +398,7 @@ function defaultShouldCache(response: Response): boolean {
  * for, once — after any wait — to decide between a replay and the stale-entry delete.
  */
 function canServe(value: KyCacheRecord | undefined, request: Request): value is KyCacheRecord {
-  return (
-    isKyRecord(value) &&
-    (request.cache === 'force-cache' || Date.now() <= value.freshUntil)
-  );
+  return isKyRecord(value) && (request.cache === 'force-cache' || Date.now() <= value.freshUntil);
 }
 
 /**
@@ -403,7 +415,11 @@ function settleOrAbort(
   signal: AbortSignal | null | undefined,
 ): Promise<boolean> {
   if (signal?.aborted) return Promise.resolve(false);
-  if (!signal) return pending.then(() => true, () => true);
+  if (!signal)
+    return pending.then(
+      () => true,
+      () => true,
+    );
   return new Promise<boolean>((resolve) => {
     const onAbort = (): void => {
       signal.removeEventListener('abort', onAbort);
@@ -501,7 +517,12 @@ function headersToRecord(headers: Headers): Record<string, string> {
   // `record[name] = value` hands a literal `__proto__` to the inherited setter, which
   // ignores primitives — silently dropping a perfectly legal header instead of storing it.
   headers.forEach((value, name) => {
-    Object.defineProperty(record, name, { value, enumerable: true, writable: true, configurable: true });
+    Object.defineProperty(record, name, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   });
   return record;
 }
@@ -524,7 +545,12 @@ function headersFromRecord(record: Record<string, string>): Headers {
 /** Shadows a read-only prototype accessor with an own property; never throws. */
 function defineOwn(target: object, key: string, value: unknown): void {
   try {
-    Object.defineProperty(target, key, { value, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(target, key, {
+      value,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   } catch {
     // A frozen response: the missing metadata is cosmetic, never worth failing a hit over.
   }

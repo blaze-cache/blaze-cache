@@ -47,8 +47,12 @@ function toUpperMethods(methods: readonly string[] | undefined): Set<string> {
   return new Set((methods ?? DEFAULT_METHODS).map((m) => m.toUpperCase()));
 }
 
-function getRequestOptions(config: InternalAxiosRequestConfig): BlazeAxiosRequestOptions | undefined {
-  const raw = (config as InternalAxiosRequestConfig & { blazeCache?: BlazeAxiosRequestOptions | false }).blazeCache;
+function getRequestOptions(
+  config: InternalAxiosRequestConfig,
+): BlazeAxiosRequestOptions | undefined {
+  const raw = (
+    config as InternalAxiosRequestConfig & { blazeCache?: BlazeAxiosRequestOptions | false }
+  ).blazeCache;
   if (raw === false) return { enabled: false };
   return raw;
 }
@@ -73,7 +77,9 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
   const honourCacheControl = options.honourCacheControl ?? options.cacheControl ?? true;
   const network = options.adapter ?? getAdapter(['xhr', 'http', 'fetch']);
 
-  return async function blazeCacheAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse> {
+  return async function blazeCacheAdapter(
+    config: InternalAxiosRequestConfig,
+  ): Promise<AxiosResponse> {
     const reqOpts = getRequestOptions(config);
     const method = (config.method ?? 'get').toUpperCase();
     const enabled = reqOpts?.enabled ?? true;
@@ -97,8 +103,7 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
       ownsKey ||
       encodeRequestBody(config.data) !== undefined;
 
-    const cacheable =
-      enabled && methodAllowed && config.responseType !== 'stream' && bodyKeyed;
+    const cacheable = enabled && methodAllowed && config.responseType !== 'stream' && bodyKeyed;
 
     const varyHeaders = reqOpts?.varyHeaders ?? globalVaryHeaders;
     const keyOf = (): string => {
@@ -106,7 +111,8 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
       if (typeof reqOpts?.key === 'function') return reqOpts.key(config);
       return options.key ? options.key(config) : defaultCacheKey(config, varyHeaders);
     };
-    const shouldCache = options.shouldCache ?? ((response) => response.status >= 200 && response.status < 300);
+    const shouldCache =
+      options.shouldCache ?? ((response) => response.status >= 200 && response.status < 300);
     const tagsFor = options.tags;
 
     // --- mutation/side-effect invalidation (runs after network, even if not cacheable) ---
@@ -136,14 +142,20 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
     // `no-store`: neither read nor write. `no-cache` / `max-age=0`: skip read (revalidate intent).
     const skipWrite = requestControl.noStore;
     const skipRead =
-      requestControl.noStore || requestControl.noCache || requestControl.maxAgeMs === 0 || reqOpts?.forceRefresh === true;
+      requestControl.noStore ||
+      requestControl.noCache ||
+      requestControl.maxAgeMs === 0 ||
+      reqOpts?.forceRefresh === true;
 
     let key: string | undefined;
     if (!skipRead || !skipWrite) {
       try {
         key = keyOf();
       } catch (error) {
-        console.warn('[blaze-cache] cache key generation failed — falling back to the network', error);
+        console.warn(
+          '[blaze-cache] cache key generation failed — falling back to the network',
+          error,
+        );
         key = undefined;
       }
     }
@@ -161,7 +173,10 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
           }
         }
       } catch (error) {
-        console.warn('[blaze-cache] reading from the cache failed — falling back to the network', error);
+        console.warn(
+          '[blaze-cache] reading from the cache failed — falling back to the network',
+          error,
+        );
       }
       if (cached) return settle(cached, config);
     }
@@ -202,10 +217,11 @@ export function blazeAdapter(options: BlazeAxiosCacheOptions): AxiosAdapter {
             };
             const reqTags = reqOpts?.tags;
             const globalTags = tagsFor;
-            const tagList =
-              (typeof reqTags === 'function' ? reqTags(response, config) : reqTags) ??
-              (typeof globalTags === 'function' ? globalTags(response, config) : globalTags) ??
-              ['axios', `${method.toLowerCase()} ${resolveRequestUrl(config)}`];
+            const tagList = (typeof reqTags === 'function' ? reqTags(response, config) : reqTags) ??
+              (typeof globalTags === 'function' ? globalTags(response, config) : globalTags) ?? [
+                'axios',
+                `${method.toLowerCase()} ${resolveRequestUrl(config)}`,
+              ];
             cache.set(key, record, { ttlMs, tags: [...tagList] });
           }
         }
@@ -238,7 +254,8 @@ export function installBlazeCache(
   const { adapter, ...rest } = options;
   instance.defaults.adapter = blazeAdapter({
     ...rest,
-    adapter: adapter === undefined ? resolveAdapter(instance.defaults.adapter) : resolveAdapter(adapter),
+    adapter:
+      adapter === undefined ? resolveAdapter(instance.defaults.adapter) : resolveAdapter(adapter),
   });
 }
 

@@ -9,16 +9,16 @@
 
 ## 1. Executive summary
 
-| Area | Result |
-|---|---|
-| Dependency vulnerabilities (RustSec / OSV) | **Clean** — `cargo audit` exit 0, `pnpm audit --audit-level high` exit 0 |
-| Secrets in source / full git history | **Clean** — no credential patterns found |
-| CI/CD supply-chain hardening | **Strong** — SHA-pinned actions, checksum-pinned binaries, least-privilege tokens |
-| WASM memory safety | **Strong** — no `unsafe` remains; raw-pointer boundary validated |
-| Application/crypto design | **1 exploitable finding** — see F-01 |
+| Area                                       | Result                                                                            |
+| ------------------------------------------ | --------------------------------------------------------------------------------- |
+| Dependency vulnerabilities (RustSec / OSV) | **Clean** — `cargo audit` exit 0, `pnpm audit --audit-level high` exit 0          |
+| Secrets in source / full git history       | **Clean** — no credential patterns found                                          |
+| CI/CD supply-chain hardening               | **Strong** — SHA-pinned actions, checksum-pinned binaries, least-privilege tokens |
+| WASM memory safety                         | **Strong** — no `unsafe` remains; raw-pointer boundary validated                  |
+| Application/crypto design                  | **1 exploitable finding** — see F-01                                              |
 
 **Overall:** The project is unusually well hardened. The only issue I could actually exploit was
-F-01: the HTTP adapters used a 32-bit non-cryptographic hash as the *sole* separator for
+F-01: the HTTP adapters used a 32-bit non-cryptographic hash as the _sole_ separator for
 identity-scoped cache keys. I produced a working end-to-end exploit (two different
 `Authorization` tokens resolving to one cache entry), and **it has now been fixed** — see §7.
 All findings below are recorded with their current status.
@@ -39,14 +39,14 @@ All findings below are recorded with their current status.
 
 ## 3. Findings
 
-### F-01 — Cross-identity cache collision via 32-bit FNV-1a  *(HIGH — exploited, now FIXED)*
+### F-01 — Cross-identity cache collision via 32-bit FNV-1a _(HIGH — exploited, now FIXED)_
 
 **Affected:** `packages/{axios,fetch,ky,ofetch}/src/key.ts` — `fnv1a()` / `defaultCacheKey()`.
 
 Each adapter appends `?${fnv1a(payload)}` to the base cache key, where `payload` contains the
 values of the `vary` headers (typically `Authorization`) and/or the request body. The code
 comment states the hash is "not a security primitive" and that its purpose is to keep secrets
-out of persisted keys — but it is in fact the *only* thing separating one identity's cached
+out of persisted keys — but it is in fact the _only_ thing separating one identity's cached
 response from another's.
 
 A 32-bit hash has a birthday bound of only ~2^16 (≈65 536) inputs. FNV-1a is also algebraically
@@ -83,7 +83,7 @@ remains exported for API compatibility but is deprecated and no longer used by a
 
 ---
 
-### F-02 — "Secrets are hidden" claim is not true for short inputs  *(MEDIUM — related to F-01; FIXED)*
+### F-02 — "Secrets are hidden" claim is not true for short inputs _(MEDIUM — related to F-01; FIXED)_
 
 `fnv1a()`'s documentation says its point is that "a persisted cache key never contains a secret
 in readable form." Because FNV-1a is invertible, a persisted hash can be reversed step-by-step
@@ -94,7 +94,7 @@ by anyone who can read that storage. Fixed with F-01: the 128-bit hash makes inv
 
 ---
 
-### F-03 — WASM raw-key decoder was memory-unsafe  *(CRITICAL — remediated on main)*
+### F-03 — WASM raw-key decoder was memory-unsafe _(CRITICAL — remediated on main)_
 
 Historical commits `a1248b7`/`421aa1c` introduced `key_from_scratch()` using
 `from_raw_parts` + `from_utf8_unchecked`, trusting host-supplied `(ptr, len)`. A stale pointer
@@ -108,7 +108,7 @@ decoding when optimising the hot path.
 
 ---
 
-### F-04 — `CacheStats::hit_rate()` integer overflow  *(LOW — theoretical)*
+### F-04 — `CacheStats::hit_rate()` integer overflow _(LOW — theoretical)_
 
 `crates/blaze-cache-core/src/stats.rs`: `self.hits + self.misses` panics in debug builds and
 wraps in release after ~2^64 lookups. Not remotely reachable in practice; noted for completeness.
@@ -118,7 +118,7 @@ wraps in release after ~2^64 lookups. Not remotely reachable in practice; noted 
 ## 4. Positive / hardened areas (verified, not just documented)
 
 - **CI:** all third-party actions pinned to commit SHAs; downloaded binaries pinned by version
-  *and* SHA-256; `permissions: contents: read` default; nightly SCA issues via least-privilege
+  _and_ SHA-256; `permissions: contents: read` default; nightly SCA issues via least-privilege
   token. No script-injection-prone `run:` interpolations found.
 - **Dependencies:** no known advisories in either ecosystem; `follow-redirects` CVE override
   present in `pnpm-workspace.yaml`; Dependabot configured for npm/cargo/actions.
@@ -181,8 +181,10 @@ if (pair === null) throw new Error('no collision found');
 const [victim, attacker] = pair;
 console.log('victim          :', victim);
 console.log('attacker        :', attacker);
-console.log('legacy 32-bit hashes equal:',
-  legacyFnv1a(JSON.stringify([victim])) === legacyFnv1a(JSON.stringify([attacker])));
+console.log(
+  'legacy 32-bit hashes equal:',
+  legacyFnv1a(JSON.stringify([victim])) === legacyFnv1a(JSON.stringify([attacker])),
+);
 console.log('cache key victim  :', keyFor(victim));
 console.log('cache key attacker:', keyFor(attacker));
 console.log('keys identical?   :', keyFor(victim) === keyFor(attacker));

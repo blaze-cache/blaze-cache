@@ -150,7 +150,10 @@ async function main() {
       delta: (currentRow.ratio - before.ratio) / Math.max(before.ratio, 1e-12),
       // A noisy row needs a bigger move before it means anything. Cap the allowance so a
       // pathological spread cannot turn the gate into a no-op.
-      threshold: Math.max(THRESHOLD, Math.min(0.4, Math.max(before.spread, currentRow.spread) / 100)),
+      threshold: Math.max(
+        THRESHOLD,
+        Math.min(0.4, Math.max(before.spread, currentRow.spread) / 100),
+      ),
     });
   }
   changes.sort((a, b) => b.delta - a.delta);

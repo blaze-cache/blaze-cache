@@ -34,8 +34,7 @@ export interface BlazeSWRRecord<T = unknown> {
  * evaluated), never the serialized hash the entry is filed under.
  */
 export type BlazeSWRTags<Data = unknown> =
-  | readonly string[]
-  | ((key: Arguments, data: Data) => readonly string[]);
+  readonly string[] | ((key: Arguments, data: Data) => readonly string[]);
 
 /**
  * The slice of a cache the SWR integration needs.
@@ -137,5 +136,5 @@ export interface BlazeSWROptions<
   Data = any,
   Error = any,
   SWRFetcher extends BareFetcher<any> = BareFetcher<Data>,
-> extends SWRConfiguration<Data, Error, SWRFetcher>,
-    BlazeSWRStampOptions<Data> {}
+>
+  extends SWRConfiguration<Data, Error, SWRFetcher>, BlazeSWRStampOptions<Data> {}

@@ -30,7 +30,8 @@ import {
 const wasmBytes = await readFile(new URL('../pkg/blaze_cache_wasm_bg.wasm', import.meta.url));
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * An in-memory `CachePersistence` exposing `rows` (and the optional `keys()` method) so
@@ -551,18 +552,40 @@ describe('events', () => {
     const offWildcard = cache.on((event) => wildcard.push(event));
 
     cache.set('k1', 1);
-    assert.deepEqual(targeted.map((e) => e.key), ['k1']);
+    assert.deepEqual(
+      targeted.map((e) => e.key),
+      ['k1'],
+    );
 
     cache.off('set', target); // one registration of one type
     cache.set('k2', 2);
-    assert.deepEqual(targeted.map((e) => e.key), ['k1'], 'the removed listener stayed removed');
-    assert.deepEqual(sibling.map((e) => e.key), ['k1', 'k2'], 'its sibling kept running');
-    assert.deepEqual(wildcard.map((e) => e.key), ['k1', 'k2'], 'the wildcard kept running');
+    assert.deepEqual(
+      targeted.map((e) => e.key),
+      ['k1'],
+      'the removed listener stayed removed',
+    );
+    assert.deepEqual(
+      sibling.map((e) => e.key),
+      ['k1', 'k2'],
+      'its sibling kept running',
+    );
+    assert.deepEqual(
+      wildcard.map((e) => e.key),
+      ['k1', 'k2'],
+      'the wildcard kept running',
+    );
 
     cache.off('set'); // every listener of one type
     cache.set('k3', 3);
-    assert.deepEqual(sibling.map((e) => e.key), ['k1', 'k2']);
-    assert.deepEqual(wildcard.map((e) => e.key), ['k1', 'k2', 'k3'], 'off("set") is type-scoped');
+    assert.deepEqual(
+      sibling.map((e) => e.key),
+      ['k1', 'k2'],
+    );
+    assert.deepEqual(
+      wildcard.map((e) => e.key),
+      ['k1', 'k2', 'k3'],
+      'off("set") is type-scoped',
+    );
 
     // The same function registered as a typed and a wildcard listener — one `off(fn)`
     // releases both, and a duplicate registration never double-counts.
@@ -781,7 +804,11 @@ describe('persistence adapter', () => {
 
     cache.delete('doomed');
     await assert.rejects(() => cache.flush(), /IDB failure/);
-    assert.equal(adapter.rows.has('doomed'), true, 'the failed remove keeps the row — nothing is lost');
+    assert.equal(
+      adapter.rows.has('doomed'),
+      true,
+      'the failed remove keeps the row — nothing is lost',
+    );
 
     await cache.flush();
     assert.equal(adapter.rows.has('doomed'), false, 'the re-queued delete landed on the retry');
@@ -803,7 +830,11 @@ describe('persistence adapter', () => {
     assert.equal(adapter.rows.has('a'), true, 'and storage still holds the row');
 
     await cache.flush();
-    assert.deepEqual([...adapter.rows.keys()].sort(), ['b', 'c'], 'the stale row is reconciled away');
+    assert.deepEqual(
+      [...adapter.rows.keys()].sort(),
+      ['b', 'c'],
+      'the stale row is reconciled away',
+    );
 
     await cache.dispose();
   });
@@ -1023,7 +1054,11 @@ describe('persistence with events', () => {
     try {
       cache.set('k', 2);
       await cache.flush();
-      assert.equal(adapter.rows.get('k')?.value, 2, 'the write reached storage despite the thrower');
+      assert.equal(
+        adapter.rows.get('k')?.value,
+        2,
+        'the write reached storage despite the thrower',
+      );
 
       cache.delete('k');
       await cache.flush();
@@ -1076,7 +1111,11 @@ describe('persistence with events', () => {
     cache.set('a', 1);
     cache.set('b', 2); // evicts 'a'
     cache.set('c', 3); // evicts 'b'
-    assert.deepEqual(evicted.map((event) => event.key), ['a', 'b'], 'both drops observed');
+    assert.deepEqual(
+      evicted.map((event) => event.key),
+      ['a', 'b'],
+      'both drops observed',
+    );
 
     await cache.dispose(); // flush → clear listeners (hook!) → free wasm, in that order
     assert.deepEqual([...adapter.rows.keys()], ['c'], 'the final state was persisted first');
@@ -1144,7 +1183,11 @@ describe('string helpers', () => {
     const cyclic = {};
     cyclic.self = cyclic;
     assert.equal(safeStableStringify(cyclic), undefined, 'cycles give up instead of throwing');
-    assert.equal(safeStableStringify({ a: 1 }), stableStringify({ a: 1 }), 'plain input is identical');
+    assert.equal(
+      safeStableStringify({ a: 1 }),
+      stableStringify({ a: 1 }),
+      'plain input is identical',
+    );
   });
 
   it('keeps an own __proto__ key instead of dropping it through the inherited setter', () => {

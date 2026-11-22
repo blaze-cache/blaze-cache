@@ -1,6 +1,6 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 
 /**
  * A tiny fake API so the demo can prove what the cache is doing.
@@ -10,52 +10,52 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  * to the UI.
  */
 function fakeApi() {
-  const todos = ['ship the wasm core', 'wire up the integration adapters', 'survive a reload'];
-  let hits = 0;
+  const todos = ['ship the wasm core', 'wire up the integration adapters', 'survive a reload']
+  let hits = 0
 
   return (request: IncomingMessage, response: ServerResponse, next: () => void) => {
-    const url = request.url ?? '';
-    if (!url.startsWith('/api')) return next();
+    const url = request.url ?? ''
+    if (!url.startsWith('/api')) return next()
 
     const send = (status: number, body: unknown) => {
-      response.statusCode = status;
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(body));
-    };
+      response.statusCode = status
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify(body))
+    }
 
     if (request.method === 'POST' && url === '/api/todos') {
-      let raw = '';
+      let raw = ''
       request.on('data', (chunk: Buffer) => {
-        raw += chunk;
-      });
+        raw += chunk
+      })
       request.on('end', () => {
         try {
-          const { text } = JSON.parse(raw || '{}') as { text?: string };
-          if (text) todos.push(text);
-          send(201, { ok: true });
+          const { text } = JSON.parse(raw || '{}') as { text?: string }
+          if (text) todos.push(text)
+          send(201, { ok: true })
         } catch {
-          send(400, { error: 'invalid json' });
+          send(400, { error: 'invalid json' })
         }
-      });
-      return;
+      })
+      return
     }
 
     if (request.method === 'GET' && url === '/api/__stats') {
-      send(200, { serverHits: hits });
-      return;
+      send(200, { serverHits: hits })
+      return
     }
 
     if (request.method === 'GET' && url.startsWith('/api/todos')) {
-      hits += 1;
-      const serverHits = hits;
+      hits += 1
+      const serverHits = hits
       setTimeout(() => {
-        send(200, { items: [...todos], serverHits, fetchedAt: Date.now() });
-      }, 400);
-      return;
+        send(200, { items: [...todos], serverHits, fetchedAt: Date.now() })
+      }, 400)
+      return
     }
 
-    send(404, { error: 'not found' });
-  };
+    send(404, { error: 'not found' })
+  }
 }
 
 export default defineConfig({
@@ -64,13 +64,13 @@ export default defineConfig({
     {
       name: 'blaze-example-axios-mock-api',
       configureServer(server) {
-        server.middlewares.use(fakeApi());
+        server.middlewares.use(fakeApi())
       },
       // `vite preview` serves `dist/` without the dev middleware above, so the fake API has
       // to be registered here too — otherwise `/api/*` falls through to index.html and the
       // demo reads HTML as if it were JSON.
       configurePreviewServer(server) {
-        server.middlewares.use(fakeApi());
+        server.middlewares.use(fakeApi())
       },
     },
   ],
@@ -83,4 +83,4 @@ export default defineConfig({
   server: {
     port: 5176,
   },
-});
+})

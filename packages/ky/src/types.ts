@@ -53,7 +53,11 @@ export interface KyCacheRecord {
 /** The slice of a cache the adapter needs — deliberately structural. */
 export interface BlazeKyCacheLike {
   get(key: string): KyCacheRecord | undefined;
-  set(key: string, value: KyCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  set(
+    key: string,
+    value: KyCacheRecord,
+    options?: { ttlMs?: number; tags?: readonly string[] },
+  ): void;
   /**
    * Optional, so a minimal `Map` shim still satisfies the interface.
    *
@@ -223,16 +227,12 @@ type KyAfterResponseHook = NonNullable<KyHooks['afterResponse']>[number];
 type Ky1BeforeRequestHook = NonNullable<Ky1Hooks['beforeRequest']>[number];
 type Ky1AfterResponseHook = NonNullable<Ky1Hooks['afterResponse']>[number];
 
-type HooksFitKyV1 = Assert<
-  BlazeKyBeforeRequestHook extends Ky1BeforeRequestHook ? true : false
-> ;
+type HooksFitKyV1 = Assert<BlazeKyBeforeRequestHook extends Ky1BeforeRequestHook ? true : false>;
 type HooksFitKyV1After = Assert<
   BlazeKyAfterResponseHook extends Ky1AfterResponseHook ? true : false
-> ;
-type HooksFitKyV2 = Assert<
-  BlazeKyBeforeRequestHook extends KyBeforeRequestHook ? true : false
-> ;
+>;
+type HooksFitKyV2 = Assert<BlazeKyBeforeRequestHook extends KyBeforeRequestHook ? true : false>;
 type HooksFitKyV2After = Assert<
   BlazeKyAfterResponseHook extends KyAfterResponseHook ? true : false
-> ;
+>;
 type CoreCacheSatisfies = Assert<BlazeCache extends BlazeKyCacheLike ? true : false>;

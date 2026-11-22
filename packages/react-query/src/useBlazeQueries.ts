@@ -1,9 +1,5 @@
 import { useQueries, useQueryClient } from '@tanstack/react-query';
-import type {
-  QueriesOptions,
-  QueriesResults,
-  QueryClient,
-} from '@tanstack/react-query';
+import type { QueriesOptions, QueriesResults, QueryClient } from '@tanstack/react-query';
 
 import { seedBlazeQueryOptions } from './useBlazeQuery.js';
 import type { BlazeQueryCacheLike } from './types.js';
@@ -17,10 +13,7 @@ import type { BlazeQueryCacheLike } from './types.js';
  * each `select`, and `combine`'s output) survives the round trip: a tuple of queries
  * destructure into individually typed results, exactly as with `useQueries`.
  */
-export interface UseBlazeQueriesOptions<
-  T extends Array<any>,
-  TCombinedResult = QueriesResults<T>,
-> {
+export interface UseBlazeQueriesOptions<T extends Array<any>, TCombinedResult = QueriesResults<T>> {
   /** Query option objects — the same shapes `useQueries` takes, seeded from the mirror. */
   queries: readonly [...QueriesOptions<T>];
   /** Combine the results into a single value, as `useQueries` does. */
@@ -37,10 +30,7 @@ export interface UseBlazeQueriesOptions<
  * `peek`-first lookup, the same custom-hasher handling — so one cold entry in the
  * mirror never blocks the others from seeding.
  */
-export function seedBlazeQueriesOptions<
-  T extends Array<any>,
-  TCombinedResult = QueriesResults<T>,
->(
+export function seedBlazeQueriesOptions<T extends Array<any>, TCombinedResult = QueriesResults<T>>(
   cache: BlazeQueryCacheLike,
   client: QueryClient,
   options: UseBlazeQueriesOptions<T, TCombinedResult>,

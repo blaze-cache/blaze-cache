@@ -17,9 +17,7 @@ const require = createRequire(import.meta.url);
 
 let wasmBytesPromise = null;
 function wasmBytes() {
-  wasmBytesPromise ??= readFile(
-    require.resolve('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm'),
-  );
+  wasmBytesPromise ??= readFile(require.resolve('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm'));
   return wasmBytesPromise;
 }
 

@@ -46,7 +46,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 describe('module surface', () => {
   it('exports the documented entry points', () => {
@@ -127,7 +128,11 @@ describe('createBlazeQueryClient', () => {
     client.setQueryData(['private', 'user'], 'secret');
     client.setQueryData(['public', 'todos'], [1]);
 
-    assert.equal(cache.has(hashQueryKey(['private', 'user'])), false, 'the private key never landed');
+    assert.equal(
+      cache.has(hashQueryKey(['private', 'user'])),
+      false,
+      'the private key never landed',
+    );
     assert.equal(cache.has(hashQueryKey(['public', 'todos'])), true, 'the public one did');
     assert.equal(cache.size(), 1, 'and it is the only entry in the cache');
     assert.deepEqual(
@@ -534,8 +539,8 @@ describe('setBlazeQueryData', () => {
     assert.equal(cache.has(hash), true, 'the mirror write landed');
     const entry = cache.entry(hash);
     assert.deepEqual(entry.value.data, [1, 2, 3]);
-    assert.ok(entry.ttlMs > 59_000 && entry.ttlMs <= 60_000, 'the caller\'s ttl won');
-    assert.deepEqual(entry.tags, ['todos', 'session-1'], 'the caller\'s tags won');
+    assert.ok(entry.ttlMs > 59_000 && entry.ttlMs <= 60_000, "the caller's ttl won");
+    assert.deepEqual(entry.tags, ['todos', 'session-1'], "the caller's tags won");
 
     await client.clear();
   });
@@ -619,11 +624,7 @@ describe('invalidateBlazeQueries / removeBlazeQueries', () => {
     // The key narrowed the tag purge: u1 (tags `todos`+`user:u1`) went, u2 (tag `todos` only)
     // is a different user’s list and stays — the intersection must not union.
     assert.equal(cache.size(), 1, 'only the key/tag-matching entry was purged');
-    assert.equal(
-      cache.has(hashQueryKey(['todos', 'u1'])),
-      false,
-      'the matching entry is gone',
-    );
+    assert.equal(cache.has(hashQueryKey(['todos', 'u1'])), false, 'the matching entry is gone');
     assert.equal(cache.has(hashQueryKey(['todos', 'u2'])), true, 'the other user’s entry stays');
     await client.clear();
   });
@@ -672,9 +673,17 @@ describe('invalidateBlazeQueries / removeBlazeQueries', () => {
     removeBlazeQueries(cache, client);
 
     assert.equal(cache.has(hashQueryKey(['todos'])), false, 'the mirror record is gone');
-    assert.equal(cache.has('get https://api.example.com/users?a3f9k'), true, 'the axios entry stays');
+    assert.equal(
+      cache.has('get https://api.example.com/users?a3f9k'),
+      true,
+      'the axios entry stays',
+    );
     assert.equal(cache.has('https://api.example.com/profile'), true, 'the SWR entry stays');
-    assert.equal(cache.size(), 2, 'the unfiltered purge removed only what TanStack could have written');
+    assert.equal(
+      cache.size(),
+      2,
+      'the unfiltered purge removed only what TanStack could have written',
+    );
   });
 });
 
@@ -690,7 +699,9 @@ describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
     assert.equal(state.mutations.length, 0);
     assert.equal(state.queries.length, 2);
 
-    const todos = state.queries.find((q) => hashQueryKey(q.queryKey) === hashQueryKey(['todos', 'u1']));
+    const todos = state.queries.find(
+      (q) => hashQueryKey(q.queryKey) === hashQueryKey(['todos', 'u1']),
+    );
     assert.ok(todos, 'the todos entry made it into the snapshot');
     assert.equal(todos.queryHash, hashQueryKey(['todos', 'u1']));
     assert.deepEqual(todos.queryKey, ['todos', 'u1']);
@@ -699,7 +710,9 @@ describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
     assert.ok(todos.state.dataUpdatedAt > 0);
     assert.equal(typeof todos.dehydratedAt, 'number');
 
-    const settings = state.queries.find((q) => hashQueryKey(q.queryKey) === hashQueryKey(['settings']));
+    const settings = state.queries.find(
+      (q) => hashQueryKey(q.queryKey) === hashQueryKey(['settings']),
+    );
     assert.ok(settings, 'the settings entry made it into the snapshot');
     assert.deepEqual(settings.state.data, { theme: 'dark' });
 
@@ -722,7 +735,11 @@ describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
     assert.equal(legacy.queries.length, 0, 'records without a queryKey cannot be dehydrated');
 
     // A record inside the window dehydrates.
-    cache.set(hashQueryKey(['fresh']), { data: 'new', dataUpdatedAt: Date.now(), queryKey: ['fresh'] });
+    cache.set(hashQueryKey(['fresh']), {
+      data: 'new',
+      dataUpdatedAt: Date.now(),
+      queryKey: ['fresh'],
+    });
     const fresh = dehydrateBlazeQueryClient(cache, { predicate: () => true });
     assert.equal(fresh.queries.length, 1, 'the predicate picked the fresh entry');
 
@@ -757,7 +774,11 @@ describe('dehydrateBlazeQueryClient / hydrateBlazeQueryClient', () => {
     assert.equal(cache.has(hash), true, 'hydration persists the mirror entry back');
     const entry = cache.entry(hash);
     assert.deepEqual(entry.value.data, [{ id: 1 }]);
-    assert.deepEqual(entry.value.queryKey, ['todos', 'u1'], 'the restored entry is self-describing');
+    assert.deepEqual(
+      entry.value.queryKey,
+      ['todos', 'u1'],
+      'the restored entry is self-describing',
+    );
     assert.ok(entry.ttlMs > 59_000 && entry.ttlMs <= 60_000, 'the hydrate-time ttl was used');
     assert.deepEqual(entry.tags, ['ssr'], 'the hydrate-time tags were used');
   });
@@ -797,10 +818,16 @@ describe('sync refetch stamp preservation', () => {
     const stop = syncBlazeQueryCache(client, { cache, ttlMs: 60_000 });
 
     // A helper stamps the entry with its own tags and a deliberately short window.
-    setBlazeQueryData(cache, client, ['todos'], { v: 1 }, {
-      tags: ['todos', 'user:42'],
-      ttlMs: 30_000,
-    });
+    setBlazeQueryData(
+      cache,
+      client,
+      ['todos'],
+      { v: 1 },
+      {
+        tags: ['todos', 'user:42'],
+        ttlMs: 30_000,
+      },
+    );
     const hash = hashQueryKey(['todos']);
     assert.deepEqual(cache.tagsOf(hash), ['todos', 'user:42'], 'the helper’s stamp landed');
 

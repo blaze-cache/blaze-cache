@@ -64,7 +64,8 @@ const REPO = 'https://api.github.com/repos/blaze-cache/blaze-cache';
 /** Also real, but answered with `cache-control: no-cache`. */
 const NO_CACHE = 'https://api.github.com/rate_limit';
 /** A real PNG straight off the raw host, for the binary round-trip. */
-const PNG = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
+const PNG =
+  'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const wasmBytes = await readFile(
@@ -72,7 +73,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * A Blaze-cached ofetch instance over the real network, counting every request that
@@ -152,7 +154,11 @@ describe('live: real public API (ofetch)', () => {
     assert.equal(requests(), 1, 'no second round-trip left the process');
     assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
     const hitData = await api(REPO);
-    assert.equal(hitData.full_name, 'blaze-cache/blaze-cache', 'the replayed parsed body is correct');
+    assert.equal(
+      hitData.full_name,
+      'blaze-cache/blaze-cache',
+      'the replayed parsed body is correct',
+    );
     assert.equal(requests(), 1, 'parsed HIT also used no network');
 
     const { key, record } = onlyRecord(cache);
@@ -235,50 +241,60 @@ describe('live: real public API (ofetch)', () => {
     assert.deepEqual(hitBytes, storedBytes, 'the replayed body is byte-identical');
   });
 
-  it('persists a real response and serves it after hydration (cold start, no network)', { skip: SKIP }, async () => {
-    const adapter = new MemoryAdapter();
+  it(
+    'persists a real response and serves it after hydration (cold start, no network)',
+    { skip: SKIP },
+    async () => {
+      const adapter = new MemoryAdapter();
 
-    // --- first "session": fetch a real response, persist it ---
-    let requestsA = 0;
-    const cacheA = await createCache({ wasm: wasmBytes, persistence: { adapter } });
-    const apiA = createBlazeOfetch(cacheA, {
-      fetch: (input, init) => { requestsA += 1; return globalThis.fetch(input, init); },
-      ttlMs: 30_000,
-      varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with'],
-      retry: 0,
-    });
+      // --- first "session": fetch a real response, persist it ---
+      let requestsA = 0;
+      const cacheA = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+      const apiA = createBlazeOfetch(cacheA, {
+        fetch: (input, init) => {
+          requestsA += 1;
+          return globalThis.fetch(input, init);
+        },
+        ttlMs: 30_000,
+        varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with'],
+        retry: 0,
+      });
 
-    const miss = await settle(apiA.raw(REPO));
-    assert.equal(miss.status, 200);
-    assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
-    await whenStored(cacheA, 'the real response was stored in session A');
-    await cacheA.flush();
-    assert.ok((await adapter.load()).length > 0, 'the adapter holds the persisted record');
-    assert.equal(requestsA, 1);
-    await cacheA.dispose();
+      const miss = await settle(apiA.raw(REPO));
+      assert.equal(miss.status, 200);
+      assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
+      await whenStored(cacheA, 'the real response was stored in session A');
+      await cacheA.flush();
+      assert.ok((await adapter.load()).length > 0, 'the adapter holds the persisted record');
+      assert.equal(requestsA, 1);
+      await cacheA.dispose();
 
-    // --- second "session": hydrate from the same adapter, serve without network ---
-    let requestsB = 0;
-    const cacheB = await createCache({ wasm: wasmBytes, persistence: { adapter } });
-    const apiB = createBlazeOfetch(cacheB, {
-      fetch: (input, init) => { requestsB += 1; return globalThis.fetch(input, init); },
-      ttlMs: 30_000,
-      varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with'],
-      retry: 0,
-    });
+      // --- second "session": hydrate from the same adapter, serve without network ---
+      let requestsB = 0;
+      const cacheB = await createCache({ wasm: wasmBytes, persistence: { adapter } });
+      const apiB = createBlazeOfetch(cacheB, {
+        fetch: (input, init) => {
+          requestsB += 1;
+          return globalThis.fetch(input, init);
+        },
+        ttlMs: 30_000,
+        varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with'],
+        retry: 0,
+      });
 
-    // Hydration is async during create; the entry should be present now.
-    assert.equal(cacheB.size(), 1, 'hydrated one entry from persistence');
+      // Hydration is async during create; the entry should be present now.
+      assert.equal(cacheB.size(), 1, 'hydrated one entry from persistence');
 
-    const hit = await settle(apiB.raw(REPO));
-    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'served from the hydrated cache');
-    assert.equal(requestsB, 0, 'no network request in the cold-start session');
+      const hit = await settle(apiB.raw(REPO));
+      assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'served from the hydrated cache');
+      assert.equal(requestsB, 0, 'no network request in the cold-start session');
 
-    const data = await apiB(REPO);
-    assert.equal(data.full_name, 'blaze-cache/blaze-cache', 'hydrated payload parses correctly');
-    assert.equal(requestsB, 0, 'parsed replay also used no network');
-    await cacheB.dispose();
-  });
+      const data = await apiB(REPO);
+      assert.equal(data.full_name, 'blaze-cache/blaze-cache', 'hydrated payload parses correctly');
+      assert.equal(requestsB, 0, 'parsed replay also used no network');
+      await cacheB.dispose();
+    },
+  );
 
   it('tag invalidation on a real cached response forces a refetch', { skip: SKIP }, async () => {
     const cache = await makeCache();
@@ -300,20 +316,24 @@ describe('live: real public API (ofetch)', () => {
     assert.equal(requests(), 2);
   });
 
-  it('cache: "no-cache" forces a refetch of a real (storable) response', { skip: SKIP }, async () => {
-    const cache = await makeCache();
-    const { api, requests } = liveApi(cache);
+  it(
+    'cache: "no-cache" forces a refetch of a real (storable) response',
+    { skip: SKIP },
+    async () => {
+      const cache = await makeCache();
+      const { api, requests } = liveApi(cache);
 
-    await settle(api(REPO));
-    await whenStored(cache, 'stored');
+      await settle(api(REPO));
+      await whenStored(cache, 'stored');
 
-    // `cache: 'no-cache'` skips the read but (per our adapter semantics) still stores/refreshes.
-    await settle(api(REPO, { cache: 'no-cache' }));
-    assert.equal(requests(), 2, 'no-cache bypassed the read and hit the network');
+      // `cache: 'no-cache'` skips the read but (per our adapter semantics) still stores/refreshes.
+      await settle(api(REPO, { cache: 'no-cache' }));
+      assert.equal(requests(), 2, 'no-cache bypassed the read and hit the network');
 
-    // The refreshed entry should be readable again.
-    const hit = await settle(api.raw(REPO));
-    assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'refreshed entry is readable');
-    assert.equal(requests(), 2);
-  });
+      // The refreshed entry should be readable again.
+      const hit = await settle(api.raw(REPO));
+      assert.equal(hit.headers.get('x-blaze-cache'), 'HIT', 'refreshed entry is readable');
+      assert.equal(requests(), 2);
+    },
+  );
 });

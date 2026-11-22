@@ -57,7 +57,13 @@ export interface MultiTabBridge<V> {
   /** Emits a `remote-*` event; the cache decides listeners and payload shape. */
   emitRemote(type: RemoteType, key: string | null, value: V | undefined): void;
   /** All live entries, for the `hello`/`state` handshake. */
-  snapshot(): Array<{ key: string; version: Version | undefined; ttlMs: number | null; tags: string[]; value: V }>;
+  snapshot(): Array<{
+    key: string;
+    version: Version | undefined;
+    ttlMs: number | null;
+    tags: string[];
+    value: V;
+  }>;
   /** The last seen version for `key`, or `undefined`. */
   versionOf(key: string): Version | undefined;
   /** Records the version a remote mutation installed. */
@@ -67,11 +73,7 @@ export interface MultiTabBridge<V> {
 }
 
 export type RemoteType =
-  | 'remote-set'
-  | 'remote-delete'
-  | 'remote-clear'
-  | 'remote-invalidate'
-  | 'remote-rotate';
+  'remote-set' | 'remote-delete' | 'remote-clear' | 'remote-invalidate' | 'remote-rotate';
 
 interface BaseMessage {
   clientId: string;
@@ -101,12 +103,7 @@ export type SyncMessage<V = any> = BaseMessage &
 
 /** Compare two versions: physical, logical, then client id, then sequence. */
 export function compareVersions(a: Version, b: Version): number {
-  return (
-    a.p - b.p ||
-    a.l - b.l ||
-    (a.c < b.c ? -1 : a.c > b.c ? 1 : 0) ||
-    a.s - b.s
-  );
+  return a.p - b.p || a.l - b.l || (a.c < b.c ? -1 : a.c > b.c ? 1 : 0) || a.s - b.s;
 }
 
 /** A tiny hybrid logical clock: monotonic across sends and observed remote stamps. */

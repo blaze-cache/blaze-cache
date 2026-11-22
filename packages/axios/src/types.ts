@@ -1,4 +1,9 @@
-import type { AxiosAdapter, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import type {
+  AxiosAdapter,
+  AxiosRequestConfig,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from 'axios';
 
 /**
  * What the adapter stores in Blaze Cache for one response.
@@ -57,7 +62,9 @@ export interface BlazeAxiosRequestOptions {
   ttlMs?: number | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => number);
 
   /** Tags attached to this request's stored response. Overrides the adapter-level `tags`. */
-  tags?: readonly string[] | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
+  tags?:
+    | readonly string[]
+    | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
 
   /**
    * Cache key for this request. A string is used as-is; a function receives the
@@ -155,7 +162,9 @@ export interface BlazeAxiosCacheOptions {
   shouldCache?: (response: AxiosResponse, config: InternalAxiosRequestConfig) => boolean;
 
   /** Tags attached to stored responses. Default: `['axios', '<method> <resolved url>']`. */
-  tags?: readonly string[] | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
+  tags?:
+    | readonly string[]
+    | ((response: AxiosResponse, config: InternalAxiosRequestConfig) => readonly string[]);
 
   /**
    * Request headers whose values participate in the cache key.
@@ -172,7 +181,11 @@ export interface BlazeAxiosCacheOptions {
 /** The slice of a Blaze Cache the adapter needs — deliberately structural. */
 export interface BlazeAxiosCacheLike {
   get(key: string): AxiosCacheRecord | undefined;
-  set(key: string, value: AxiosCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  set(
+    key: string,
+    value: AxiosCacheRecord,
+    options?: { ttlMs?: number; tags?: readonly string[] },
+  ): void;
   /**
    * Optional, so a minimal `Map` shim still satisfies the interface.
    *

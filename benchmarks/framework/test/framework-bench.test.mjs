@@ -8,11 +8,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  BlazeAdapter,
-  SWRAdapter,
-  TanStackQueryAdapter,
-} from '../adapters.mjs';
+import { BlazeAdapter, SWRAdapter, TanStackQueryAdapter } from '../adapters.mjs';
 import { buildScenarios, runScenarios } from '../scenarios.mjs';
 
 const TINY = { capacity: 32, iterations: 20, samples: 2, warmup: 0, valueBytes: 64 };
@@ -113,9 +109,13 @@ describe('framework benchmark runner output', () => {
 
     for (const scenario of result.scenarios) {
       const rows = result.results.filter((r) => r.scenario === scenario.id);
-      assert.ok(rows.some((r) => r.relative === 1), `${scenario.id} has a best adapter`);
+      assert.ok(
+        rows.some((r) => r.relative === 1),
+        `${scenario.id} has a best adapter`,
+      );
       if (scenario.id === 'invalidate-by-key') {
-        for (const r of rows) assert.equal(r.opsPerSample, TINY.iterations, `${r.label} deletes distinct keys`);
+        for (const r of rows)
+          assert.equal(r.opsPerSample, TINY.iterations, `${r.label} deletes distinct keys`);
       }
     }
   });

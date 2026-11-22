@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, cache, storage, multiTab, persistence } from './blaze.js';
+import { api, cache, storage, multiTab, persistence } from './blaze.js'
 
 /** Rebuilds the demo URL with one option flipped; changing it recreates the page's cache. */
 function withOption(patch: { sync?: string; persistence?: string }): string {
@@ -8,152 +8,152 @@ function withOption(patch: { sync?: string; persistence?: string }): string {
     storage,
     sync: multiTab ? 'on' : 'off',
     persistence: persistence ? 'on' : 'off',
-  });
-  for (const [key, value] of Object.entries(patch)) params.set(key, value);
-  return `?${params.toString()}`;
+  })
+  for (const [key, value] of Object.entries(patch)) params.set(key, value)
+  return `?${params.toString()}`
 }
 
 interface TodosPayload {
-  items: string[];
-  serverHits: number;
-  fetchedAt: number;
+  items: string[]
+  serverHits: number
+  fetchedAt: number
 }
 
-type LogMarker = 'HIT' | 'MISS' | 'ERR' | 'LOG';
-type BadgeMarker = Exclude<LogMarker, 'LOG'> | 'idle';
+type LogMarker = 'HIT' | 'MISS' | 'ERR' | 'LOG'
+type BadgeMarker = Exclude<LogMarker, 'LOG'> | 'idle'
 
 interface LogEntry {
-  id: number;
-  time: string;
-  ms: number;
-  marker: LogMarker;
-  url: string;
-  note?: string;
+  id: number
+  time: string
+  ms: number
+  marker: LogMarker
+  url: string
+  note?: string
 }
 
 /** Read the fake server's counter without going through the cache. */
 async function readServerHits(): Promise<number | null> {
   try {
-    const response = await fetch('/api/__stats', { cache: 'no-store' });
-    if (!response.ok) return null;
-    const body = (await response.json()) as { serverHits?: number };
-    return typeof body.serverHits === 'number' ? body.serverHits : null;
+    const response = await fetch('/api/__stats', { cache: 'no-store' })
+    if (!response.ok) return null
+    const body = (await response.json()) as { serverHits?: number }
+    return typeof body.serverHits === 'number' ? body.serverHits : null
   } catch {
-    return null;
+    return null
   }
 }
 
 export default function App() {
-  const [todos, setTodos] = useState<TodosPayload | null>(null);
-  const [draft, setDraft] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [marker, setMarker] = useState<BadgeMarker>('idle');
-  const [serverHits, setServerHits] = useState<number | null>(null);
-  const [log, setLog] = useState<LogEntry[]>([]);
-  const [statsVersion, setStatsVersion] = useState(0);
-  const logId = useRef(0);
+  const [todos, setTodos] = useState<TodosPayload | null>(null)
+  const [draft, setDraft] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [marker, setMarker] = useState<BadgeMarker>('idle')
+  const [serverHits, setServerHits] = useState<number | null>(null)
+  const [log, setLog] = useState<LogEntry[]>([])
+  const [statsVersion, setStatsVersion] = useState(0)
+  const logId = useRef(0)
   // React StrictMode double-invokes the mount effect in development — the demo should
   // still pay the fake server's 400 ms only once.
-  const initialFetch = useRef(false);
+  const initialFetch = useRef(false)
 
   const pushLog = useCallback((entry: Omit<LogEntry, 'id' | 'time'>) => {
-    logId.current += 1;
-    const next: LogEntry = { ...entry, id: logId.current, time: new Date().toLocaleTimeString() };
-    setLog((previous) => [next, ...previous].slice(0, 12));
-  }, []);
+    logId.current += 1
+    const next: LogEntry = { ...entry, id: logId.current, time: new Date().toLocaleTimeString() }
+    setLog((previous) => [next, ...previous].slice(0, 12))
+  }, [])
 
   const refresh = useCallback(
     async (reason: 'load' | 'manual' | 'after-add' = 'manual') => {
-      setLoading(true);
-      const started = performance.now();
+      setLoading(true)
+      const started = performance.now()
       try {
         // ky applies the cache hooks here: a HIT never reaches the network.
-        const response = await api.get('api/todos');
-        const nextMarker = response.headers.get('x-blaze-cache') === 'HIT' ? 'HIT' : 'MISS';
-        const data = await response.json<TodosPayload>();
-        const ms = performance.now() - started;
+        const response = await api.get('api/todos')
+        const nextMarker = response.headers.get('x-blaze-cache') === 'HIT' ? 'HIT' : 'MISS'
+        const data = await response.json<TodosPayload>()
+        const ms = performance.now() - started
 
-        setTodos(data);
-        setMarker(nextMarker);
+        setTodos(data)
+        setMarker(nextMarker)
         pushLog({
           marker: nextMarker,
           ms,
           url: '/api/todos',
           note: reason === 'load' ? 'initial load' : undefined,
-        });
+        })
 
-        const hits = await readServerHits();
-        setServerHits(hits);
+        const hits = await readServerHits()
+        setServerHits(hits)
       } catch (error) {
-        const ms = performance.now() - started;
-        setMarker('ERR');
+        const ms = performance.now() - started
+        setMarker('ERR')
         pushLog({
           marker: 'ERR',
           ms,
           url: '/api/todos',
           note: error instanceof Error ? error.message : String(error),
-        });
+        })
       } finally {
-        setLoading(false);
-        setStatsVersion((version) => version + 1);
+        setLoading(false)
+        setStatsVersion((version) => version + 1)
       }
     },
     [pushLog],
-  );
+  )
 
   useEffect(() => {
-    if (initialFetch.current) return;
-    initialFetch.current = true;
-    void refresh('load');
-  }, [refresh]);
+    if (initialFetch.current) return
+    initialFetch.current = true
+    void refresh('load')
+  }, [refresh])
 
-  const stats = useMemo(() => cache.stats(), [statsVersion]);
+  const stats = useMemo(() => cache.stats(), [statsVersion])
 
   const addTodo = async () => {
-    const text = draft.trim();
-    if (!text) return;
-    setDraft('');
-    setAdding(true);
-    const started = performance.now();
+    const text = draft.trim()
+    if (!text) return
+    setDraft('')
+    setAdding(true)
+    const started = performance.now()
     try {
-      await api.post('api/todos', { json: { text } });
+      await api.post('api/todos', { json: { text } })
       pushLog({
         marker: 'LOG',
         ms: performance.now() - started,
         url: 'POST /api/todos',
         note: 'never cached',
-      });
+      })
     } catch (error) {
       pushLog({
         marker: 'ERR',
         ms: performance.now() - started,
         url: 'POST /api/todos',
         note: error instanceof Error ? error.message : String(error),
-      });
-      setAdding(false);
-      return;
+      })
+      setAdding(false)
+      return
     }
     // The list is cached under the 'ky' tag — drop it so the next read refetches.
-    cache.invalidateTags('ky');
-    await refresh('after-add');
-    setAdding(false);
-  };
+    cache.invalidateTags('ky')
+    await refresh('after-add')
+    setAdding(false)
+  }
 
   const runCacheOp = (label: string, note: string) => {
-    pushLog({ marker: 'LOG', ms: 0, url: label, note });
-    setStatsVersion((version) => version + 1);
-  };
+    pushLog({ marker: 'LOG', ms: 0, url: label, note })
+    setStatsVersion((version) => version + 1)
+  }
 
   const badgeClass =
     marker === 'HIT'
       ? 'badge badge-hit'
       : marker === 'MISS'
         ? 'badge badge-miss'
-        : 'badge badge-idle';
-  const badgeText = marker === 'ERR' ? 'error' : marker;
+        : 'badge badge-idle'
+  const badgeText = marker === 'ERR' ? 'error' : marker
   const fetchedLine =
-    todos === null ? 'no fetch yet' : `fetched at ${new Date(todos.fetchedAt).toLocaleTimeString()}`;
+    todos === null ? 'no fetch yet' : `fetched at ${new Date(todos.fetchedAt).toLocaleTimeString()}`
 
   return (
     <main className="layout">
@@ -161,8 +161,8 @@ export default function App() {
         <h1>Blaze Cache × ky</h1>
         <p>
           ky hooks backed by a WebAssembly cache: TTLs, SIEVE eviction, tags and IndexedDB
-          persistence. Every read pays 400&nbsp;ms of artificial latency on a MISS and is instant
-          on a HIT — reload the page and the list paints from storage, then revalidates in the
+          persistence. Every read pays 400&nbsp;ms of artificial latency on a MISS and is instant on
+          a HIT — reload the page and the list paints from storage, then revalidates in the
           background.
         </p>
         <p className="muted">
@@ -217,7 +217,7 @@ export default function App() {
             aria-label="new todo"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') void addTodo();
+              if (event.key === 'Enter') void addTodo()
             }}
           />
           <button type="button" onClick={() => void addTodo()} disabled={adding || !draft.trim()}>
@@ -231,7 +231,9 @@ export default function App() {
         <ol className="log" aria-live="polite" aria-label="request log">
           {log.map((entry) => (
             <li key={entry.id}>
-              <span className={entry.marker === 'HIT' ? 'hit' : entry.marker === 'MISS' ? 'miss' : ''}>
+              <span
+                className={entry.marker === 'HIT' ? 'hit' : entry.marker === 'MISS' ? 'miss' : ''}
+              >
                 {entry.marker.padEnd(4)}
               </span>
               <span>
@@ -271,25 +273,34 @@ export default function App() {
           <button
             type="button"
             onClick={() =>
-              runCacheOp("cache.invalidateTags('ky')", `dropped ${cache.invalidateTags('ky').length} entries`)
+              runCacheOp(
+                "cache.invalidateTags('ky')",
+                `dropped ${cache.invalidateTags('ky').length} entries`,
+              )
             }
           >
             Invalidate “ky”
           </button>
-          <button type="button" onClick={() => {
-            cache.clear();
-            runCacheOp('cache.clear()', 'all entries dropped');
-          }}>
+          <button
+            type="button"
+            onClick={() => {
+              cache.clear()
+              runCacheOp('cache.clear()', 'all entries dropped')
+            }}
+          >
             Clear cache
           </button>
-          <button type="button" onClick={() => {
-            cache.resetStats();
-            setStatsVersion((version) => version + 1);
-          }}>
+          <button
+            type="button"
+            onClick={() => {
+              cache.resetStats()
+              setStatsVersion((version) => version + 1)
+            }}
+          >
             Reset stats
           </button>
         </div>
       </section>
     </main>
-  );
+  )
 }

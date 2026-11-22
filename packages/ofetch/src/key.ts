@@ -90,7 +90,10 @@ export function encodeRequestBody(body: unknown): string | undefined {
   }
   // Raw bytes: refused rather than hashed, because a digest over caller-supplied
   // bytes is a collision surface this key does not need to open.
-  if (typeof ArrayBuffer !== 'undefined' && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
+  if (
+    typeof ArrayBuffer !== 'undefined' &&
+    (body instanceof ArrayBuffer || ArrayBuffer.isView(body))
+  ) {
     return undefined;
   }
 
@@ -163,7 +166,9 @@ export function defaultCacheKey(
   // two different identities, and only a length-delimited encoding (JSON being the simplest)
   // keeps them apart.
   const vary =
-    varyHeaders.length === 0 ? '' : JSON.stringify(varyHeaders.map((name) => headers.get(name) ?? ''));
+    varyHeaders.length === 0
+      ? ''
+      : JSON.stringify(varyHeaders.map((name) => headers.get(name) ?? ''));
 
   const payload = encodedBody === undefined ? vary : `${vary}${COMPONENT_SEPARATOR}${encodedBody}`;
   return `${base}?${cacheKeyHash(payload)}`;

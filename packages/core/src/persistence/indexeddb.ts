@@ -31,9 +31,10 @@ const SCHEMA_VERSION = 1;
  * The only step so far adopts v0 rows — their shape never changed, so the migration is
  * "keep them and let the next write stamp the version".
  */
-const MIGRATIONS: Record<number, (row: Record<string, unknown>) => Record<string, unknown> | null> = {
-  0: (row) => ({ ...row, v: SCHEMA_VERSION }),
-};
+const MIGRATIONS: Record<number, (row: Record<string, unknown>) => Record<string, unknown> | null> =
+  {
+    0: (row) => ({ ...row, v: SCHEMA_VERSION }),
+  };
 
 /** `PersistedRecord` plus the composite primary key, namespace index and schema stamp. */
 interface StoredRecord extends PersistedRecord {
@@ -225,7 +226,8 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       const index = db.transaction(store, 'readonly').objectStore(store).index('ns');
       const request = index.getAllKeys(ns);
       request.onsuccess = () => resolve(request.result ?? []);
-      request.onerror = () => reject(request.error ?? new Error('blaze-cache: failed to read IndexedDB'));
+      request.onerror = () =>
+        reject(request.error ?? new Error('blaze-cache: failed to read IndexedDB'));
     });
 
   const readAll = (db: IDBDatabase, ns: string): Promise<unknown[]> =>
@@ -233,7 +235,8 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       const index = db.transaction(store, 'readonly').objectStore(store).index('ns');
       const request = index.getAll(ns);
       request.onsuccess = () => resolve(request.result ?? []);
-      request.onerror = () => reject(request.error ?? new Error('blaze-cache: failed to read IndexedDB'));
+      request.onerror = () =>
+        reject(request.error ?? new Error('blaze-cache: failed to read IndexedDB'));
     });
 
   /** Applies one write batch — clear, then upserts, then deletes — in a single transaction. */
@@ -257,7 +260,12 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
         };
         for (const record of save) {
           deleteKey(record.key);
-          objectStore.put({ ...record, id: idFor(ns, record.key), ns, v: SCHEMA_VERSION } satisfies StoredRecord);
+          objectStore.put({
+            ...record,
+            id: idFor(ns, record.key),
+            ns,
+            v: SCHEMA_VERSION,
+          } satisfies StoredRecord);
         }
         for (const key of remove) deleteKey(key);
       };
@@ -399,7 +407,8 @@ export function indexedDbPersistence(options: IndexedDbOptions = {}): CachePersi
       const prefix = `${ns}\u0000`;
       // The index hands back composite ids; strip the prefix to recover the cache keys, and
       // ignore anything that somehow lacks it rather than feeding nonsense to reconciliation.
-      return ids.filter((id): id is string => typeof id === 'string' && id.startsWith(prefix))
+      return ids
+        .filter((id): id is string => typeof id === 'string' && id.startsWith(prefix))
         .map((id) => decodeIdKey(id.slice(prefix.length)));
     },
 
@@ -432,10 +441,7 @@ function schemaVersionOf(value: unknown): number | null {
 }
 
 /** Walks the migration steps from `from` up to {@link SCHEMA_VERSION}; `null` = unusable. */
-function migrate(
-  row: Record<string, unknown>,
-  from: number,
-): Record<string, unknown> | null {
+function migrate(row: Record<string, unknown>, from: number): Record<string, unknown> | null {
   let current: Record<string, unknown> | null = row;
   for (let version = from; version < SCHEMA_VERSION && current !== null; version += 1) {
     const step = MIGRATIONS[version];

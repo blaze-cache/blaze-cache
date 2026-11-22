@@ -152,9 +152,7 @@ export async function runBenchmark(options = {}) {
     // "vs best" is meaningful only within a scenario — the units are the same, the
     // workloads are not.
     const best = Math.max(
-      ...rows
-        .filter((row) => row.scenario === scenario.id)
-        .map((row) => row.opsPerSecond),
+      ...rows.filter((row) => row.scenario === scenario.id).map((row) => row.opsPerSecond),
     );
     for (const row of rows) {
       if (row.scenario === scenario.id) row.relative = row.opsPerSecond / best;
@@ -163,7 +161,14 @@ export async function runBenchmark(options = {}) {
 
   return {
     environment: detectEnvironment(),
-    config: { capacity, samples, targetMs, warmupBatches, payload: factory.payload, payloadKind: factory.kind },
+    config: {
+      capacity,
+      samples,
+      targetMs,
+      warmupBatches,
+      payload: factory.payload,
+      payloadKind: factory.kind,
+    },
     scenarios: scenarios.map(({ id, title, notes, category }) => ({ id, title, notes, category })),
     rows,
   };

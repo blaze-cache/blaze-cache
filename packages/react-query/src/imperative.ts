@@ -117,7 +117,12 @@ function purgeMirrorAndBuildFilters(
   // Hashes of the queries TanStack currently knows and that match the query-side filters —
   // the only mirror entries reachable when the selection leans on live query state.
   const knownHashes = (): Set<string> =>
-    new Set(client.getQueryCache().findAll(queryFilters).map((query) => query.queryHash));
+    new Set(
+      client
+        .getQueryCache()
+        .findAll(queryFilters)
+        .map((query) => query.queryHash),
+    );
 
   let removed: string[];
 
@@ -129,7 +134,9 @@ function purgeMirrorAndBuildFilters(
       // point at another integration's entry on a shared cache, which this purge must not
       // delete (see `purgeMirrorByTags`).
       removed = entriesOf(cache)
-        .filter((entry) => isMirrorRecord(entry.value) && hasAnyTag(entry, tags) && hashes.has(entry.key))
+        .filter(
+          (entry) => isMirrorRecord(entry.value) && hasAnyTag(entry, tags) && hashes.has(entry.key),
+        )
         .map((entry) => entry.key);
     } else {
       // TanStack's hashes alone cannot vouch for what sits under them in the mirror —
@@ -274,7 +281,7 @@ export function setBlazeQueryData<TData = unknown, TQueryKey extends QueryKey = 
 
   const hash = resolveQueryHash(client, queryKey);
   const dataUpdatedAt =
-    client.getQueryCache().get(hash)?.state.dataUpdatedAt ?? Date.now() /* always set */;
+    client.getQueryCache().get(hash)?.state.dataUpdatedAt ?? Date.now(); /* always set */
   cache.set(hash, { data: stored, dataUpdatedAt, queryKey }, mirrorWriteOptions(options));
   return stored;
 }

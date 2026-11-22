@@ -1,52 +1,52 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { createExampleCache } from './blaze.js';
-import type { ExampleStorage } from './blaze.js';
-import type { BlazeCache, CacheEvent } from '@blaze-cache/core';
+import { createExampleCache } from './blaze.js'
+import type { ExampleStorage } from './blaze.js'
+import type { BlazeCache, CacheEvent } from '@blaze-cache/core'
 
 interface EventLine {
-  id: number;
-  time: string;
-  text: string;
+  id: number
+  time: string
+  text: string
 }
 
 function describe(event: CacheEvent<string>): string {
   switch (event.type) {
     case 'set':
-      return `set ${event.key}`;
+      return `set ${event.key}`
     case 'touch':
-      return `touch ${event.key}`;
+      return `touch ${event.key}`
     case 'delete':
-      return `delete ${event.key}`;
+      return `delete ${event.key}`
     case 'clear':
-      return 'clear';
+      return 'clear'
     case 'invalidate':
-      return `invalidate ${event.keys.length} entr${event.keys.length === 1 ? 'y' : 'ies'} → ${event.keys.join(', ')}`;
+      return `invalidate ${event.keys.length} entr${event.keys.length === 1 ? 'y' : 'ies'} → ${event.keys.join(', ')}`
     case 'prune':
-      return `prune ${event.keys.length} expired → ${event.keys.join(', ')}`;
+      return `prune ${event.keys.length} expired → ${event.keys.join(', ')}`
     case 'evict':
-      return `evict ${event.key}`;
+      return `evict ${event.key}`
     case 'expire':
-      return `expire ${event.key}`;
+      return `expire ${event.key}`
     case 'hit':
-      return `hit ${event.key}`;
+      return `hit ${event.key}`
     case 'miss':
-      return `miss ${event.key}`;
+      return `miss ${event.key}`
     case 'remote-set':
-      return `remote set ${event.key}`;
+      return `remote set ${event.key}`
     case 'remote-delete':
-      return `remote delete ${event.key}`;
+      return `remote delete ${event.key}`
     case 'remote-clear':
-      return 'remote clear';
+      return 'remote clear'
     case 'remote-invalidate':
-      return 'remote invalidate';
+      return 'remote invalidate'
     case 'remote-rotate':
-      return 'remote rotate';
+      return 'remote rotate'
   }
 }
 
 const truncate = (value: string, limit = 48): string =>
-  value.length > limit ? `${value.slice(0, limit)}…` : value;
+  value.length > limit ? `${value.slice(0, limit)}…` : value
 
 export default function App() {
   // The cache is recreated when the storage mode changes: values move between the Rust slab
@@ -54,109 +54,109 @@ export default function App() {
   // way to show what each mode owns.
   const [storage, setStorage] = useState<ExampleStorage>(() =>
     new URLSearchParams(window.location.search).get('storage') === 'js' ? 'js' : 'wasm',
-  );
-  const [multiTab, setMultiTab] = useState(true);
-  const [persistence, setPersistence] = useState(true);
-  const [cache, setCache] = useState<BlazeCache<string> | null>(null);
-  const [keyInput, setKeyInput] = useState('greeting');
-  const [valueInput, setValueInput] = useState('hello from Blaze Cache');
-  const [ttlInput, setTtlInput] = useState('30000');
-  const [tagsInput, setTagsInput] = useState('demo');
-  const [tagInput, setTagInput] = useState('demo');
-  const [lookup, setLookup] = useState('(nothing read yet)');
-  const [log, setLog] = useState<EventLine[]>([]);
-  const [statsVersion, setStatsVersion] = useState(0);
-  const [entriesVersion, setEntriesVersion] = useState(0);
-  const idRef = useRef(0);
+  )
+  const [multiTab, setMultiTab] = useState(true)
+  const [persistence, setPersistence] = useState(true)
+  const [cache, setCache] = useState<BlazeCache<string> | null>(null)
+  const [keyInput, setKeyInput] = useState('greeting')
+  const [valueInput, setValueInput] = useState('hello from Blaze Cache')
+  const [ttlInput, setTtlInput] = useState('30000')
+  const [tagsInput, setTagsInput] = useState('demo')
+  const [tagInput, setTagInput] = useState('demo')
+  const [lookup, setLookup] = useState('(nothing read yet)')
+  const [log, setLog] = useState<EventLine[]>([])
+  const [statsVersion, setStatsVersion] = useState(0)
+  const [entriesVersion, setEntriesVersion] = useState(0)
+  const idRef = useRef(0)
 
   const pushLog = (text: string) => {
-    idRef.current += 1;
-    const line = { id: idRef.current, time: new Date().toLocaleTimeString(), text };
-    setLog((previous) => [line, ...previous].slice(0, 20));
-  };
+    idRef.current += 1
+    const line = { id: idRef.current, time: new Date().toLocaleTimeString(), text }
+    setLog((previous) => [line, ...previous].slice(0, 20))
+  }
 
   const refresh = () => {
-    setStatsVersion((version) => version + 1);
-    setEntriesVersion((version) => version + 1);
-  };
+    setStatsVersion((version) => version + 1)
+    setEntriesVersion((version) => version + 1)
+  }
 
   const stats = useMemo(
     () => cache?.stats() ?? null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cache, statsVersion],
-  );
+  )
   const entries = useMemo(
     () => cache?.entries().slice(0, 25) ?? [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cache, entriesVersion],
-  );
+  )
 
   useEffect(() => {
-    let active = true;
-    let off: (() => void) | undefined;
-    const pending = createExampleCache(storage, multiTab, persistence);
+    let active = true
+    let off: (() => void) | undefined
+    const pending = createExampleCache(storage, multiTab, persistence)
     void pending.then((next) => {
       if (!active) {
-        void next.dispose();
-        return;
+        void next.dispose()
+        return
       }
       off = next.on((event) => {
-        pushLog(describe(event));
-        refresh();
-      });
-      setCache(next);
+        pushLog(describe(event))
+        refresh()
+      })
+      setCache(next)
       pushLog(
         `storage: ${storage === 'js' ? 'js (values in a JS Map)' : 'wasm (values in the Rust slab)'}; ` +
           `multi-tab: ${multiTab ? 'on' : 'off'}; persistence: ${persistence ? 'on' : 'off'}`,
-      );
-      refresh();
-    });
+      )
+      refresh()
+    })
     return () => {
-      active = false;
-      off?.();
-      void pending.then((next) => next.dispose());
-    };
+      active = false
+      off?.()
+      void pending.then((next) => next.dispose())
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storage, multiTab, persistence]);
+  }, [storage, multiTab, persistence])
 
   const parsedTtl = (): number | null | undefined => {
-    const raw = ttlInput.trim();
-    if (raw === '') return undefined; // no TTL input → keep default? we treat empty as "no expiry"
-    const value = Number(raw);
-    return Number.isFinite(value) && value >= 0 ? value : null;
-  };
+    const raw = ttlInput.trim()
+    if (raw === '') return undefined // no TTL input → keep default? we treat empty as "no expiry"
+    const value = Number(raw)
+    return Number.isFinite(value) && value >= 0 ? value : null
+  }
 
   const parseTags = (raw: string) =>
     raw
       .split(',')
       .map((tag) => tag.trim())
-      .filter((tag) => tag.length > 0);
+      .filter((tag) => tag.length > 0)
 
   const setEntry = () => {
-    if (!cache) return;
-    const key = keyInput.trim();
+    if (!cache) return
+    const key = keyInput.trim()
     if (!key) {
-      pushLog('set skipped: key is empty');
-      return;
+      pushLog('set skipped: key is empty')
+      return
     }
-    const ttl = parsedTtl();
+    const ttl = parsedTtl()
     if (ttl === null) {
-      pushLog('set skipped: ttl must be a finite number ≥ 0 (ms), or empty for no expiry');
-      return;
+      pushLog('set skipped: ttl must be a finite number ≥ 0 (ms), or empty for no expiry')
+      return
     }
-    const tags = parseTags(tagsInput);
-    cache.set(key, valueInput, ttl === undefined ? { tags } : { ttlMs: ttl, tags });
-    setLookup(`set ${key}`);
-    refresh();
-  };
+    const tags = parseTags(tagsInput)
+    cache.set(key, valueInput, ttl === undefined ? { tags } : { ttlMs: ttl, tags })
+    setLookup(`set ${key}`)
+    refresh()
+  }
 
   const getEntry = () => {
-    if (!cache) return;
-    const key = keyInput.trim();
-    const value = cache.get(key);
-    setLookup(value === undefined ? `miss: ${key}` : value);
-    refresh();
-  };
+    if (!cache) return
+    const key = keyInput.trim()
+    const value = cache.get(key)
+    setLookup(value === undefined ? `miss: ${key}` : value)
+    refresh()
+  }
 
   /**
    * Re-reads the key from the shared IndexedDB bucket — the closest thing this playground has
@@ -165,41 +165,41 @@ export default function App() {
    * hydrate pulls the newest durable row either way, so this never invents a local value.
    */
   const refetchEntry = async () => {
-    if (!cache) return;
-    const key = keyInput.trim();
+    if (!cache) return
+    const key = keyInput.trim()
     if (!key) {
-      pushLog('refetch skipped: key is empty');
-      return;
+      pushLog('refetch skipped: key is empty')
+      return
     }
     try {
-      await cache.persistence.hydrate();
-      const value = cache.get(key);
-      pushLog(`refetch “${key}” → ${value === undefined ? 'miss' : value}`);
-      setLookup(value === undefined ? `miss after refetch: ${key}` : value);
+      await cache.persistence.hydrate()
+      const value = cache.get(key)
+      pushLog(`refetch “${key}” → ${value === undefined ? 'miss' : value}`)
+      setLookup(value === undefined ? `miss after refetch: ${key}` : value)
     } catch (error) {
-      pushLog(`refetch failed: ${String(error)}`);
+      pushLog(`refetch failed: ${String(error)}`)
     }
-    refresh();
-  };
+    refresh()
+  }
 
   const deleteEntry = () => {
-    if (!cache) return;
-    const key = keyInput.trim();
-    setLookup(cache.delete(key) ? `deleted ${key}` : `not found: ${key}`);
-    refresh();
-  };
+    if (!cache) return
+    const key = keyInput.trim()
+    setLookup(cache.delete(key) ? `deleted ${key}` : `not found: ${key}`)
+    refresh()
+  }
 
   const invalidateTag = () => {
-    if (!cache) return;
-    const tag = tagInput.trim();
+    if (!cache) return
+    const tag = tagInput.trim()
     if (!tag) {
-      pushLog('invalidate skipped: tag is empty');
-      return;
+      pushLog('invalidate skipped: tag is empty')
+      return
     }
-    const removed = cache.invalidateTags(tag);
-    pushLog(`invalidate “${tag}” → ${removed.length} removed`);
-    refresh();
-  };
+    const removed = cache.invalidateTags(tag)
+    pushLog(`invalidate “${tag}” → ${removed.length} removed`)
+    refresh()
+  }
 
   return (
     <main className="layout">
@@ -236,10 +236,20 @@ export default function App() {
         </div>
         <div className="row" aria-label="multi-tab sync">
           <span className="muted">multi-tab sync</span>
-          <button type="button" aria-pressed={multiTab} disabled={multiTab} onClick={() => setMultiTab(true)}>
+          <button
+            type="button"
+            aria-pressed={multiTab}
+            disabled={multiTab}
+            onClick={() => setMultiTab(true)}
+          >
             on
           </button>
-          <button type="button" aria-pressed={!multiTab} disabled={!multiTab} onClick={() => setMultiTab(false)}>
+          <button
+            type="button"
+            aria-pressed={!multiTab}
+            disabled={!multiTab}
+            onClick={() => setMultiTab(false)}
+          >
             off
           </button>
           <span className="muted">
@@ -248,10 +258,20 @@ export default function App() {
         </div>
         <div className="row" aria-label="persistence">
           <span className="muted">persistence</span>
-          <button type="button" aria-pressed={persistence} disabled={persistence} onClick={() => setPersistence(true)}>
+          <button
+            type="button"
+            aria-pressed={persistence}
+            disabled={persistence}
+            onClick={() => setPersistence(true)}
+          >
             on
           </button>
-          <button type="button" aria-pressed={!persistence} disabled={!persistence} onClick={() => setPersistence(false)}>
+          <button
+            type="button"
+            aria-pressed={!persistence}
+            disabled={!persistence}
+            onClick={() => setPersistence(false)}
+          >
             off
           </button>
           <span className="muted">
@@ -296,8 +316,8 @@ export default function App() {
         </div>
         <p className="muted">
           “Refetch” re-reads the key from the shared IndexedDB bucket when persistence is on (and
-          from the other tab when multi-tab sync is on). With persistence off it simply re-reads
-          the current cache. It shows the newest value instead of inventing one.
+          from the other tab when multi-tab sync is on). With persistence off it simply re-reads the
+          current cache. It shows the newest value instead of inventing one.
         </p>
         <p className="muted lookup" aria-live="polite">
           {lookup}
@@ -324,7 +344,11 @@ export default function App() {
               <tr key={entry.key}>
                 <td>{entry.key}</td>
                 <td>{truncate(String(entry.value))}</td>
-                <td>{entry.ttlMs === null ? '∞' : `${Math.max(0, Math.round(entry.ttlMs / 100) / 10)}s`}</td>
+                <td>
+                  {entry.ttlMs === null
+                    ? '∞'
+                    : `${Math.max(0, Math.round(entry.ttlMs / 100) / 10)}s`}
+                </td>
                 <td>{entry.tags.join(', ') || '—'}</td>
               </tr>
             ))}
@@ -335,19 +359,46 @@ export default function App() {
       <section className="panel" aria-labelledby="invalidate-title">
         <h2 id="invalidate-title">Tags</h2>
         <div className="row">
-          <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} aria-label="tag to invalidate" />
+          <input
+            value={tagInput}
+            onChange={(event) => setTagInput(event.target.value)}
+            aria-label="tag to invalidate"
+          />
           <button type="button" onClick={invalidateTag}>
             Invalidate tag
           </button>
-          <button type="button" onClick={() => { if (!cache) return; const removed = cache.prune(); pushLog(`prune → ${removed.length} expired`); refresh(); }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (!cache) return
+              const removed = cache.prune()
+              pushLog(`prune → ${removed.length} expired`)
+              refresh()
+            }}
+          >
             Prune expired
           </button>
-          <button type="button" onClick={() => { if (!cache) return; cache.clear(); setLookup('cache cleared'); refresh(); }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (!cache) return
+              cache.clear()
+              setLookup('cache cleared')
+              refresh()
+            }}
+          >
             Clear cache
           </button>
         </div>
         <div className="row">
-          <button type="button" onClick={() => { if (!cache) return; cache.resetStats(); refresh(); }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (!cache) return
+              cache.resetStats()
+              refresh()
+            }}
+          >
             Reset stats
           </button>
         </div>
@@ -385,5 +436,5 @@ export default function App() {
         </ol>
       </section>
     </main>
-  );
+  )
 }

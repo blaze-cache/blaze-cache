@@ -1,6 +1,11 @@
 :root {
   color-scheme: light dark;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
   line-height: 1.5;
 }
 
@@ -163,8 +168,15 @@ button:disabled:hover {
 }
 
 /* STALE marker for @blaze-cache/fetch */
-.badge-stale { color: #8250df; border-color: #8250df; background: color-mix(in srgb, #8250df 12%, transparent); }
-.log .stale { color: #8250df; font-weight: 700; }
+.badge-stale {
+  color: #8250df;
+  border-color: #8250df;
+  background: color-mix(in srgb, #8250df 12%, transparent);
+}
+.log .stale {
+  color: #8250df;
+  font-weight: 700;
+}
 
 /* Core playground additions */
 .field-grid {

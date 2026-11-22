@@ -78,7 +78,10 @@ export function parseCacheControl(value: string | undefined | null): CacheContro
  * name that *is* folded in (case-insensitively, as header names are) makes the response
  * storable.
  */
-export function varyIsStorable(responseVary: string | null, varyHeaders: readonly string[]): boolean {
+export function varyIsStorable(
+  responseVary: string | null,
+  varyHeaders: readonly string[],
+): boolean {
   if (responseVary === null) return true;
 
   const names = responseVary

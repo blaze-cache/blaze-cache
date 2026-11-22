@@ -28,16 +28,16 @@ const api = axios.create({ baseURL: '/api' });
 
 installBlazeCache(api, {
   cache,
-  ttlMs: 30_000,                  // default
-  methods: ['GET', 'HEAD'],       // default
-  honourCacheControl: true,       // default (cacheControl is an alias)
+  ttlMs: 30_000, // default
+  methods: ['GET', 'HEAD'], // default
+  honourCacheControl: true, // default (cacheControl is an alias)
   varyHeaders: ['Authorization'], // default
 });
 
 // Cached GET
 const response = await api.get('/users/42');
-response.fromBlazeCache;              // false on MISS, true on HIT
-response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
+response.fromBlazeCache; // false on MISS, true on HIT
+response.headers['x-blaze-cache']; // 'HIT' | 'MISS'
 
 // Bypass cache for a single request
 await api.get('/users/42', { blazeCache: false });
@@ -67,13 +67,13 @@ Pass `blazeCache` on any request config (types are augmented on `axios`):
 ```ts
 await api.get('/users/1', {
   blazeCache: {
-    enabled: true,                         // false bypasses read/write for this request
-    ttlMs: 30_000,                         // overrides adapter ttlMs (number or fn)
+    enabled: true, // false bypasses read/write for this request
+    ttlMs: 30_000, // overrides adapter ttlMs (number or fn)
     tags: (res, config) => ['user', 'user:1'],
-    key: 'user:1',                         // string or (config) => string
+    key: 'user:1', // string or (config) => string
     varyHeaders: ['Authorization'],
-    forceRefresh: true,                    // bypass read, store fresh response
-    invalidateTags: ['todos'],             // invalidate after the network response
+    forceRefresh: true, // bypass read, store fresh response
+    invalidateTags: ['todos'], // invalidate after the network response
   },
 });
 ```
@@ -82,66 +82,66 @@ await api.get('/users/1', {
 
 ## Behaviour
 
-* **`Cache-Control` is honoured on both sides** when `honourCacheControl` is on (default;
-  `cacheControl` is an alias) — `max-age` overrides `ttlMs` *minus the response's `Age`*
+- **`Cache-Control` is honoured on both sides** when `honourCacheControl` is on (default;
+  `cacheControl` is an alias) — `max-age` overrides `ttlMs` _minus the response's `Age`_
   (a `max-age=60, Age: 50` response has ten seconds left, not sixty); `no-store` (on the
   request or the response) bypasses the cache entirely, and `no-cache` — the per-field
   `no-cache="set-cookie"` spelling included — plus `max-age=0` on the request skip the
   read. Malformed directives are ignored rather than guessed at: an empty `max-age=` reads
-  as *no directive*, not as zero, and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
-* **Freshness is enforced by the adapter, not by the store** — each record carries the
+  as _no directive_, not as zero, and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
+- **Freshness is enforced by the adapter, not by the store** — each record carries the
   deadline it was written with, so even a store that never expires anything (a plain `Map`
   shim satisfies the interface) still cannot replay a response past its freshness lifetime.
-* **The key is the URL axios will actually request** — an absolute `url` ignores
+- **The key is the URL axios will actually request** — an absolute `url` ignores
   `baseURL`, the join collapses slashes exactly as axios' `buildFullPath` does, and the
   result is canonicalised through `new URL`. One endpoint, one entry.
-* **`Authorization` participates in the key** (hashed, never stored verbatim), so a
+- **`Authorization` participates in the key** (hashed, never stored verbatim), so a
   personalized response is never replayed to a different user. Tune with `varyHeaders`.
-* **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
+- **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
   a response varying on a header you have not put in `varyHeaders` is left uncached rather
   than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
   That is the safe default working as intended — list them to opt in.
-* **A hit behaves like a network response** — the raw body is stored, so
+- **A hit behaves like a network response** — the raw body is stored, so
   `transformResponse` runs on it exactly as it would on a miss, and it is replayed
-  through the *current* request's `validateStatus` (a stored `404` still rejects), with
+  through the _current_ request's `validateStatus` (a stored `404` still rejects), with
   the same `error.code` the network path produces: `4xx` is `ERR_BAD_REQUEST`, a
   sub-400 that failed a custom `validateStatus` (and any `5xx`) is `ERR_BAD_RESPONSE` —
   exactly axios' own `settle` partition.
-* **Streams are never stored** — `responseType: 'stream'` leaves `response.data` as a
+- **Streams are never stored** — `responseType: 'stream'` leaves `response.data` as a
   live Node stream the caller is about to consume, so there is nothing complete to
   replay. The `x-blaze-cache` marker is stripped from the stored headers too: it
-  describes *this* exchange, not the stored representation.
-* **Params containers key by content** — `URLSearchParams`, `FormData` and `Map` render
+  describes _this_ exchange, not the stored representation.
+- **Params containers key by content** — `URLSearchParams`, `FormData` and `Map` render
   as `'{}'` to `JSON.stringify`, so requests differing only in them used to collide on
   one key. Each is now flattened into a stable string of its actual entries: order
   preserved for `URLSearchParams` (axios sends it verbatim), order ignored for
   `FormData` parts and `Map` keys.
-* **A request body folds into the key too** — an opted-in `POST` with two different
+- **A request body folds into the key too** — an opted-in `POST` with two different
   payloads occupies two entries instead of replaying one response for the other. A body
   the key cannot read (raw bytes, a stream, anything serialising to the bare `'{}'`)
   leaves that request uncached rather than guessed at — the same "unknown ⇒ do not store"
   rule `Vary` follows — unless a `key` callback describes it.
-* **Replayed headers describe the stored body, not the wire** — axios decodes the body
+- **Replayed headers describe the stored body, not the wire** — axios decodes the body
   for you (and drops `content-encoding`), so `transfer-encoding` goes too and
   `content-length` is corrected to the payload's real size. A live request answered with
   `content-length: 1425` for `6504` decoded bytes would otherwise hand a hit a length that
   contradicts `data.byteLength`. Bodyless responses (HEAD) keep theirs: there the headers
-  describe the body a GET *would* return.
-* Only responses that pass `validateStatus` are stored; by default the cache keeps
+  describe the body a GET _would_ return.
+- Only responses that pass `validateStatus` are stored; by default the cache keeps
   `GET` and `HEAD` requests answering `2xx` (`methods: ['GET', 'HEAD']`). A method you
   cache beyond those is stored only when its body can be folded into the key (or a `key`
   callback describes it).
-* **HIT/MISS observability** — `response.fromBlazeCache` is `true` on cache hits and
+- **HIT/MISS observability** — `response.fromBlazeCache` is `true` on cache hits and
   `false` on network responses, and the `x-blaze-cache` header is set to `HIT`/`MISS`
   (configurable via `markerHeader`, or `false` to disable). Core cache `hit`/`miss`/`set`
   events fire when using `@blaze-cache/core`.
-* **Mutation invalidation** — `blazeCache.invalidateTags` invalidates tags on a cache that
+- **Mutation invalidation** — `blazeCache.invalidateTags` invalidates tags on a cache that
   supports it (e.g. `BlazeCache`) after the network response, so `POST`/`PUT`/`PATCH`/`DELETE`
   can bust related GET caches. The `invalidateCacheTags(cache, ...tags)` helper is also exported.
-* **A cache that throws costs one extra request, never a failed response** — the read and
+- **A cache that throws costs one extra request, never a failed response** — the read and
   the write are both guarded, and the failure is reported once on the console instead of
   turning a good network response into a rejected promise.
-* **Cache activity is observable** — the adapter reads with `cache.get` and writes with
+- **Cache activity is observable** — the adapter reads with `cache.get` and writes with
   `cache.set`, so the shared cache's typed event system sees every request it serves:
 
   ```ts
@@ -176,11 +176,11 @@ Setup, core concepts and the complete axios reference live in the
 
 ## Part of Blaze Cache
 
-* [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
-* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
-* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
-* [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
-* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
+- [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+- [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+- [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
+- [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
+- [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 

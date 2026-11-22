@@ -61,7 +61,11 @@ describe('multi-tab synchronization', () => {
     await settle();
     assert.equal(b.get('greeting'), 'hello', 'b received a');
     assert.deepEqual(b.tagsOf('greeting'), ['demo'], 'tags travelled too');
-    assert.deepEqual(bRemote.map((e) => e.type), ['remote-set'], 'b saw one remote event');
+    assert.deepEqual(
+      bRemote.map((e) => e.type),
+      ['remote-set'],
+      'b saw one remote event',
+    );
     assert.deepEqual(aRemote, [], 'a did not echo its own write');
 
     a.delete('greeting');
@@ -216,7 +220,11 @@ describe('multi-tab synchronization', () => {
     plain.on((event) => events.push(event.type));
     plain.set('k', 1);
     assert.equal(plain.get('k'), 1);
-    assert.deepEqual(events.filter((type) => type !== 'hit'), ['set'], 'no remote event without multiTab');
+    assert.deepEqual(
+      events.filter((type) => type !== 'hit'),
+      ['set'],
+      'no remote event without multiTab',
+    );
     await plain.dispose();
     await b.dispose();
   });

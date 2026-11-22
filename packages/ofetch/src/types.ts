@@ -62,7 +62,11 @@ export interface OfetchCacheRecord {
 /** The slice of a cache the adapter needs — deliberately structural. */
 export interface BlazeOfetchCacheLike {
   get(key: string): OfetchCacheRecord | undefined;
-  set(key: string, value: OfetchCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  set(
+    key: string,
+    value: OfetchCacheRecord,
+    options?: { ttlMs?: number; tags?: readonly string[] },
+  ): void;
   /**
    * Optional, so a minimal `Map` shim still satisfies the interface.
    *

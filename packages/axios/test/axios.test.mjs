@@ -31,7 +31,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /** The single stored record — and proof that there *is* one. */
 const onlyRecord = (cache) => {
@@ -88,10 +89,9 @@ describe('adapter', () => {
     assert.equal(hit.status, 200);
 
     // The entry sits under exactly the key `defaultCacheKey` would produce for it.
-    const expectedKey = defaultCacheKey(
-      { method: 'get', url: '/users/1', headers: {} },
-      ['authorization'],
-    );
+    const expectedKey = defaultCacheKey({ method: 'get', url: '/users/1', headers: {} }, [
+      'authorization',
+    ]);
     const { key, record } = onlyRecord(cache);
     assert.equal(key, expectedKey, 'the storage key is the documented default key');
     assert.equal(cache.get(expectedKey).data.id, 1, 'the payload is in the cache');
@@ -128,12 +128,18 @@ describe('adapter', () => {
     assert.equal(cache.size(), 2, 'two identities occupy two keys');
 
     const keys = cache.keys();
-    assert.ok(keys.every((key) => key.startsWith('get /me?')), 'both under method + URL + hash');
+    assert.ok(
+      keys.every((key) => key.startsWith('get /me?')),
+      'both under method + URL + hash',
+    );
     assert.ok(
       keys.every((key) => !key.includes('ada') && !key.includes('grace')),
       'no readable token ends up in a key',
     );
-    assert.deepEqual(cache.entries().map((entry) => entry.value.status), [200, 200]);
+    assert.deepEqual(
+      cache.entries().map((entry) => entry.value.status),
+      [200, 200],
+    );
   });
 
   it('honours Cache-Control on both sides', async () => {
@@ -408,7 +414,12 @@ describe('adapter', () => {
     cache.set('shared-key', foreign);
 
     const { adapter, calls } = stubNetwork({ '/foreign': { status: 200, data: { n: 1 } } });
-    const blaze = blazeAdapter({ cache, adapter, key: () => 'shared-key', shouldCache: () => false });
+    const blaze = blazeAdapter({
+      cache,
+      adapter,
+      key: () => 'shared-key',
+      shouldCache: () => false,
+    });
 
     const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
     assert.equal(calls.length, 1, 'the foreign value is not served — it goes to the network');
@@ -433,7 +444,12 @@ describe('adapter', () => {
     cache.set('shared-key', foreign);
 
     const { adapter, calls } = stubNetwork({ '/foreign': { status: 200, data: { n: 1 } } });
-    const blaze = blazeAdapter({ cache, adapter, key: () => 'shared-key', shouldCache: () => false });
+    const blaze = blazeAdapter({
+      cache,
+      adapter,
+      key: () => 'shared-key',
+      shouldCache: () => false,
+    });
 
     const miss = await blaze({ method: 'get', url: '/foreign', headers: new AxiosHeaders() });
     assert.equal(calls.length, 1, 'not served despite a fresh-looking deadline');
@@ -626,14 +642,12 @@ describe('defaultCacheKey', () => {
   });
 
   it('folds vary headers into a hash and never stores them verbatim', () => {
-    const asAda = defaultCacheKey(
-      { url: '/u', headers: { authorization: 'Bearer ada' } },
-      ['authorization'],
-    );
-    const asGrace = defaultCacheKey(
-      { url: '/u', headers: { authorization: 'Bearer grace' } },
-      ['authorization'],
-    );
+    const asAda = defaultCacheKey({ url: '/u', headers: { authorization: 'Bearer ada' } }, [
+      'authorization',
+    ]);
+    const asGrace = defaultCacheKey({ url: '/u', headers: { authorization: 'Bearer grace' } }, [
+      'authorization',
+    ]);
 
     assert.notEqual(asAda, asGrace, 'a different token is a different entry');
     assert.equal(
@@ -670,7 +684,10 @@ describe('defaultCacheKey', () => {
       { baseURL: 'https://api.test/v1', url: 's/users', headers: {} },
       [],
     );
-    const two = defaultCacheKey({ baseURL: 'https://api.test/v', url: '1s/users', headers: {} }, []);
+    const two = defaultCacheKey(
+      { baseURL: 'https://api.test/v', url: '1s/users', headers: {} },
+      [],
+    );
     assert.notEqual(one, two, 'two endpoints must not share a key');
 
     // …and the mirror image: axios requests `https://api.test/v1/users` for *both* of these
@@ -679,7 +696,10 @@ describe('defaultCacheKey', () => {
       { baseURL: 'https://api.test/v1/', url: '/users', headers: {} },
       [],
     );
-    const bare = defaultCacheKey({ baseURL: 'https://api.test/v1', url: '/users', headers: {} }, []);
+    const bare = defaultCacheKey(
+      { baseURL: 'https://api.test/v1', url: '/users', headers: {} },
+      [],
+    );
     assert.equal(trailing, bare, 'the same request must find the same entry');
     assert.ok(
       trailing.startsWith('get https://api.test/v1/users?'),
@@ -859,8 +879,18 @@ describe('container params in the cache key', () => {
     const blaze = blazeAdapter({ cache, adapter });
     const headers = () => new AxiosHeaders();
 
-    await blaze({ method: 'get', url: '/search', params: new URLSearchParams('q=a'), headers: headers() });
-    await blaze({ method: 'get', url: '/search', params: new URLSearchParams('q=b'), headers: headers() });
+    await blaze({
+      method: 'get',
+      url: '/search',
+      params: new URLSearchParams('q=a'),
+      headers: headers(),
+    });
+    await blaze({
+      method: 'get',
+      url: '/search',
+      params: new URLSearchParams('q=b'),
+      headers: headers(),
+    });
 
     assert.equal(calls.length, 2, 'the second query must not be answered from the first’s entry');
     assert.equal(cache.size(), 2, 'and both entries are stored');
@@ -935,7 +965,11 @@ describe('stream responses', () => {
     assert.equal(cache.size(), 0, 'a stream the caller is about to consume is never storable');
 
     await blaze(request());
-    assert.equal(calls.length, 2, 'the next request goes back to the network, not to a dead stream');
+    assert.equal(
+      calls.length,
+      2,
+      'the next request goes back to the network, not to a dead stream',
+    );
   });
 });
 
@@ -1031,7 +1065,12 @@ describe('solid defaults', () => {
     assert.equal(hit.fromBlazeCache, true, 'server no-store ignored when cacheControl is false');
 
     const cache2 = await makeCache();
-    const blaze2 = blazeAdapter({ cache: cache2, adapter, ttlMs: 60_000, honourCacheControl: false });
+    const blaze2 = blazeAdapter({
+      cache: cache2,
+      adapter,
+      ttlMs: 60_000,
+      honourCacheControl: false,
+    });
     await blaze2({ method: 'get', url: '/x', headers: new AxiosHeaders() });
     const hit2 = await blaze2({ method: 'get', url: '/x', headers: new AxiosHeaders() });
     assert.equal(hit2.fromBlazeCache, true, 'honourCacheControl alias also works');
@@ -1045,7 +1084,12 @@ describe('per-request blazeCache options', () => {
     const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
 
     await blaze({ method: 'get', url: '/a', headers: new AxiosHeaders(), blazeCache: false });
-    await blaze({ method: 'get', url: '/a', headers: new AxiosHeaders(), blazeCache: { enabled: false } });
+    await blaze({
+      method: 'get',
+      url: '/a',
+      headers: new AxiosHeaders(),
+      blazeCache: { enabled: false },
+    });
     assert.equal(calls.length, 2);
     assert.equal(cache.size(), 0);
   });
@@ -1055,7 +1099,12 @@ describe('per-request blazeCache options', () => {
     const { adapter, calls } = stubNetwork({ '/t': { status: 200, data: { n: 1 } } });
     const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
 
-    await blaze({ method: 'get', url: '/t', headers: new AxiosHeaders(), blazeCache: { ttlMs: 1 } });
+    await blaze({
+      method: 'get',
+      url: '/t',
+      headers: new AxiosHeaders(),
+      blazeCache: { ttlMs: 1 },
+    });
     const [key] = cache.keys();
     const rec = cache.get(key);
     assert.ok(rec.freshUntil - rec.storedAt <= 5, 'per-request ttlMs applied');
@@ -1066,12 +1115,25 @@ describe('per-request blazeCache options', () => {
 
   it('overrides tags per request (function and array forms)', async () => {
     const cache = await makeCache();
-    const { adapter } = stubNetwork({ '/tag': { status: 200, data: { ok: true } }, '/tag2': { status: 200, data: { ok: true } } });
+    const { adapter } = stubNetwork({
+      '/tag': { status: 200, data: { ok: true } },
+      '/tag2': { status: 200, data: { ok: true } },
+    });
     const blaze = blazeAdapter({ cache, adapter, tags: ['global'] });
 
-    await blaze({ method: 'get', url: '/tag', headers: new AxiosHeaders(), blazeCache: { tags: ['user', 'user:1'] } });
+    await blaze({
+      method: 'get',
+      url: '/tag',
+      headers: new AxiosHeaders(),
+      blazeCache: { tags: ['user', 'user:1'] },
+    });
     assert.deepEqual(cache.tagsOf(cache.keys()[0]), ['user', 'user:1']);
-    await blaze({ method: 'get', url: '/tag2', headers: new AxiosHeaders(), blazeCache: { tags: () => ['fn'] } });
+    await blaze({
+      method: 'get',
+      url: '/tag2',
+      headers: new AxiosHeaders(),
+      blazeCache: { tags: () => ['fn'] },
+    });
     assert.ok(cache.keys().some((k) => JSON.stringify(cache.tagsOf(k)) === JSON.stringify(['fn'])));
   });
 
@@ -1080,8 +1142,18 @@ describe('per-request blazeCache options', () => {
     const { adapter, calls } = stubNetwork({ '/k': { status: 200, data: { v: 1 } } });
     const blaze = blazeAdapter({ cache, adapter });
 
-    await blaze({ method: 'get', url: '/k', headers: new AxiosHeaders(), blazeCache: { key: 'user:1' } });
-    const hit = await blaze({ method: 'get', url: '/k?other=1', headers: new AxiosHeaders(), blazeCache: { key: 'user:1' } });
+    await blaze({
+      method: 'get',
+      url: '/k',
+      headers: new AxiosHeaders(),
+      blazeCache: { key: 'user:1' },
+    });
+    const hit = await blaze({
+      method: 'get',
+      url: '/k?other=1',
+      headers: new AxiosHeaders(),
+      blazeCache: { key: 'user:1' },
+    });
     assert.equal(calls.length, 1);
     assert.equal(hit.fromBlazeCache, true);
     assert.deepEqual(cache.keys(), ['user:1']);
@@ -1094,12 +1166,24 @@ describe('per-request blazeCache options', () => {
     const adapter = async (config) => {
       calls.push(config);
       n += 1;
-      return { data: { n }, status: 200, statusText: '200', headers: { 'content-type': 'application/json' }, config, request: {} };
+      return {
+        data: { n },
+        status: 200,
+        statusText: '200',
+        headers: { 'content-type': 'application/json' },
+        config,
+        request: {},
+      };
     };
     const blaze = blazeAdapter({ cache, adapter, ttlMs: 60_000 });
 
     await blaze({ method: 'get', url: '/fr', headers: new AxiosHeaders() });
-    const forced = await blaze({ method: 'get', url: '/fr', headers: new AxiosHeaders(), blazeCache: { forceRefresh: true } });
+    const forced = await blaze({
+      method: 'get',
+      url: '/fr',
+      headers: new AxiosHeaders(),
+      blazeCache: { forceRefresh: true },
+    });
     assert.equal(calls.length, 2);
     assert.equal(forced.fromBlazeCache, false);
     assert.deepEqual(forced.data, { n: 2 });
@@ -1115,7 +1199,14 @@ describe('mutation invalidation helpers', () => {
     let todoVersion = 0;
     const adapter = async (config) => {
       if (config.url === '/todos-create') {
-        return { data: { id: 2 }, status: 201, statusText: '201', headers: {}, config, request: {} };
+        return {
+          data: { id: 2 },
+          status: 201,
+          statusText: '201',
+          headers: {},
+          config,
+          request: {},
+        };
       }
       todoVersion += 1;
       const data = todoVersion === 1 ? [{ id: 1 }] : [{ id: 1 }, { id: 2 }];
@@ -1129,7 +1220,10 @@ describe('mutation invalidation helpers', () => {
     assert.equal(cache.size(), 1);
 
     await blaze({
-      method: 'post', url: '/todos-create', headers: new AxiosHeaders(), data: { text: 'x' },
+      method: 'post',
+      url: '/todos-create',
+      headers: new AxiosHeaders(),
+      data: { text: 'x' },
       blazeCache: { invalidateTags: ['todos'] },
     });
     assert.equal(cache.size(), 0, 'todos invalidated after mutation');
@@ -1143,12 +1237,20 @@ describe('mutation invalidation helpers', () => {
     const store = new Map();
     const cache = {
       get: (k) => store.get(k),
-      set: (k, v) => { store.set(k, v); },
+      set: (k, v) => {
+        store.set(k, v);
+      },
       delete: (k) => store.delete(k),
     };
     const { adapter, calls } = stubNetwork({ '/m': { status: 201, data: {} } });
     const blaze = blazeAdapter({ cache, adapter });
-    const res = await blaze({ method: 'post', url: '/m', headers: new AxiosHeaders(), data: {}, blazeCache: { invalidateTags: ['x'] } });
+    const res = await blaze({
+      method: 'post',
+      url: '/m',
+      headers: new AxiosHeaders(),
+      data: {},
+      blazeCache: { invalidateTags: ['x'] },
+    });
     assert.equal(res.status, 201);
     assert.equal(calls.length, 1);
   });

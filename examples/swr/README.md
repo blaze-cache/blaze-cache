@@ -8,20 +8,20 @@ latency and the server counts its own hits). `useBlazeSWR` hands the persisted l
 `fallbackData`, so a reload paints instantly while SWR revalidates in the background — like
 plain `useSWR`, but the data survives the session.
 
-* **Instant first paint** — after a reload, the list appears from the mirror before the 400 ms
+- **Instant first paint** — after a reload, the list appears from the mirror before the 400 ms
   fetch completes; `isValidating` shows the background revalidation.
-* **Two-sided invalidation** — the Add button and “Invalidate ‘todos’” purge the persisted
+- **Two-sided invalidation** — the Add button and “Invalidate ‘todos’” purge the persisted
   mirror (`cache.invalidateTags('todos')`) and revalidate the mounted hook via SWR's `mutate`.
-* **Request log** — every real network fetch is logged with its latency; render-time reads use
+- **Request log** — every real network fetch is logged with its latency; render-time reads use
   `peek` and don't move the hit rate.
-* **Cache statistics** — hits/misses/entries/evictions/expirations for the mirror.
-* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+- **Cache statistics** — hits/misses/entries/evictions/expirations for the mirror.
+- **Value storage** — the default keeps values as by-reference externrefs in Wasm;
   open with `?storage=js` (or use the toggle in the page header) to run the same demo
   with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
   and stable ids. Each mode has its own IndexedDB namespace.
-* **Reload** — entries persist to IndexedDB under `blaze-example-swr-wasm` / `blaze-example-swr-js`.
+- **Reload** — entries persist to IndexedDB under `blaze-example-swr-wasm` / `blaze-example-swr-js`.
 
-* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+- **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
 
 ## Run
 
@@ -46,12 +46,10 @@ serves it with the same fake API the dev server runs.
 ## What it wires up
 
 ```tsx
-const { data, isLoading, isValidating, mutate } = useBlazeSWR(
-  cache,
-  '/api/todos',
-  fetcher,
-  { ttlMs: 24 * 60 * 60_000, tags: ['swr', 'todos'] },
-);
+const { data, isLoading, isValidating, mutate } = useBlazeSWR(cache, '/api/todos', fetcher, {
+  ttlMs: 24 * 60 * 60_000,
+  tags: ['swr', 'todos'],
+});
 ```
 
 Successful fetches are written back under SWR's own key serialization (`unstable_serialize`) —

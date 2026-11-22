@@ -50,11 +50,7 @@ import type { BlazeSWRCacheLike, BlazeSWROptions } from './types.js';
  *                client-side state — the cache is still read, nothing is written.
  * @param options Normal SWR options plus `ttlMs`/`tags`/`forceRefresh`.
  */
-export function useBlazeSWR<
-  Data = any,
-  Error = any,
-  SWRKey extends Key = Key,
->(
+export function useBlazeSWR<Data = any, Error = any, SWRKey extends Key = Key>(
   cache: BlazeSWRCacheLike,
   key: SWRKey,
   fetcher: Fetcher<Data, SWRKey> | null = null,

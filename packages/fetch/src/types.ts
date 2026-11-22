@@ -98,7 +98,9 @@ export interface BlazeFetchRequestOptions {
    * Tags attached to this request's stored response. Overrides the wrapper-level `tags`.
    * The default (`['fetch', '<method> <url>']`) applies when neither is given.
    */
-  tags?: readonly string[] | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => readonly string[]);
+  tags?:
+    | readonly string[]
+    | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => readonly string[]);
 
   /**
    * Cache key for this request. A string is used as-is; a function receives the resolved
@@ -308,7 +310,11 @@ export interface BlazeFetchOptions {
 /** The slice of a cache the wrapper needs — deliberately structural. */
 export interface BlazeFetchCacheLike {
   get(key: string): FetchCacheRecord | undefined;
-  set(key: string, value: FetchCacheRecord, options?: { ttlMs?: number; tags?: readonly string[] }): void;
+  set(
+    key: string,
+    value: FetchCacheRecord,
+    options?: { ttlMs?: number; tags?: readonly string[] },
+  ): void;
   /**
    * Optional tag-based invalidation (e.g. `BlazeCache` from `@blaze-cache/core`).
    *

@@ -58,12 +58,13 @@ export function createBlazeFetch(
 ): BlazeFetch {
   // Called as a member of `globalThis`, so the receiver stays correct in browsers, where an
   // unbound `fetch` throws "Illegal invocation".
-  const network: typeof fetch =
-    options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const network: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
   const markerHeader =
     options.markerHeader === undefined ? DEFAULT_MARKER_HEADER : options.markerHeader;
-  const methods = new Set((options.methods ?? DEFAULT_METHODS).map((method) => method.toUpperCase()));
+  const methods = new Set(
+    (options.methods ?? DEFAULT_METHODS).map((method) => method.toUpperCase()),
+  );
   // `honourCacheControl` is the axios-consistent spelling; `cacheControl` is its alias.
   const honourCacheControl = options.honourCacheControl ?? options.cacheControl ?? true;
   const varyHeaders = options.varyHeaders ?? DEFAULT_VARY_HEADERS;
@@ -126,7 +127,10 @@ export function createBlazeFetch(
     }
   };
 
-  async function dispatch(input: RequestInfo | URL, init: BlazeFetchInit): Promise<CachedFetchResponse> {
+  async function dispatch(
+    input: RequestInfo | URL,
+    init: BlazeFetchInit,
+  ): Promise<CachedFetchResponse> {
     const reqOpts = getRequestOptions(init);
     const method = resolveMethod(input, init);
     const url = resolveUrl(input);
@@ -292,9 +296,7 @@ export function createBlazeFetch(
       // so nothing about this call's latency depends on the write, and a later read can
       // never race a half-written entry. The gate above, however, opens only once that
       // write has settled: that is what lets a joiner trust the cache it finds.
-      void store(response, key, url, request, reqOpts)
-        .catch(warnCacheFailure)
-        .finally(done);
+      void store(response, key, url, request, reqOpts).catch(warnCacheFailure).finally(done);
     } else {
       // Nothing will be stored for this call: wake any joiners so they can lead in turn.
       done();
@@ -377,11 +379,12 @@ export function createBlazeFetch(
     // `must-revalidate` (or its shared-cache spelling `proxy-revalidate`) closes the window
     // even when the feature is on: such a response must never be replayed past its
     // freshness, so there is nothing it may serve "while revalidating".
-    const staleMs = !swrEnabled || control.mustRevalidate
-      ? 0
-      : honourCacheControl && control.staleWhileRevalidateMs !== undefined
-        ? control.staleWhileRevalidateMs
-        : swrFallbackMs;
+    const staleMs =
+      !swrEnabled || control.mustRevalidate
+        ? 0
+        : honourCacheControl && control.staleWhileRevalidateMs !== undefined
+          ? control.staleWhileRevalidateMs
+          : swrFallbackMs;
 
     let body: ArrayBuffer;
     try {
@@ -439,10 +442,11 @@ export function createBlazeFetch(
     const headers = headersFromRecord(record.headers);
     if (markerHeader !== false) headers.set(markerHeader, marker);
 
-    const response = new Response(
-      NULL_BODY_STATUSES.has(record.status) ? null : record.body,
-      { status: record.status, statusText: record.statusText, headers },
-    );
+    const response = new Response(NULL_BODY_STATUSES.has(record.status) ? null : record.body, {
+      status: record.status,
+      statusText: record.statusText,
+      headers,
+    });
     // `url`/`redirected` are read-only accessors on the prototype; an own property shadows
     // them so a hit carries the metadata of the network response it stands in for.
     defineOwn(response, 'url', record.url);
@@ -504,7 +508,10 @@ function getRequestOptions(init: BlazeFetchInit): BlazeFetchRequestOptions | und
  * wins afterwards when honouring is on (see `store`).
  */
 function resolveTtl(
-  ttl: number | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => number) | undefined,
+  ttl:
+    | number
+    | ((response: Response, url: string, init: BlazeFetchEffectiveInit) => number)
+    | undefined,
   response: Response,
   url: string,
   init: BlazeFetchEffectiveInit,
@@ -526,7 +533,10 @@ function defaultShouldCache(response: Response): boolean {
  * still honour *its own* caller's cancellation, instead of hanging for as long as the
  * leader takes.
  */
-function raceWithAbort(pending: Promise<void>, signal: AbortSignal | null | undefined): Promise<void> {
+function raceWithAbort(
+  pending: Promise<void>,
+  signal: AbortSignal | null | undefined,
+): Promise<void> {
   if (!signal) return pending;
   if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise<void>((resolve, reject) => {
@@ -568,7 +578,12 @@ function headersToRecord(headers: Headers): Record<string, string> {
   // `record[name] = value` hands a literal `__proto__` to the inherited setter, which
   // ignores primitives — silently dropping a perfectly legal header instead of storing it.
   headers.forEach((value, name) => {
-    Object.defineProperty(record, name, { value, enumerable: true, writable: true, configurable: true });
+    Object.defineProperty(record, name, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   });
   return record;
 }
@@ -600,7 +615,12 @@ function storedHeaders(headers: Headers, body: ArrayBuffer): Record<string, stri
 /** Shadows a read-only prototype accessor with an own property; never throws. */
 function defineOwn(target: object, key: string, value: unknown): void {
   try {
-    Object.defineProperty(target, key, { value, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(target, key, {
+      value,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   } catch {
     // A frozen response: the missing metadata is cosmetic, never worth failing a hit over.
   }

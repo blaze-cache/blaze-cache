@@ -42,7 +42,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * The real `globalThis.fetch`, counting every request that actually leaves the process.
@@ -69,13 +70,7 @@ const realNetwork = (cache, options = {}) => {
     // conservative default nothing would ever be cached, and every HIT assertion below
     // would fail (correctly, but for the wrong reason). All of these are constant for the
     // requests this file makes, so keying on them changes nothing except storability.
-    varyHeaders: [
-      'authorization',
-      'accept',
-      'accept-encoding',
-      'x-requested-with',
-      'origin',
-    ],
+    varyHeaders: ['authorization', 'accept', 'accept-encoding', 'x-requested-with', 'origin'],
     ...options,
   });
   return {
@@ -87,7 +82,10 @@ const realNetwork = (cache, options = {}) => {
       // all the microtasks that follow — including the store's own `cache.set` — run before
       // the test looks at the cache. Without this the assertions race a body still in
       // flight, which a stubbed network never exposed.
-      await response.clone().arrayBuffer().catch(() => undefined);
+      await response
+        .clone()
+        .arrayBuffer()
+        .catch(() => undefined);
       await delay(0);
       return response;
     },
@@ -206,7 +204,7 @@ describe('live: real public API', () => {
       return;
     }
 
-    assert.equal(cache.size(), 0, "the real `no-cache` header beat our ttlMs: 60_000");
+    assert.equal(cache.size(), 0, 'the real `no-cache` header beat our ttlMs: 60_000');
     assert.deepEqual(cache.keys(), [], 'nothing was written, not even under another key');
 
     await fetch(NO_CACHE);
@@ -251,13 +249,10 @@ describe('live: real public API', () => {
     assert.equal(requests(), 2, '…and the refresh started in the background');
 
     const [key] = cache.keys();
-    await eventually(
-      () => {
-        const record = cache.get(key);
-        return Boolean(record) && record.freshUntil > Date.now();
-      },
-      'the background refresh never rewrote the entry',
-    );
+    await eventually(() => {
+      const record = cache.get(key);
+      return Boolean(record) && record.freshUntil > Date.now();
+    }, 'the background refresh never rewrote the entry');
 
     const fresh = await fetch(REPO);
     assert.equal(fresh.headers.get('x-blaze-cache'), 'HIT', 'the rewritten entry is fresh again');
@@ -287,7 +282,11 @@ describe('live: real public API', () => {
     const again = await fetch(REPO);
     assert.equal(again.headers.get('x-blaze-cache'), 'HIT', 'the anonymous entry survived');
     assert.equal(requests(), 2, '…and needed no third request');
-    assert.equal((await again.json()).full_name, 'blaze-cache/blaze-cache', 'with its payload intact');
+    assert.equal(
+      (await again.json()).full_name,
+      'blaze-cache/blaze-cache',
+      'with its payload intact',
+    );
 
     const keys = cache.keys();
     assert.equal(keys.length, 1, 'exactly one entry, for the one identity that succeeded');

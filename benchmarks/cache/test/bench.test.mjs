@@ -93,7 +93,10 @@ describe('scenarios', () => {
   it('names only registered adapters and defines the hooks they need', () => {
     const scenarios = buildScenarios(64);
     for (const scenario of scenarios) {
-      assert.ok(scenario.id && scenario.title && scenario.notes.length > 0, `${scenario.id} is described`);
+      assert.ok(
+        scenario.id && scenario.title && scenario.notes.length > 0,
+        `${scenario.id} is described`,
+      );
       assert.equal(typeof scenario.op, 'function', `${scenario.id} has an op`);
       assert.equal(typeof scenario.probe, 'function', `${scenario.id} has a probe`);
       assert.ok(scenario.adapters.length >= 2, `${scenario.id} compares at least two adapters`);
@@ -127,7 +130,11 @@ describe('scenarios', () => {
     }
     const [first, ...rest] = observed;
     for (const other of rest) {
-      assert.equal(other.canInvalidate, first.canInvalidate, `${other.name} invalidates like ${first.name}`);
+      assert.equal(
+        other.canInvalidate,
+        first.canInvalidate,
+        `${other.name} invalidates like ${first.name}`,
+      );
       assert.equal(other.readsBack, first.readsBack, `${other.name} reads back like ${first.name}`);
       assert.equal(other.holdsOne, first.holdsOne, `${other.name} holds like ${first.name}`);
     }

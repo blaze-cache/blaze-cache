@@ -1,5 +1,5 @@
-import { createCache } from '@blaze-cache/core';
-import type { BlazeCache } from '@blaze-cache/core';
+import { createCache } from '@blaze-cache/core'
+import type { BlazeCache } from '@blaze-cache/core'
 
 /**
  * A standalone playground for `@blaze-cache/core`.
@@ -24,18 +24,18 @@ import type { BlazeCache } from '@blaze-cache/core';
  * bucket. Writes use `immediate` mode so a Refetch in another tab sees the value right away.
  * Persistence itself is optional — turning it off keeps the cache memory-only (sync still works).
  */
-export type ExampleStorage = 'wasm' | 'js';
+export type ExampleStorage = 'wasm' | 'js'
 
 export async function createExampleCache(
   storage: ExampleStorage = 'wasm',
   multiTab = true,
   persistence = true,
 ): Promise<BlazeCache<string>> {
-  const namespace = `blaze-example-core-${storage}`;
+  const namespace = `blaze-example-core-${storage}`
   return createCache<string>({
     capacity: 100,
     storage,
     persistence: persistence ? { namespace, writeMode: 'immediate' } : false,
     ...(multiTab ? { multiTab: { enabled: true } } : {}),
-  });
+  })
 }

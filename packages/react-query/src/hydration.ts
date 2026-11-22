@@ -3,11 +3,7 @@ import type { DehydratedState, HydrateOptions, QueryClient } from '@tanstack/rea
 
 import { isMirrorRecord } from './record.js';
 import { DEFAULT_TAGS, DEFAULT_TTL_MS } from './sync.js';
-import type {
-  BlazeMirrorOptions,
-  BlazeQueryCacheLike,
-  BlazeQueryRecord,
-} from './types.js';
+import type { BlazeMirrorOptions, BlazeQueryCacheLike, BlazeQueryRecord } from './types.js';
 
 /** One entry of a `DehydratedState` — TanStack declares it but does not export the name. */
 type DehydratedQuery = DehydratedState['queries'][number];

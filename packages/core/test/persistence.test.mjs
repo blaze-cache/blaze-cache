@@ -162,11 +162,52 @@ describe('hydrate from IndexedDB', () => {
     await seed.close();
 
     await rawPut([
-      { id: 'app\0no-key', ns: 'app', value: 'no key at all', tags: [], ttlMs: null, storedAt: Date.now() },
-      { id: 'app\0bad-tags', ns: 'app', key: 'bad-tags', value: 1, tags: 'nope', ttlMs: null, storedAt: Date.now() },
-      { id: 'app\0bad-ttl', ns: 'app', key: 'bad-ttl', value: 1, tags: [], ttlMs: 'soon', storedAt: Date.now() },
-      { id: 'app\0bad-stamp', ns: 'app', key: 'bad-stamp', value: 1, tags: [], ttlMs: null, storedAt: Date.now(), v: 'not-a-version' },
-      { id: 'app\0after', ns: 'app', key: 'after', value: 'still fine', tags: [], ttlMs: null, storedAt: Date.now(), v: 1 },
+      {
+        id: 'app\0no-key',
+        ns: 'app',
+        value: 'no key at all',
+        tags: [],
+        ttlMs: null,
+        storedAt: Date.now(),
+      },
+      {
+        id: 'app\0bad-tags',
+        ns: 'app',
+        key: 'bad-tags',
+        value: 1,
+        tags: 'nope',
+        ttlMs: null,
+        storedAt: Date.now(),
+      },
+      {
+        id: 'app\0bad-ttl',
+        ns: 'app',
+        key: 'bad-ttl',
+        value: 1,
+        tags: [],
+        ttlMs: 'soon',
+        storedAt: Date.now(),
+      },
+      {
+        id: 'app\0bad-stamp',
+        ns: 'app',
+        key: 'bad-stamp',
+        value: 1,
+        tags: [],
+        ttlMs: null,
+        storedAt: Date.now(),
+        v: 'not-a-version',
+      },
+      {
+        id: 'app\0after',
+        ns: 'app',
+        key: 'after',
+        value: 'still fine',
+        tags: [],
+        ttlMs: null,
+        storedAt: Date.now(),
+        v: 1,
+      },
     ]);
 
     const warns = [];
@@ -189,13 +230,19 @@ describe('hydrate from IndexedDB', () => {
 
     const stats = cache.persistence.stats();
     assert.equal(stats.restored, 2);
-    assert.equal(stats.skipped, 3, 'keyless + bad tags + bad ttl (the bad stamp was the adapter\u2019s)');
+    assert.equal(
+      stats.skipped,
+      3,
+      'keyless + bad tags + bad ttl (the bad stamp was the adapter\u2019s)',
+    );
     assert.ok(
       warns.some((warning) => warning.includes('unreadable')),
       'the adapter reported its unreadable row',
     );
     assert.ok(
-      warns.some((warning) => warning.startsWith('[blaze-cache] skipping malformed persisted record')),
+      warns.some((warning) =>
+        warning.startsWith('[blaze-cache] skipping malformed persisted record'),
+      ),
       'and the cache reported the malformed ones — one warning, not one per row',
     );
     await cache.dispose();
@@ -261,7 +308,7 @@ describe('generation rotation', () => {
     );
     const stats = cache.persistence.stats();
     assert.equal(stats.aborted, 1, 'the pass is counted as aborted, not failed');
-    assert.equal(stats.errors, 0, "the new session inherits no errors");
+    assert.equal(stats.errors, 0, 'the new session inherits no errors');
 
     cache.set('fresh', 'B');
     await cache.persistence.flush();
@@ -483,7 +530,15 @@ describe('schema versioning', () => {
     await seed.close();
     await rawPut([
       // No `v` field: written by a release that predates schema stamping.
-      { id: 'legacy\0old', ns: 'legacy', key: 'old', value: 'from v0', tags: ['t'], ttlMs: null, storedAt: Date.now() },
+      {
+        id: 'legacy\0old',
+        ns: 'legacy',
+        key: 'old',
+        value: 'from v0',
+        tags: ['t'],
+        ttlMs: null,
+        storedAt: Date.now(),
+      },
     ]);
 
     const cache = await makeCache({ persistence: { namespace: 'legacy' } });
@@ -500,7 +555,16 @@ describe('schema versioning', () => {
     await seed.save([storedRecord('current', 1)]);
     await seed.close();
     await rawPut([
-      { id: 'future\0next', ns: 'future', key: 'next', value: 2, tags: [], ttlMs: null, storedAt: Date.now(), v: 99 },
+      {
+        id: 'future\0next',
+        ns: 'future',
+        key: 'next',
+        value: 2,
+        tags: [],
+        ttlMs: null,
+        storedAt: Date.now(),
+        v: 99,
+      },
     ]);
 
     const warns = [];
@@ -515,7 +579,10 @@ describe('schema versioning', () => {
 
     assert.equal(cache.get('current'), undefined, 'nothing is hydrated from an unknown schema');
     assert.equal(cache.get('next'), undefined);
-    assert.ok(warns.some((warning) => warning.includes('newer schema')), 'and the reset is announced');
+    assert.ok(
+      warns.some((warning) => warning.includes('newer schema')),
+      'and the reset is announced',
+    );
     assert.deepEqual(await peekRows('future'), {}, 'storage matches: the namespace is empty');
     await cache.dispose();
   });
@@ -622,7 +689,7 @@ describe('write coalescing and batching', () => {
         1, // no reconciliation read after clear, and clear+save share one transaction
         'clear + save commit together instead of serialising',
       );
-      assert.deepEqual((await peekRows('batch')), { b: 2 });
+      assert.deepEqual(await peekRows('batch'), { b: 2 });
       await idbCache.dispose();
     } finally {
       IDBDatabase.prototype.transaction = originalTransaction;
@@ -696,7 +763,12 @@ describe('persistence observability', () => {
     let cache;
     try {
       cache = await makeCache({
-        persistence: { adapter, onActivity: () => { throw new Error('bad observer'); } },
+        persistence: {
+          adapter,
+          onActivity: () => {
+            throw new Error('bad observer');
+          },
+        },
       });
       cache.set('k', 1);
       await cache.persistence.flush();
@@ -730,7 +802,9 @@ describe('persistence observability', () => {
     console.error = (...args) => consoleErrors.push(args);
     let cache;
     try {
-      cache = await makeCache({ persistence: { adapter, debounceMs: 15, onError: (e) => received.push(e) } });
+      cache = await makeCache({
+        persistence: { adapter, debounceMs: 15, onError: (e) => received.push(e) },
+      });
       cache.set('k', 1);
       await delay(80); // the debounced flush fails with nobody awaiting it
     } finally {
@@ -911,7 +985,16 @@ describe('persistence isolation regressions', () => {
     await seed.save([storedRecord('k', 'old')]);
     await seed.close();
     await rawPut([
-      { id: 'app\0alice\0k', ns: 'app\0alice', key: 'k', value: 2, tags: [], ttlMs: null, storedAt: Date.now(), v: 99 },
+      {
+        id: 'app\0alice\0k',
+        ns: 'app\0alice',
+        key: 'k',
+        value: 2,
+        tags: [],
+        ttlMs: null,
+        storedAt: Date.now(),
+        v: 99,
+      },
     ]);
 
     const bob = indexedDbPersistence({ namespace: 'app', generation: 'bob' });
@@ -934,7 +1017,11 @@ describe('persistence isolation regressions', () => {
       ['BOB'],
       'the new generation was not wiped',
     );
-    assert.deepEqual(await rawKeys(), ['app\0bob\0keep'], 'only the stale newer-schema row was cleared');
+    assert.deepEqual(
+      await rawKeys(),
+      ['app\0bob\0keep'],
+      'only the stale newer-schema row was cleared',
+    );
     assert.ok(warns.some((warning) => warning.includes('newer schema')));
     await alice.close();
     await bob.close();
@@ -944,8 +1031,12 @@ describe('persistence isolation regressions', () => {
     const rows = new Map();
     const adapter = {
       load: async () => [...rows.values()],
-      save: async (records) => { for (const record of records) rows.set(record.key, record); },
-      remove: async (keys) => { for (const key of keys) rows.delete(key); },
+      save: async (records) => {
+        for (const record of records) rows.set(record.key, record);
+      },
+      remove: async (keys) => {
+        for (const key of keys) rows.delete(key);
+      },
       clear: async () => rows.clear(),
       keys: async () => [...rows.keys()],
     };

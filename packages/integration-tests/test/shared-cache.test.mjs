@@ -103,11 +103,20 @@ const stubFetchNetwork = (body = { ok: true }) => {
  */
 function runSwrMiddleware(cache, middlewareOptions, key, fetcher, config = {}) {
   const captured = { key, fetcher, config };
-  const hook = blazeSWRMiddleware(cache, middlewareOptions)((k, f, c) => {
+  const hook = blazeSWRMiddleware(
+    cache,
+    middlewareOptions,
+  )((k, f, c) => {
     captured.key = k;
     captured.fetcher = f;
     captured.config = c;
-    return { data: undefined, error: undefined, isValidating: false, isLoading: false, mutate: () => {} };
+    return {
+      data: undefined,
+      error: undefined,
+      isValidating: false,
+      isLoading: false,
+      mutate: () => {},
+    };
   });
   captured.response = hook(key, fetcher, config);
   return captured;
@@ -169,7 +178,13 @@ async function populateAll(cache, options = {}) {
 
   // react-query — one mirrored query (TanStack state + mirror record, synchronously).
   const client = createBlazeQueryClient({ cache });
-  setBlazeQueryData(cache, client, ['users'], [1, 2, 3], options.rqTags ? { tags: options.rqTags } : {});
+  setBlazeQueryData(
+    cache,
+    client,
+    ['users'],
+    [1, 2, 3],
+    options.rqTags ? { tags: options.rqTags } : {},
+  );
 
   // SWR — one persisted entry, written by the middleware's persisting fetcher.
   const swrFetch = async () => ({ source: 'swr' });
@@ -184,9 +199,17 @@ async function populateAll(cache, options = {}) {
   return {
     keys: {
       axios: axiosCacheKey({ method: 'get', url: RESOURCE_URL, headers: {} }, ['authorization']),
-      fetch: fetchCacheKey(RESOURCE_URL, { method: 'GET', headers: { authorization: 'Bearer t' } }, ['authorization']),
-      ky: kyCacheKey(new Request(`${RESOURCE_URL}`, { headers: { authorization: 'Bearer k' } }), ['authorization']),
-      ofetch: ofetchCacheKey('GET', RESOURCE_URL, new Headers({ authorization: 'Bearer o' }), ['authorization']),
+      fetch: fetchCacheKey(
+        RESOURCE_URL,
+        { method: 'GET', headers: { authorization: 'Bearer t' } },
+        ['authorization'],
+      ),
+      ky: kyCacheKey(new Request(`${RESOURCE_URL}`, { headers: { authorization: 'Bearer k' } }), [
+        'authorization',
+      ]),
+      ofetch: ofetchCacheKey('GET', RESOURCE_URL, new Headers({ authorization: 'Bearer o' }), [
+        'authorization',
+      ]),
       reactQuery: hashQueryKey(['users']),
       swr: resolveBlazeKey(RESOURCE_URL),
     },
@@ -201,8 +224,14 @@ async function populateAll(cache, options = {}) {
 
 describe('key isolation', () => {
   it('axios and fetch file the same URL under different keys', () => {
-    const axKey = axiosCacheKey({ method: 'get', url: RESOURCE_URL, headers: {} }, ['authorization']);
-    const ftKey = fetchCacheKey(RESOURCE_URL, { method: 'GET', headers: { authorization: 'Bearer t' } }, ['authorization']);
+    const axKey = axiosCacheKey({ method: 'get', url: RESOURCE_URL, headers: {} }, [
+      'authorization',
+    ]);
+    const ftKey = fetchCacheKey(
+      RESOURCE_URL,
+      { method: 'GET', headers: { authorization: 'Bearer t' } },
+      ['authorization'],
+    );
     // Same format (`get <url>?<hash>`), but axios folds `params` into the hash input
     // ("undefined <vary>") and fetch does not — the suffixes cannot line up.
     assert.notEqual(axKey, ftKey);
@@ -230,7 +259,11 @@ describe('key isolation', () => {
     assert.ok(keys.ofetch.startsWith('get '));
     assert.equal(keys.swr, RESOURCE_URL);
     assert.equal(keys.reactQuery, '["users"]');
-    assert.notEqual(resolveBlazeKey(['users']), hashQueryKey(['users']), 'SWR array hashes vs TanStack JSON');
+    assert.notEqual(
+      resolveBlazeKey(['users']),
+      hashQueryKey(['users']),
+      'SWR array hashes vs TanStack JSON',
+    );
   });
 });
 
@@ -469,10 +502,17 @@ describe('forced key collisions (custom keys)', () => {
     const foreign = { title: 'an SWR-ish value' };
     cache.set('shared-key', foreign);
 
-    const { adapter, calls } = stubAxiosNetwork({ [RESOURCE_URL]: { status: 200, data: { source: 'axios' } } });
+    const { adapter, calls } = stubAxiosNetwork({
+      [RESOURCE_URL]: { status: 200, data: { source: 'axios' } },
+    });
     // `shouldCache: () => false` means axios writes nothing back — anything still in the
     // store after this request was *left alone* by the read path.
-    const blaze = blazeAdapter({ cache, adapter, key: () => 'shared-key', shouldCache: () => false });
+    const blaze = blazeAdapter({
+      cache,
+      adapter,
+      key: () => 'shared-key',
+      shouldCache: () => false,
+    });
 
     const miss = await blaze({ method: 'get', url: RESOURCE_URL, headers: new AxiosHeaders() });
 
@@ -481,7 +521,11 @@ describe('forced key collisions (custom keys)', () => {
     // every network MISS (the same contract the axios suite asserts), never `true`.
     assert.equal(miss.fromBlazeCache, false);
     assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
-    assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
+    assert.deepEqual(
+      cache.get('shared-key'),
+      foreign,
+      'a read never destroys another integration’s entry',
+    );
   });
 
   it('a foreign-shaped value under a colliding key is a miss for ky, never deleted', async () => {
@@ -502,7 +546,11 @@ describe('forced key collisions (custom keys)', () => {
 
     assert.equal(calls.length, 1, 'the foreign value is not served');
     assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
-    assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
+    assert.deepEqual(
+      cache.get('shared-key'),
+      foreign,
+      'a read never destroys another integration’s entry',
+    );
   });
 
   it('a foreign-shaped value under a colliding key is a miss for ofetch, never deleted', async () => {
@@ -523,7 +571,11 @@ describe('forced key collisions (custom keys)', () => {
 
     assert.equal(calls.length, 1, 'the foreign value is not served');
     assert.equal(miss.headers.get('x-blaze-cache'), 'MISS');
-    assert.deepEqual(cache.get('shared-key'), foreign, 'a read never destroys another integration’s entry');
+    assert.deepEqual(
+      cache.get('shared-key'),
+      foreign,
+      'a read never destroys another integration’s entry',
+    );
   });
 
   it('SWR never hands an axios record to the UI as fallbackData', async () => {
@@ -611,7 +663,11 @@ describe('shared capacity and stats', () => {
     await blaze({ method: 'get', url: '/x', headers: new AxiosHeaders() }); // hit-read
     assert.equal(calls.length, 1);
     const afterAxios = cache.stats();
-    assert.equal(afterAxios.misses, afterSeeds.misses + 1, 'the axios miss is on the shared ledger');
+    assert.equal(
+      afterAxios.misses,
+      afterSeeds.misses + 1,
+      'the axios miss is on the shared ledger',
+    );
     assert.equal(afterAxios.hits, afterSeeds.hits + 1, 'and so is its hit');
 
     // An ofetch read (MISS then HIT) lands on the same counters. Absolute URL: the adapter
@@ -627,7 +683,11 @@ describe('shared capacity and stats', () => {
     await ofetchApi(ofUrl); // hit-read
     assert.equal(ofStub.calls.length, 1);
     const afterOfetch = cache.stats();
-    assert.equal(afterOfetch.misses, afterAxios.misses + 1, 'ofetch’s miss is on the shared ledger');
+    assert.equal(
+      afterOfetch.misses,
+      afterAxios.misses + 1,
+      'ofetch’s miss is on the shared ledger',
+    );
     assert.equal(afterOfetch.hits, afterAxios.hits + 1, 'and so is its hit');
   });
 });

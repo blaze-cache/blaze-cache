@@ -108,7 +108,10 @@ function canonicalContainer(value: unknown): string | undefined {
     const entries = [...value.entries()]
       .map(
         ([key, item]) =>
-          [typeof key === 'string' ? JSON.stringify(key) : (stringifyParams(key) ?? 'null'), item] as const,
+          [
+            typeof key === 'string' ? JSON.stringify(key) : (stringifyParams(key) ?? 'null'),
+            item,
+          ] as const,
       )
       .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     return `Map({${entries.map(([key, item]) => `${key}:${stringifyParams(item) ?? 'null'}`).join(',')}})`;
@@ -223,6 +226,8 @@ export function defaultCacheKey(
   }
 
   const payload =
-    encodedBody === undefined ? `${params} ${vary}` : `${params} ${vary}${COMPONENT_SEPARATOR}${encodedBody}`;
+    encodedBody === undefined
+      ? `${params} ${vary}`
+      : `${params} ${vary}${COMPONENT_SEPARATOR}${encodedBody}`;
   return `${method} ${url}?${cacheKeyHash(payload)}`;
 }

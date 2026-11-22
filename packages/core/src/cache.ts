@@ -657,7 +657,12 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     }
 
     if (this.#storage === 'js') {
-      const ids = this.#wasm.setManyMeta(keys, ttlMs as unknown as Float64Array, tagsFlat, tagOffsets);
+      const ids = this.#wasm.setManyMeta(
+        keys,
+        ttlMs as unknown as Float64Array,
+        tagsFlat,
+        tagOffsets,
+      );
       for (let i = 0; i < n; i += 1) {
         const id = ids[i]!;
         this.#values.set(id, entries[i]!.value);
@@ -680,13 +685,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
         encodedTags.offsetsView,
       );
     } else {
-      this.#wasm.setMany(
-        keys,
-        values as unknown as any[],
-        ttlMs,
-        tagsFlat,
-        tagOffsets,
-      );
+      this.#wasm.setMany(keys, values as unknown as any[], ttlMs, tagsFlat, tagOffsets);
     }
 
     if (this.#hasChangeConsumers) {
@@ -707,11 +706,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * is the only genuine zero-copy value path, because arbitrary JS objects cannot live in
    * linear memory. Prefer `getBytesCopy` when a view must outlive the next write or eviction.
    */
-  setBytes(
-    key: string,
-    value: ArrayBufferView | ArrayBuffer,
-    options?: SetOptions,
-  ): boolean {
+  setBytes(key: string, value: ArrayBufferView | ArrayBuffer, options?: SetOptions): boolean {
     if (this.#storage !== 'wasm') {
       throw new Error('[blaze-cache] setBytes requires storage: "wasm" (the default).');
     }
@@ -746,12 +741,9 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       if (this.#dropTracking) this.#drainDrops();
       return undefined;
     }
-    const value = new Uint8Array(
-      wasmLinearMemory().buffer,
-      coordinates[0],
-      coordinates[1],
-    );
-    if (this.#events.hears('hit')) this.#events.emit('hit', { type: 'hit', key, value: value as V });
+    const value = new Uint8Array(wasmLinearMemory().buffer, coordinates[0], coordinates[1]);
+    if (this.#events.hears('hit'))
+      this.#events.emit('hit', { type: 'hit', key, value: value as V });
     if (this.#dropTracking) this.#drainDrops();
     return value;
   }
@@ -764,12 +756,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * stale pointer stores nothing and returns `false`. The public `setBytes` remains the safe
    * default; this entry point is opt-in and shares its view-lifetime contract.
    */
-  setBytesReserved(
-    key: string,
-    ptr: number,
-    length: number,
-    options?: SetOptions,
-  ): boolean {
+  setBytesReserved(key: string, ptr: number, length: number, options?: SetOptions): boolean {
     if (this.#storage !== 'wasm') {
       throw new Error('[blaze-cache] setBytesReserved requires storage: "wasm" (the default).');
     }
@@ -918,10 +905,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // neither registration nor the returned unsubscribe has to remember the wasm call.
     return maybeListener === undefined
       ? this.#events.on(typeOrListener as (event: any) => void)
-      : this.#events.on(
-          typeOrListener as CacheEventType,
-          maybeListener as (event: any) => void,
-        );
+      : this.#events.on(typeOrListener as CacheEventType, maybeListener as (event: any) => void);
   }
 
   /**
@@ -939,10 +923,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   ): () => void {
     return maybeListener === undefined
       ? this.#events.once(typeOrListener as (event: any) => void)
-      : this.#events.once(
-          typeOrListener as CacheEventType,
-          maybeListener as (event: any) => void,
-        );
+      : this.#events.once(typeOrListener as CacheEventType, maybeListener as (event: any) => void);
   }
 
   /**
@@ -1035,11 +1016,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     listener: CacheManySubscriber<V>,
     options?: CacheSubscribeOptions,
   ): () => void {
-    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeMany(
-      keys,
-      listener,
-      options,
-    );
+    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeMany(keys, listener, options);
   }
 
   /**
@@ -1065,11 +1042,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     listener: CacheTagSubscriber<V>,
     options?: CacheSubscribeOptions,
   ): () => void {
-    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeTag(
-      tag,
-      listener,
-      options,
-    );
+    return (this.#subs ??= new CacheSubscriptions<V>(this)).subscribeTag(tag, listener, options);
   }
 
   /**
@@ -1118,7 +1091,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // With sync on, IndexedDB writes are serialised across tabs by a Web Lock. A tab that is
     // still hidden cannot commit a stale snapshot over a peer's newer row: remote mutations
     // update this tab's queues first, and only the lock holder writes.
-    const locks = (globalThis as { navigator?: { locks?: { request(name: string, fn: () => Promise<void>): Promise<void> } } }).navigator?.locks;
+    const locks = (
+      globalThis as {
+        navigator?: { locks?: { request(name: string, fn: () => Promise<void>): Promise<void> } };
+      }
+    ).navigator?.locks;
     if (this.#multiTab?.active && locks) {
       return locks.request(this.#multiTab.channelName, () => this.#flushChain());
     }
@@ -1190,12 +1167,19 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    */
   #setupMultiTab(spec: MultiTabOptions | undefined): void {
     if (!spec?.enabled) return;
-    if (typeof spec.channel === 'string' && (spec.channel.length === 0 || spec.channel.includes('\0'))) {
-      throw new RangeError('[blaze-cache] multiTab.channel must be a non-empty string without NUL.');
+    if (
+      typeof spec.channel === 'string' &&
+      (spec.channel.length === 0 || spec.channel.includes('\0'))
+    ) {
+      throw new RangeError(
+        '[blaze-cache] multiTab.channel must be a non-empty string without NUL.',
+      );
     }
     const strategy = spec.strategy ?? 'value';
     if (strategy !== 'value' && strategy !== 'invalidate') {
-      throw new TypeError(`[blaze-cache] multiTab.strategy must be "value" or "invalidate", got ${String(strategy)}.`);
+      throw new TypeError(
+        `[blaze-cache] multiTab.strategy must be "value" or "invalidate", got ${String(strategy)}.`,
+      );
     }
     const self = this;
     this.#multiTab = new MultiTabSync<V>({
@@ -1235,12 +1219,14 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
           self.#emitRemote(type, key, value);
         },
         snapshot() {
-          return (self.#wasm.entries() as Array<{
-            key: string;
-            value: V;
-            ttlMs: number | null;
-            tags: string[];
-          }>).map((entry) => ({
+          return (
+            self.#wasm.entries() as Array<{
+              key: string;
+              value: V;
+              ttlMs: number | null;
+              tags: string[];
+            }>
+          ).map((entry) => ({
             key: entry.key,
             value: entry.value,
             ttlMs: entry.ttlMs,
@@ -1312,12 +1298,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     // fire immediately, and `maxEntries: 0` would persist *everything* — `slice(-0)` is
     // the whole array, not the empty one. A caller who passes a bad number gets a loud
     // failure at `create` rather than a mysterious persistence behaviour later.
-    const debounceMs = pickPaired(
-      spec.debounceMs,
-      spec.flushDelayMs,
-      'debounceMs',
-      'flushDelayMs',
-    );
+    const debounceMs = pickPaired(spec.debounceMs, spec.flushDelayMs, 'debounceMs', 'flushDelayMs');
     if (debounceMs !== undefined && (!Number.isFinite(debounceMs) || debounceMs < 0)) {
       throw new RangeError(
         `[blaze-cache] persistence.debounceMs must be a finite number >= 0, got ${String(debounceMs)}.`,
@@ -1432,7 +1413,10 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       let reason: string | null = null;
       if (typeof record?.key !== 'string') {
         reason = 'key is missing or not a string';
-      } else if (!Array.isArray(record.tags) || record.tags.some((tag) => typeof tag !== 'string')) {
+      } else if (
+        !Array.isArray(record.tags) ||
+        record.tags.some((tag) => typeof tag !== 'string')
+      ) {
         reason = 'tags are not an array of strings';
       } else if (
         record.ttlMs !== null &&
@@ -1898,12 +1882,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       switch (change.type) {
         case 'set': {
           const entry = this.#entryFor(change.key);
-          sync.publishSet(
-            change.key,
-            entry?.value,
-            entry?.ttlMs ?? null,
-            entry?.tags ?? [],
-          );
+          sync.publishSet(change.key, entry?.value, entry?.ttlMs ?? null, entry?.tags ?? []);
           const version = sync.lastVersion;
           if (version) this.#versions.set(change.key, version);
           break;
@@ -1986,8 +1965,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
   #entryFor(key: string): CacheEntry<V> | undefined {
     if (this.#storage === 'js') {
       const meta = this.#wasm.entryMeta(key) as
-        | { key: string; id: number; ttlMs: number | null; tags: string[] }
-        | undefined;
+        { key: string; id: number; ttlMs: number | null; tags: string[] } | undefined;
       if (!meta) return undefined;
       return {
         key: meta.key,

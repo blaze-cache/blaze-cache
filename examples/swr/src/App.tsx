@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useBlazeSWR } from '@blaze-cache/swr';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useBlazeSWR } from '@blaze-cache/swr'
 
-import { cache, fetchTodosPayload, storage, multiTab, persistence } from './blaze.js';
+import { cache, fetchTodosPayload, storage, multiTab, persistence } from './blaze.js'
 
 /** Rebuilds the demo URL with one option flipped; changing it recreates the page's cache. */
 function withOption(patch: { sync?: string; persistence?: string }): string {
@@ -9,151 +9,157 @@ function withOption(patch: { sync?: string; persistence?: string }): string {
     storage,
     sync: multiTab ? 'on' : 'off',
     persistence: persistence ? 'on' : 'off',
-  });
-  for (const [key, value] of Object.entries(patch)) params.set(key, value);
-  return `?${params.toString()}`;
+  })
+  for (const [key, value] of Object.entries(patch)) params.set(key, value)
+  return `?${params.toString()}`
 }
 
-type LogMarker = 'SYNC' | 'ERR' | 'LOG';
+type LogMarker = 'SYNC' | 'ERR' | 'LOG'
 
 interface LogEntry {
-  id: number;
-  time: string;
-  ms: number;
-  marker: LogMarker;
-  url: string;
-  note?: string;
+  id: number
+  time: string
+  ms: number
+  marker: LogMarker
+  url: string
+  note?: string
 }
 
 /** Read the fake server's counter without going through SWR or the mirror. */
 async function readServerHits(): Promise<number | null> {
   try {
-    const response = await fetch('/api/__stats', { cache: 'no-store' });
-    if (!response.ok) return null;
-    const body = (await response.json()) as { serverHits?: number };
-    return typeof body.serverHits === 'number' ? body.serverHits : null;
+    const response = await fetch('/api/__stats', { cache: 'no-store' })
+    if (!response.ok) return null
+    const body = (await response.json()) as { serverHits?: number }
+    return typeof body.serverHits === 'number' ? body.serverHits : null
   } catch {
-    return null;
+    return null
   }
 }
 
 export default function App() {
-  const [draft, setDraft] = useState('');
-  const [serverHits, setServerHits] = useState<number | null>(null);
-  const [log, setLog] = useState<LogEntry[]>([]);
-  const [statsVersion, setStatsVersion] = useState(0);
-  const logId = useRef(0);
+  const [draft, setDraft] = useState('')
+  const [serverHits, setServerHits] = useState<number | null>(null)
+  const [log, setLog] = useState<LogEntry[]>([])
+  const [statsVersion, setStatsVersion] = useState(0)
+  const logId = useRef(0)
 
   const pushLog = useCallback((entry: Omit<LogEntry, 'id' | 'time'>) => {
-    logId.current += 1;
+    logId.current += 1
     const next: LogEntry = {
       ...entry,
       id: logId.current,
       time: new Date().toLocaleTimeString(),
-    };
-    setLog((previous) => [next, ...previous].slice(0, 12));
-  }, []);
+    }
+    setLog((previous) => [next, ...previous].slice(0, 12))
+  }, [])
 
   // Every real network read goes through this, so the log shows what the mirror hides.
   const fetcher = useCallback(
     async (url: string) => {
-      const started = performance.now();
+      const started = performance.now()
       try {
-        const payload = await fetchTodosPayload();
+        const payload = await fetchTodosPayload()
         pushLog({
           marker: 'SYNC',
           ms: performance.now() - started,
           url: `GET ${url}`,
           note: 'network fetch — mirror refilled',
-        });
-        return payload;
+        })
+        return payload
       } catch (error) {
         pushLog({
           marker: 'ERR',
           ms: performance.now() - started,
           url: `GET ${url}`,
           note: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
+        })
+        throw error
       }
     },
     [pushLog],
-  );
+  )
 
   const { data, error, isLoading, isValidating, mutate } = useBlazeSWR(
     cache,
     '/api/todos',
     fetcher,
     { ttlMs: 24 * 60 * 60_000, tags: ['swr', 'todos'] },
-  );
+  )
 
   useEffect(() => {
-    if (!data) return;
-    let cancelled = false;
+    if (!data) return
+    let cancelled = false
     void readServerHits().then((hits) => {
-      if (!cancelled) setServerHits(hits);
-    });
+      if (!cancelled) setServerHits(hits)
+    })
     return () => {
-      cancelled = true;
-    };
-  }, [data]);
+      cancelled = true
+    }
+  }, [data])
 
-  const stats = useMemo(() => cache.stats(), [statsVersion]);
-  const fetchedAt = data ? new Date(data.fetchedAt).toLocaleTimeString() : null;
-  const badgeText = isLoading ? 'loading' : isValidating ? 'revalidating' : data ? 'persisted' : 'idle';
+  const stats = useMemo(() => cache.stats(), [statsVersion])
+  const fetchedAt = data ? new Date(data.fetchedAt).toLocaleTimeString() : null
+  const badgeText = isLoading
+    ? 'loading'
+    : isValidating
+      ? 'revalidating'
+      : data
+        ? 'persisted'
+        : 'idle'
   const badgeClass = isValidating
     ? 'badge badge-miss'
     : data
       ? 'badge badge-hit'
-      : 'badge badge-idle';
+      : 'badge badge-idle'
 
   const submitDraft = async () => {
-    const text = draft.trim();
-    if (!text) return;
-    setDraft('');
-    const started = performance.now();
+    const text = draft.trim()
+    if (!text) return
+    setDraft('')
+    const started = performance.now()
     const response = await fetch('/api/todos', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text }),
-    });
+    })
     if (!response.ok) {
       pushLog({
         marker: 'ERR',
         ms: performance.now() - started,
         url: 'POST /api/todos',
         note: `failed with ${response.status}`,
-      });
-      return;
+      })
+      return
     }
     pushLog({
       marker: 'LOG',
       ms: performance.now() - started,
       url: 'POST /api/todos',
       note: 'never mirrored',
-    });
+    })
     // Drop the persisted copies, then revalidate the mounted hook.
-    cache.invalidateTags('todos');
-    await mutate();
-    setStatsVersion((version) => version + 1);
-  };
+    cache.invalidateTags('todos')
+    await mutate()
+    setStatsVersion((version) => version + 1)
+  }
 
   const invalidateTodos = async () => {
-    const removed = cache.invalidateTags('todos');
+    const removed = cache.invalidateTags('todos')
     pushLog({
       marker: 'LOG',
       ms: 0,
       url: "cache.invalidateTags('todos')",
       note: `purged ${removed.length} persisted entr${removed.length === 1 ? 'y' : 'ies'}`,
-    });
-    await mutate();
-    setStatsVersion((version) => version + 1);
-  };
+    })
+    await mutate()
+    setStatsVersion((version) => version + 1)
+  }
 
   const runCacheOp = (label: string, note: string) => {
-    pushLog({ marker: 'LOG', ms: 0, url: label, note });
-    setStatsVersion((version) => version + 1);
-  };
+    pushLog({ marker: 'LOG', ms: 0, url: label, note })
+    setStatsVersion((version) => version + 1)
+  }
 
   return (
     <main className="layout">
@@ -216,7 +222,7 @@ export default function App() {
             aria-label="new todo"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') void submitDraft();
+              if (event.key === 'Enter') void submitDraft()
             }}
           />
           <button type="button" onClick={() => void submitDraft()} disabled={!draft.trim()}>
@@ -275,8 +281,8 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              cache.clear();
-              runCacheOp('cache.clear()', 'mirror purged (SWR snapshot untouched)');
+              cache.clear()
+              runCacheOp('cache.clear()', 'mirror purged (SWR snapshot untouched)')
             }}
           >
             Clear mirror
@@ -284,8 +290,8 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              cache.resetStats();
-              setStatsVersion((version) => version + 1);
+              cache.resetStats()
+              setStatsVersion((version) => version + 1)
             }}
           >
             Reset stats
@@ -293,5 +299,5 @@ export default function App() {
         </div>
       </section>
     </main>
-  );
+  )
 }

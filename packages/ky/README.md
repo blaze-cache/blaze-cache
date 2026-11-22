@@ -48,8 +48,8 @@ response.headers.get('x-blaze-cache'); // 'MISS' …
 
 ```ts
 const again = await api.get('https://api.example.com/users');
-again.headers.get('x-blaze-cache');    // … then 'HIT'
-await again.json();                    // the body replayed from the cache
+again.headers.get('x-blaze-cache'); // … then 'HIT'
+await again.json(); // the body replayed from the cache
 ```
 
 The helper form wraps the same hooks around a pre-configured instance — every ky option
@@ -59,7 +59,7 @@ passes through:
 import { createBlazeKy } from '@blaze-cache/ky';
 
 const api = createBlazeKy(cache, {
-  baseUrl: 'https://api.example.com',     // ky v2; ky v1 spells this `prefixUrl`
+  baseUrl: 'https://api.example.com', // ky v2; ky v1 spells this `prefixUrl`
   ttlMs: 30_000,
 });
 
@@ -68,52 +68,52 @@ const users = await api.get('users').json();
 
 ## Behaviour
 
-* **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
-  else always goes to the network and is never stored. A method you *do* list is only
+- **Only `GET` is cached** — pass `methods: ['GET', 'HEAD']` to include `HEAD`. Everything
+  else always goes to the network and is never stored. A method you _do_ list is only
   stored when its body can be folded into the cache key — two different payloads to the
   same URL must never share an entry — but ky hands its hooks a `Request` whose body is a
   stream, which the key cannot read: a body-carrying request therefore bypasses the cache
   unless you supply a `key` callback that describes it.
-* **Only successful responses are stored** — the default `shouldCache` keeps `2xx`;
+- **Only successful responses are stored** — the default `shouldCache` keeps `2xx`;
   replace it to widen or narrow that. A cached non-`2xx` (reachable with a custom
   `shouldCache`) still throws ky's `HTTPError` on replay exactly like the network one.
-* **`Cache-Control` is honoured on both sides** when `cacheControl` is on (the default):
+- **`Cache-Control` is honoured on both sides** when `cacheControl` is on (the default):
   on the request, `no-store`/`no-cache` and `max-age=0` skip the read, and `no-store`
   also skips the write; on the response, `max-age` overrides `ttlMs`, `Age` is deducted,
   and `no-store`/`no-cache` — the per-field `no-cache="set-cookie"` form included — stop
   it being stored. The parser is the same one `@blaze-cache/fetch` uses: malformed
   directives (`max-age=` with no value) are ignored rather than read as zero, and a
   duplicated directive keeps its first value (RFC 9111 §5.2.3).
-* **`Authorization` participates in the default key** (hashed, never stored verbatim), so
+- **`Authorization` participates in the default key** (hashed, never stored verbatim), so
   a personalized response is never replayed to a different user. Tune with `varyHeaders`.
-* **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
+- **The response's own `Vary` is honoured** — `Vary: *` is never stored (RFC 9111 §3), and
   a response varying on a header you have not put in `varyHeaders` is left uncached rather
   than replay a variant to the wrong caller. Server headers missing from `varyHeaders`?
   That is the safe default working as intended — list them to opt in. The check runs
-  before *every* store, `cacheControl: false` included: variant correctness is not a
+  before _every_ store, `cacheControl: false` included: variant correctness is not a
   freshness preference.
-* **Your hooks keep working** — `ky.extend` appends hooks, so your `beforeRequest` hooks
+- **Your hooks keep working** — `ky.extend` appends hooks, so your `beforeRequest` hooks
   run **before** the cache (any header they set is folded into the key), and your
   `afterResponse` hooks run before the response is stored. With `createBlazeKy`, pass
   them in `options.hooks` and they are merged for you.
-* **A hit is a real `Response`** — status, status text, headers, body, `url` after a
+- **A hit is a real `Response`** — status, status text, headers, body, `url` after a
   redirect and `redirected` are replayed exactly, so your code cannot tell the difference
   apart from the marker header. Body shortcuts (`.json()`, `.blob()`, `.text()`) work on
   hits as on any response.
-* **A hit never re-stores itself** — ky runs `afterResponse` on a `beforeRequest`-returned
+- **A hit never re-stores itself** — ky runs `afterResponse` on a `beforeRequest`-returned
   response too; the adapter tracks its own replays by request identity, so every read
   leaves the entry's TTL exactly where it was.
-* **Buffering never delays a response** — the body is stored on a teed clone in the
+- **Buffering never delays a response** — the body is stored on a teed clone in the
   background, and the record is complete before it is written, so a hit can never
   half-load. Transport headers are corrected to the stored bytes (`content-encoding` and
   `transfer-encoding` dropped, `content-length` rewritten), exactly as
   `@blaze-cache/fetch` does.
-* **Failures behave like plain ky** — a rejected network call still rejects; a cache that
+- **Failures behave like plain ky** — a rejected network call still rejects; a cache that
   cannot read or store a response never breaks the request that produced it. Reads,
   writes, `shouldCache`, `key` and the clone step are all guarded: the first cache-layer
-  failure is announced once on the console, then the adapter keeps working *without* the
+  failure is announced once on the console, then the adapter keeps working _without_ the
   cache rather than warning on every call.
-* **Cache activity is observable** — the adapter reads with `cache.get` and writes with
+- **Cache activity is observable** — the adapter reads with `cache.get` and writes with
   `cache.set`, so the shared cache's typed event system sees every request it serves:
 
   ```ts
@@ -129,35 +129,35 @@ const users = await api.get('users').json();
 
 ```ts
 const hooks = blazeKyHook(cache, {
-  ttlMs: 30_000,                        // number | (response, request) => number
-  methods: ['GET'],                     // which methods are cacheable
-  cacheControl: true,                   // honour Cache-Control on request + response
-  key: (request) => request.url,        // custom cache key
-  shouldCache: (response) => response.ok,        // which responses are stored
-  tags: (response, request) => ['api'],          // tags on stored entries
-  varyHeaders: ['authorization'],       // headers folded into the default key
-  markerHeader: 'x-blaze-cache',        // or false to disable the marker
+  ttlMs: 30_000, // number | (response, request) => number
+  methods: ['GET'], // which methods are cacheable
+  cacheControl: true, // honour Cache-Control on request + response
+  key: (request) => request.url, // custom cache key
+  shouldCache: (response) => response.ok, // which responses are stored
+  tags: (response, request) => ['api'], // tags on stored entries
+  varyHeaders: ['authorization'], // headers folded into the default key
+  markerHeader: 'x-blaze-cache', // or false to disable the marker
 });
 ```
 
 `createBlazeKy(cache, options)` accepts these **plus** every ky option.
 
-| Option | Default | What it does |
-| --- | --- | --- |
-| `ttlMs` | `60_000` | Freshness window. Overridden by a response `max-age`. |
-| `methods` | `['GET']` | Methods eligible for caching. |
-| `cacheControl` | `true` | Honour `Cache-Control`/`Age` on both sides. |
-| `key` | method + URL + vary/body hash | Custom cache key. Supplying one also opts a body-carrying request into caching. |
-| `shouldCache` | `2xx` | Which responses are stored. |
-| `tags` | `['ky', '<method> <url>']` | Tags for `cache.invalidateTags(...)`. |
-| `varyHeaders` | `['authorization']` | Request headers folded into the default key. |
-| `markerHeader` | `'x-blaze-cache'` | Header carrying `HIT`/`MISS`; `false` disables it. |
+| Option         | Default                       | What it does                                                                    |
+| -------------- | ----------------------------- | ------------------------------------------------------------------------------- |
+| `ttlMs`        | `60_000`                      | Freshness window. Overridden by a response `max-age`.                           |
+| `methods`      | `['GET']`                     | Methods eligible for caching.                                                   |
+| `cacheControl` | `true`                        | Honour `Cache-Control`/`Age` on both sides.                                     |
+| `key`          | method + URL + vary/body hash | Custom cache key. Supplying one also opts a body-carrying request into caching. |
+| `shouldCache`  | `2xx`                         | Which responses are stored.                                                     |
+| `tags`         | `['ky', '<method> <url>']`    | Tags for `cache.invalidateTags(...)`.                                           |
+| `varyHeaders`  | `['authorization']`           | Request headers folded into the default key.                                    |
+| `markerHeader` | `'x-blaze-cache'`             | Header carrying `HIT`/`MISS`; `false` disables it.                              |
 
 Requests can force the behaviour per call:
 
 ```ts
-await api.get(url, { cache: 'no-cache' });   // skip the read, still store the response
-await api.get(url, { cache: 'no-store' });   // neither read nor write
+await api.get(url, { cache: 'no-cache' }); // skip the read, still store the response
+await api.get(url, { cache: 'no-store' }); // neither read nor write
 ```
 
 ## Invalidating
@@ -165,8 +165,8 @@ await api.get(url, { cache: 'no-store' });   // neither read nor write
 Stored responses carry two tags, so they plug straight into the cache's tag API:
 
 ```ts
-cache.invalidateTags('ky');                       // everything this adapter stored
-cache.invalidateTags('get https://api.example.com/users');  // one resource
+cache.invalidateTags('ky'); // everything this adapter stored
+cache.invalidateTags('get https://api.example.com/users'); // one resource
 ```
 
 The per-resource tag is `'<method> <url>'` — the same spelling `@blaze-cache/fetch` and
@@ -222,11 +222,11 @@ Setup, core concepts and the complete API reference live in the
 
 ## Part of Blaze Cache
 
-* [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
-* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — the drop-in `fetch()` replacement (stale-while-revalidate included)
-* [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — the axios adapter
-* [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
-* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
+- [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+- [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — the drop-in `fetch()` replacement (stale-while-revalidate included)
+- [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — the axios adapter
+- [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror
+- [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 

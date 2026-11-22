@@ -35,7 +35,8 @@ const SKIP = LIVE
 
 const REPO = '/repos/blaze-cache/blaze-cache';
 const RATE_LIMIT = '/rate_limit';
-const FILE = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
+const FILE =
+  'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const wasmBytes = await readFile(
@@ -43,7 +44,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * A real axios instance on `api.github.com` whose adapter counts actual round-trips.
@@ -142,7 +144,7 @@ describe('live: real public API', () => {
       return;
     }
 
-    assert.equal(cache.size(), 0, "the real `no-cache` header beat ttlMs: 30_000");
+    assert.equal(cache.size(), 0, 'the real `no-cache` header beat ttlMs: 30_000');
     assert.deepEqual(cache.keys(), [], 'nothing was written, not even under another key');
 
     await instance.get(RATE_LIMIT);
@@ -202,8 +204,16 @@ describe('live: real public API', () => {
     assert.deepEqual([...fromCache], [...fromNetwork], 'every byte identical');
 
     const { record } = onlyRecord(cache);
-    assert.equal(record.data.byteLength, fromNetwork.byteLength, 'the raw bytes are what got stored');
-    assert.equal(record.headers['content-encoding'], undefined, 'no encoding claim on decoded bytes');
+    assert.equal(
+      record.data.byteLength,
+      fromNetwork.byteLength,
+      'the raw bytes are what got stored',
+    );
+    assert.equal(
+      record.headers['content-encoding'],
+      undefined,
+      'no encoding claim on decoded bytes',
+    );
     if (record.headers['content-length'] !== undefined) {
       assert.equal(
         record.headers['content-length'],
