@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { createCache } from '@blaze-cache/core';
+import { createCache, wasmLinearMemory } from '@blaze-cache/core';
 
 const wasmBytes = await readFile(new URL('../pkg/blaze_cache_wasm_bg.wasm', import.meta.url));
 const makeCache = (options = {}) =>
@@ -57,6 +57,19 @@ describe('binary value mode', () => {
     assert.deepEqual(cache.invalidateTags('data'), ['bin']);
     assert.equal(cache.getBytes('bin'), undefined);
 
+    await cache.dispose();
+  });
+
+  it('supports the advanced reserved-region producer path', async () => {
+    const cache = await makeCache({ capacity: 4 });
+    const { BlazeCache } = await import('@blaze-cache/core/pkg/blaze_cache_wasm.js');
+    const length = 5;
+    const ptr = BlazeCache.bytesReserve(length);
+    new Uint8Array(wasmLinearMemory().buffer, ptr, length).set([9, 8, 7, 6, 5]);
+    assert.equal(cache.setBytesReserved('produced', ptr, length, { tags: ['decoder'] }), true);
+    assert.deepEqual([...cache.getBytesCopy('produced')], [9, 8, 7, 6, 5]);
+    assert.deepEqual(cache.tagsOf('produced'), ['decoder']);
+    assert.equal(cache.setBytesReserved('bad', 0xffffffff, length), false);
     await cache.dispose();
   });
 
