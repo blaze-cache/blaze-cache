@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+
+# Full verification before pushing to ANY branch. Deterministic checks run once; the benchmark
+# gate is retried once because short --quick samples are noisy on developer machines. CI still
+# runs the authoritative same-tree A/B gate.
+pnpm lint &&
+  pnpm test &&
+  pnpm test:wasm &&
+  pnpm -r test
+
+if ! pnpm bench:ci; then
+  echo "bench:ci failed — retrying once before blocking the push"
+  pnpm bench:ci
+fi

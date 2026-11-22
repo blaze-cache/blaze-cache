@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+
+# Fast checks on every commit.
+pnpm lint:js && pnpm format:check
+
+# Rust checks only when Rust sources/manifests are staged, so JS-only commits stay fast.
+if git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(rs|toml|lock)$' >/dev/null; then
+  cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
+fi
