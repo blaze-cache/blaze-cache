@@ -180,6 +180,11 @@ second copy. A view is valid only until the next allocation: `memory.grow` detac
 `ArrayBuffer`, and an evicted region can be reused. Use `getBytesCopy` for anything long-lived.
 `entries()`/`entry()` and persistence see a copied `Uint8Array`, so those paths stay
 structured-cloneable. `setBytes` is unavailable with `storage: 'js'` and throws a clear error.
+Advanced producers that already wrote into the arena can call
+`cache.setBytesReserved(key, ptr, len, options?)` to adopt the region with no JS→Wasm copy;
+get `ptr` from `WasmCache.bytesReserve(len)` (exported from the wasm package) and write through a
+view of `wasmLinearMemory().buffer`. The public `setBytes` and its view-lifetime contract are
+unchanged.
 
 **`storage: 'js'`** preserves by-reference semantics, tag invalidation, events, statistics,
 `entry()`/`entries()` and persistence: Wasm still owns the policy and reports evictions by
