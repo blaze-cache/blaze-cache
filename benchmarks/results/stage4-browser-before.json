@@ -1,0 +1,879 @@
+{
+  "environment": {
+    "runtime": "browser",
+    "version": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "MacIntel · 8 cores",
+    "cpu": "Apple M2",
+    "browser": "Chrome/157.0.0.0"
+  },
+  "config": {
+    "capacity": 10000,
+    "samples": 5,
+    "targetMs": 60,
+    "warmupBatches": 2,
+    "payload": "small",
+    "payloadKind": "object"
+  },
+  "scenarios": [
+    {
+      "id": "fill",
+      "title": "insert `capacity` distinct keys into an empty cache",
+      "notes": [
+        "One batch is one cold fill. The clear that makes it repeatable runs outside the timed region, so no adapter is charged for emptying itself.",
+        "payload small/object"
+      ],
+      "category": "diagnostic"
+    },
+    {
+      "id": "get-hit",
+      "title": "read a key that is present",
+      "notes": [
+        "Random reads over the resident set. Map does no bookkeeping; QuickLRU promotes on every hit; blaze sets SIEVE’s visited bit — each library paying what its policy requires.",
+        "payload small/object"
+      ],
+      "category": "diagnostic"
+    },
+    {
+      "id": "get-miss",
+      "title": "read a key that was never written",
+      "notes": [
+        "The cache is full but every read comes from a disjoint namespace — all three pay for a lookup that finds nothing.",
+        "payload small/object"
+      ],
+      "category": "diagnostic"
+    },
+    {
+      "id": "mixed-90-10",
+      "title": "90% reads / 10% writes under capacity pressure",
+      "notes": [
+        "The control for `full-featured`: same load plan, no deadline and no tags on the writes.",
+        "Reads from a hot half, writes to a cold half of a `2 × capacity` key space, so the bounded caches evict continuously while Map keeps everything.",
+        "payload small/object"
+      ],
+      "category": "control"
+    },
+    {
+      "id": "full-featured",
+      "title": "the same load, with TTL and tags on every write",
+      "notes": [
+        "The headline: what does a bounded, expiring, tag-invalidatable cache cost?",
+        "Identical to `mixed-90-10` except each write carries a one-hour deadline and one of 32 tags, and a tag is retired every 2500 iterations.",
+        "Map is given a hand-written LRU, deadline and tag index; QuickLRU supplies its own LRU and `maxAge` and is wrapped only for tags; blaze does all three in wasm.",
+        "payload small/object"
+      ],
+      "category": "headline"
+    },
+    {
+      "id": "ttl-churn",
+      "title": "TTL-expiry-heavy churn: every read reclaims a lapsed entry",
+      "notes": [
+        "Each untimed batch fills the cache with 1 ms deadlines and lets them lapse; the timed reads then do the lazy reclamation a synchronous cache must perform on access.",
+        "The two rivals expire with a hand-rolled deadline check and QuickLRU’s native `maxAge` respectively; blaze reclaims inside the Rust core and reports the drop through its log.",
+        "payload small/object"
+      ],
+      "category": "lifetime"
+    },
+    {
+      "id": "eviction-pressure",
+      "title": "a full cache evicts on every write",
+      "notes": [
+        "Each batch is one full-cache fill followed by `capacity` writes to a disjoint namespace, so every single write has to reclaim a slot.",
+        "All three adapters are bounded here (Map + a hand-rolled LRU, QuickLRU, blaze): an unbounded Map would be doing strictly less work and its row belongs in the diagnostic table only.",
+        "payload small/object"
+      ],
+      "category": "lifetime"
+    },
+    {
+      "id": "tag-invalidation-scale",
+      "title": "invalidation across a large tag index",
+      "notes": [
+        "A full cache spread over 128 tags, retired every 200 iterations against a background of reads — the index, not the individual delete, is under test.",
+        "The hand-rolled mirror keeps both key→tags and tag→keys in step, including on eviction; blaze maintains both indexes in wasm.",
+        "payload small/object"
+      ],
+      "category": "features"
+    },
+    {
+      "id": "persistence-flush",
+      "title": "flush a full cache of dirty records to storage",
+      "notes": [
+        "One timed op is a whole `capacity`-record flush; `ns/op` is normalised to **per record** so it can be read beside the point operations.",
+        "blaze uses its real write-through layer (debounce + reconciliation + one batched write) over an in-memory `CachePersistence`; the rivals use a hand-rolled pending-write queue over the same store. Node has no IndexedDB; the browser workspace runs the same scenario against real IDB-backed storage.",
+        "payload small/object"
+      ],
+      "category": "persistence"
+    },
+    {
+      "id": "hydration",
+      "title": "restore a full cache from storage",
+      "notes": [
+        "One timed op restores `capacity` stored records into a cleared cache; `ns/op` is per restored record.",
+        "Storage is seeded directly (bypassing the write path) so the number measures hydration alone. blaze uses `cache.persistence.hydrate()`; the rivals read the same rows and repopulate their stores.",
+        "payload small/object"
+      ],
+      "category": "persistence"
+    }
+  ],
+  "rows": [
+    {
+      "scenario": "fill",
+      "adapter": "Map",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 24.866666674613953,
+      "opsPerSecond": 40214477.19894386,
+      "spread": 9.383377933187914,
+      "samples": [
+        26.733333309491474,
+        26.46666665871938,
+        24.666666666666668,
+        24.399999996026356,
+        24.866666674613953
+      ],
+      "opsPerSample": 1500000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "fill",
+      "adapter": "QuickLRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 31.399999996026356,
+      "opsPerSecond": 31847133.76199201,
+      "spread": 7.855626302648198,
+      "samples": [
+        33.13333332538605,
+        31.26666667064031,
+        32.666666666666664,
+        31.399999996026356,
+        30.666666666666668
+      ],
+      "opsPerSample": 1500000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.7919320598012997
+    },
+    {
+      "scenario": "fill",
+      "adapter": "lru-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 46.69999998807907,
+      "opsPerSecond": 21413276.23672947,
+      "spread": 3.426124248929944,
+      "samples": [
+        47.099999874830246,
+        47.00000002980232,
+        46.10000002384186,
+        46.69999998807907,
+        45.49999985098839
+      ],
+      "opsPerSample": 1000000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.5324768025901836
+    },
+    {
+      "scenario": "fill",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 105.43478247912034,
+      "opsPerSecond": 9484536.094130358,
+      "spread": 3.2989690024815554,
+      "samples": [
+        103.26086950042973,
+        105.43478247912034,
+        106.73913029224977,
+        105.21739131730536,
+        105.86956493232562
+      ],
+      "opsPerSample": 460000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.23584879761608457
+    },
+    {
+      "scenario": "get-hit",
+      "adapter": "Map",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 24.63198064895299,
+      "opsPerSecond": 40597628.51602054,
+      "spread": 0.6633499268348051,
+      "samples": [
+        24.63198064895299,
+        24.7136787556724,
+        24.75452780903211,
+        24.591131595593282,
+        24.591131583419315
+      ],
+      "opsPerSample": 2448037,
+      "divisor": 1,
+      "sink": 17136259,
+      "relative": 1
+    },
+    {
+      "scenario": "get-hit",
+      "adapter": "QuickLRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 58.966291761674796,
+      "opsPerSecond": 16958841.57073535,
+      "spread": 1.1925042388777336,
+      "samples": [
+        59.26765271968208,
+        58.86583811898487,
+        59.06674543430224,
+        58.966291761674796,
+        58.5644771909151
+      ],
+      "opsPerSample": 995484,
+      "divisor": 1,
+      "sink": 6968388,
+      "relative": 0.4177298573990127
+    },
+    {
+      "scenario": "get-hit",
+      "adapter": "lru-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 38.113267080587136,
+      "opsPerSecond": 26237582.778867748,
+      "spread": 0.16556295336421495,
+      "samples": [
+        38.113267080587136,
+        38.050165629984924,
+        38.11326706178144,
+        38.113267080587136,
+        38.113267080587136
+      ],
+      "opsPerSample": 1584750,
+      "divisor": 1,
+      "sink": 11093250,
+      "relative": 0.6462836312843726
+    },
+    {
+      "scenario": "get-hit",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 80.8467648944646,
+      "opsPerSecond": 12369078.729438039,
+      "spread": 0.3350084052283594,
+      "samples": [
+        80.71134318576817,
+        80.71134318576817,
+        80.8467648944646,
+        80.8467648944646,
+        80.98218664351984
+      ],
+      "opsPerSample": 738434,
+      "divisor": 1,
+      "sink": 5169038,
+      "relative": 0.30467490790889384
+    },
+    {
+      "scenario": "get-miss",
+      "adapter": "Map",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 25.218966506627442,
+      "opsPerSecond": 39652695.51142011,
+      "spread": 1.1647254378510727,
+      "samples": [
+        25.42877488024748,
+        25.13504316218165,
+        25.218966506627442,
+        25.13504316218165,
+        25.26092817885034
+      ],
+      "opsPerSample": 2383127,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "get-miss",
+      "adapter": "QuickLRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 30.259614283785076,
+      "opsPerSecond": 33047347.881623864,
+      "spread": 8.892355765309846,
+      "samples": [
+        29.929166069559567,
+        30.259614283785076,
+        30.49564870241937,
+        30.967717581894203,
+        28.27692502656952
+      ],
+      "opsPerSample": 2118335,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.8334199593595376
+    },
+    {
+      "scenario": "get-miss",
+      "adapter": "lru-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 31.133169406520953,
+      "opsPerSecond": 32120083.469257917,
+      "spread": 2.0033388780628787,
+      "samples": [
+        31.704897055238767,
+        31.133169406520953,
+        31.133169406520953,
+        31.133169406520953,
+        31.081194168544755
+      ],
+      "opsPerSample": 1923993,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.8100353092012932
+    },
+    {
+      "scenario": "get-miss",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 66.185305758753,
+      "opsPerSecond": 15109093.907415394,
+      "spread": 1.1532125011804868,
+      "samples": [
+        66.29434253231405,
+        66.185305758753,
+        65.64012205342516,
+        66.185305758753,
+        66.40337927337963
+      ],
+      "opsPerSample": 917122,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.38103573319659756
+    },
+    {
+      "scenario": "mixed-90-10",
+      "adapter": "Map",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 33.950804153088704,
+      "opsPerSecond": 29454383.333333332,
+      "spread": 0.9999999900658761,
+      "samples": [
+        33.894219482872934,
+        33.950804153088704,
+        33.894219482872934,
+        34.120558180599566,
+        34.233727521031106
+      ],
+      "opsPerSample": 1767263,
+      "divisor": 1,
+      "sink": 11140766,
+      "relative": 1
+    },
+    {
+      "scenario": "mixed-90-10",
+      "adapter": "QuickLRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 54.199202226087024,
+      "opsPerSecond": 18450456.07550811,
+      "spread": 2.3648648742189007,
+      "samples": [
+        53.741438666625534,
+        54.290754927065386,
+        54.199202226087024,
+        54.19920219880219,
+        55.023176562177134
+      ],
+      "opsPerSample": 1092267,
+      "divisor": 1,
+      "sink": 5349334,
+      "relative": 0.6264078207547414
+    },
+    {
+      "scenario": "mixed-90-10",
+      "adapter": "lru-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 57.3155282080051,
+      "opsPerSecond": 17447278.796260536,
+      "spread": 2.170283875782793,
+      "samples": [
+        57.3155282080051,
+        57.219842829261545,
+        57.50689890845929,
+        57.3155282080051,
+        58.46375249627962
+      ],
+      "opsPerSample": 1045092,
+      "divisor": 1,
+      "sink": 4832213,
+      "relative": 0.5923491454161787
+    },
+    {
+      "scenario": "mixed-90-10",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 105.8719144363345,
+      "opsPerSecond": 9445375.625103526,
+      "spread": 0.6677795928519767,
+      "samples": [
+        105.8719144363345,
+        106.22540995591828,
+        105.51841891675073,
+        106.22540995591828,
+        105.69516667654261
+      ],
+      "opsPerSample": 565778,
+      "divisor": 1,
+      "sink": 2882831,
+      "relative": 0.3206780980002476
+    },
+    {
+      "scenario": "full-featured",
+      "adapter": "Map + LRU + TTL + tags",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 175.09200794517824,
+      "opsPerSecond": 5711282.951950055,
+      "spread": 1.0544815359871431,
+      "samples": [
+        175.09200794517824,
+        175.09200794517824,
+        175.09200794517824,
+        176.63060203943868,
+        176.93832083994928
+      ],
+      "opsPerSample": 324972,
+      "divisor": 1,
+      "sink": 1512759,
+      "relative": 0.4400609082659542
+    },
+    {
+      "scenario": "full-featured",
+      "adapter": "QuickLRU + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 77.0511480464648,
+      "opsPerSecond": 12978391.955911696,
+      "spread": 2.8475711684587792,
+      "samples": [
+        76.79302022431305,
+        76.92208411615691,
+        78.98710650105068,
+        77.0511480464648,
+        78.85804260920682
+      ],
+      "opsPerSample": 774810,
+      "divisor": 1,
+      "sink": 3812311,
+      "relative": 1
+    },
+    {
+      "scenario": "full-featured",
+      "adapter": "lru-cache + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 88.37129034872511,
+      "opsPerSecond": 11315892.254756767,
+      "spread": 1.1784512084362833,
+      "samples": [
+        88.37129034872511,
+        88.07374389000165,
+        88.96638322183415,
+        87.92497068280886,
+        88.5200635559179
+      ],
+      "opsPerSample": 672164,
+      "divisor": 1,
+      "sink": 3140130,
+      "relative": 0.8719024893991081
+    },
+    {
+      "scenario": "full-featured",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 190.09895957987789,
+      "opsPerSecond": 5260418.059152023,
+      "spread": 0.3344481903704434,
+      "samples": [
+        190.41685079762237,
+        190.09895957987789,
+        190.09895957987789,
+        190.73474201536686,
+        190.09895948513892
+      ],
+      "opsPerSample": 314573,
+      "divisor": 1,
+      "sink": 1608712,
+      "relative": 0.40532125066201957
+    },
+    {
+      "scenario": "ttl-churn",
+      "adapter": "Map + LRU + TTL + tags",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 25.2428100433107,
+      "opsPerSecond": 39615240.865982674,
+      "spread": 1.9267822744882164,
+      "samples": [
+        25.048260459107862,
+        25.2428100433107,
+        25.09689786965365,
+        25.242810057805773,
+        25.534634448605104
+      ],
+      "opsPerSample": 2056031,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "ttl-churn",
+      "adapter": "QuickLRU + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 33.198676430982644,
+      "opsPerSecond": 30121682.774881672,
+      "spread": 15.86073498112755,
+      "samples": [
+        33.776603084484236,
+        38.271588286350806,
+        33.006034200390594,
+        33.198676430982644,
+        33.07024827087552
+      ],
+      "opsPerSample": 1557291,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.760355916471202
+    },
+    {
+      "scenario": "ttl-churn",
+      "adapter": "lru-cache + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 35.1766004117243,
+      "opsPerSecond": 28427988.728174586,
+      "spread": 1.6917292788718281,
+      "samples": [
+        35.04435756088627,
+        35.1766004117243,
+        35.50720755852512,
+        34.91211471004823,
+        35.242721856849045
+      ],
+      "opsPerSample": 1512369,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.7176023193786889
+    },
+    {
+      "scenario": "ttl-churn",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 90.46560606593115,
+      "opsPerSecond": 11053924.728821272,
+      "spread": 4.301075278580165,
+      "samples": [
+        89.81710708819175,
+        90.46560606593115,
+        93.22172666092744,
+        92.08685343780425,
+        89.33073284280796
+      ],
+      "opsPerSample": 616809,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.27903212216269013
+    },
+    {
+      "scenario": "eviction-pressure",
+      "adapter": "Map + LRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 1976.666667064031,
+      "opsPerSecond": 505902.19214113284,
+      "spread": 3.8785834429279022,
+      "samples": [
+        1953.3333331346512,
+        1990.0000005960464,
+        1976.666667064031,
+        1973.3333339293797,
+        2029.9999992052715
+      ],
+      "opsPerSample": 30000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.01851602024442711
+    },
+    {
+      "scenario": "eviction-pressure",
+      "adapter": "QuickLRU",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 36.60000002384186,
+      "opsPerSecond": 27322404.353786424,
+      "spread": 2.1857919465958426,
+      "samples": [
+        36.60000002384186,
+        36.600000043710075,
+        36.99999990065893,
+        36.200000047683716,
+        36.3333332935969
+      ],
+      "opsPerSample": 1500000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "eviction-pressure",
+      "adapter": "lru-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 87.3255813537642,
+      "opsPerSecond": 11451398.141272089,
+      "spread": 7.723035892227706,
+      "samples": [
+        81.04651157939156,
+        87.67441847296648,
+        86.62790690743645,
+        87.3255813537642,
+        87.79069757043928
+      ],
+      "opsPerSample": 860000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.41912117224358103
+    },
+    {
+      "scenario": "eviction-pressure",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 201.33333355186463,
+      "opsPerSecond": 4966887.411827383,
+      "spread": 3.1456953213633545,
+      "samples": [
+        199.3333334724045,
+        203.33333343266804,
+        201.33333355186463,
+        205.66666672629037,
+        200.6666668256124
+      ],
+      "opsPerSample": 300000,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.18178807939130204
+    },
+    {
+      "scenario": "tag-invalidation-scale",
+      "adapter": "Map + LRU + TTL + tags",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 9.39718837531165,
+      "opsPerSecond": 106414808.35131559,
+      "spread": 3.135888522191246,
+      "samples": [
+        9.46267400955778,
+        9.26621710681814,
+        9.298959926381828,
+        9.39718837531165,
+        9.560902458488227
+      ],
+      "opsPerSample": 6108210,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 1
+    },
+    {
+      "scenario": "tag-invalidation-scale",
+      "adapter": "QuickLRU + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 12.594063228499637,
+      "opsPerSecond": 79402491.6229623,
+      "spread": 3.344481554857156,
+      "samples": [
+        12.594063228499637,
+        12.594063228499637,
+        12.57300292335575,
+        12.994209045039968,
+        12.615123533641114
+      ],
+      "opsPerSample": 4748269,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.746160171250082
+    },
+    {
+      "scenario": "tag-invalidation-scale",
+      "adapter": "lru-cache + tag index",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 14.400482179155915,
+      "opsPerSecond": 69442119.19844306,
+      "spread": 1.8211919935841263,
+      "samples": [
+        14.3766403226673,
+        14.352798466177774,
+        14.61505889466207,
+        14.400482179155915,
+        14.424324035644531
+      ],
+      "opsPerSample": 4194304,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.652560675288615
+    },
+    {
+      "scenario": "tag-invalidation-scale",
+      "adapter": "blaze-cache",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 54.32512240547469,
+      "opsPerSecond": 18407689.77078685,
+      "spread": 0.3300330328368819,
+      "samples": [
+        54.32512243218939,
+        54.23547699429676,
+        54.32512240547469,
+        54.32512240547469,
+        54.4147678433639
+      ],
+      "opsPerSample": 1115506,
+      "divisor": 1,
+      "sink": 0,
+      "relative": 0.17298052833038138
+    },
+    {
+      "scenario": "persistence-flush",
+      "adapter": "blaze-cache + persistence",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 1385.000000894165,
+      "opsPerSecond": 722021.6601836777,
+      "spread": 8.66425999751343,
+      "samples": [
+        1359.9999994036675,
+        1357.4999995529174,
+        1477.5000005959512,
+        1385.000000894165,
+        1387.5000000000953
+      ],
+      "opsPerSample": 4,
+      "divisor": 10000,
+      "sink": 22,
+      "relative": 0.07797833924247441
+    },
+    {
+      "scenario": "persistence-flush",
+      "adapter": "Map + written queue",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 107.99999992055257,
+      "opsPerSecond": 9259259.266070597,
+      "spread": 19.99999992632456,
+      "samples": [
+        106.40000021462504,
+        119.73333362742616,
+        118.53333377838135,
+        98.13333372288513,
+        107.99999992055257
+      ],
+      "opsPerSample": 75,
+      "divisor": 10000,
+      "sink": 377,
+      "relative": 1
+    },
+    {
+      "scenario": "persistence-flush",
+      "adapter": "QuickLRU + written queue",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 113.43283577641161,
+      "opsPerSecond": 8815789.477141418,
+      "spread": 14.34210578640662,
+      "samples": [
+        107.01492522193566,
+        113.43283577641161,
+        117.46268601561019,
+        112.53731344171781,
+        123.2835825255095
+      ],
+      "opsPerSample": 67,
+      "divisor": 10000,
+      "sink": 337,
+      "relative": 0.9521052628308811
+    },
+    {
+      "scenario": "hydration",
+      "adapter": "blaze-cache + persistence",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 121.62790700444954,
+      "opsPerSecond": 8221797.3212629305,
+      "spread": 2.48565939311633,
+      "samples": [
+        123.25581381488179,
+        120.93023262746944,
+        121.62790686585181,
+        123.95348812257633,
+        121.62790700444954
+      ],
+      "opsPerSample": 43,
+      "divisor": 10000,
+      "sink": 217,
+      "relative": 0.2724155518327269
+    },
+    {
+      "scenario": "hydration",
+      "adapter": "Map + written queue",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 36.99999998013051,
+      "opsPerSecond": 27027027.0415409,
+      "spread": 10.990991200969304,
+      "samples": [
+        37.666666746144614,
+        36.99999998013051,
+        34.9333332379659,
+        36.66666662692515,
+        38.999999980140686
+      ],
+      "opsPerSample": 150,
+      "divisor": 10000,
+      "sink": 752,
+      "relative": 0.8954954979099932
+    },
+    {
+      "scenario": "hydration",
+      "adapter": "QuickLRU + written queue",
+      "payload": "small",
+      "payloadKind": "object",
+      "nsPerOp": 33.13333340487671,
+      "opsPerSecond": 30181086.453945972,
+      "spread": 2.8169011745533474,
+      "samples": [
+        32.46666661896769,
+        32.66666674611664,
+        33.39999987681834,
+        33.13333340487671,
+        33.333333214121495
+      ],
+      "opsPerSample": 150,
+      "divisor": 10000,
+      "sink": 752,
+      "relative": 1
+    }
+  ]
+}
