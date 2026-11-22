@@ -24,8 +24,8 @@ const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app
 
 cache.set('user:42', { name: 'Ada' }, { ttlMs: 30_000, tags: ['user:42'] });
 
-cache.get('user:42');              // { name: 'Ada' } — counted as a hit
-cache.invalidateTags('user:42');   // removes it, synchronously, and syncs IndexedDB
+cache.get('user:42'); // { name: 'Ada' } — counted as a hit
+cache.invalidateTags('user:42'); // removes it, synchronously, and syncs IndexedDB
 ```
 
 Reads and writes are **synchronous**: the wasm module is instantiated once during
@@ -79,15 +79,15 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 
 ## Packages
 
-| Package | Purpose |
-| --- | --- |
-| [`@blaze-cache/core`](packages/core) | The cache itself: SIEVE eviction, TTLs, tags, stats, IndexedDB persistence |
-| [`@blaze-cache/axios`](packages/axios) | An axios adapter that caches HTTP responses (honouring `Cache-Control`) |
-| [`@blaze-cache/fetch`](packages/fetch) | A drop-in `fetch()` replacement with automatic HTTP caching |
-| [`@blaze-cache/ky`](packages/ky) | A `ky.extend` hook (`beforeRequest`/`afterResponse`) that caches HTTP responses |
-| [`@blaze-cache/ofetch`](packages/ofetch) | Caches `ofetch`/`$fetch` responses with the same `Cache` (`HIT`/`MISS`, `Cache-Control`) |
-| [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache |
-| [`@blaze-cache/swr`](packages/swr) | SWR middleware + `useSWR` that paints instantly from cache and persists fetches |
+| Package                                            | Purpose                                                                                  |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`@blaze-cache/core`](packages/core)               | The cache itself: SIEVE eviction, TTLs, tags, stats, IndexedDB persistence               |
+| [`@blaze-cache/axios`](packages/axios)             | An axios adapter that caches HTTP responses (honouring `Cache-Control`)                  |
+| [`@blaze-cache/fetch`](packages/fetch)             | A drop-in `fetch()` replacement with automatic HTTP caching                              |
+| [`@blaze-cache/ky`](packages/ky)                   | A `ky.extend` hook (`beforeRequest`/`afterResponse`) that caches HTTP responses          |
+| [`@blaze-cache/ofetch`](packages/ofetch)           | Caches `ofetch`/`$fetch` responses with the same `Cache` (`HIT`/`MISS`, `Cache-Control`) |
+| [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache                 |
+| [`@blaze-cache/swr`](packages/swr)                 | SWR middleware + `useSWR` that paints instantly from cache and persists fetches          |
 
 ## Installation
 
@@ -108,30 +108,30 @@ npm install @blaze-cache/swr           # 0.4.0-beta.2
 `@blaze-cache/core@beta`) to install it, or leave the tag off to install the last
 stable release.
 
-| Package | Expects as a peer dependency |
-| --- | --- |
-| `@blaze-cache/core` | — |
-| `@blaze-cache/axios` | `axios` ≥ 1.7 |
-| `@blaze-cache/fetch` | — (any `fetch`-shaped function) |
-| `@blaze-cache/ky` | `ky` ≥ 1.14 (v1 or v2 — one hook supports both) |
-| `@blaze-cache/ofetch` | `ofetch` ≥ 1.0 |
-| `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5 |
-| `@blaze-cache/swr` | `swr` ≥ 2 |
+| Package                    | Expects as a peer dependency                    |
+| -------------------------- | ----------------------------------------------- |
+| `@blaze-cache/core`        | —                                               |
+| `@blaze-cache/axios`       | `axios` ≥ 1.7                                   |
+| `@blaze-cache/fetch`       | — (any `fetch`-shaped function)                 |
+| `@blaze-cache/ky`          | `ky` ≥ 1.14 (v1 or v2 — one hook supports both) |
+| `@blaze-cache/ofetch`      | `ofetch` ≥ 1.0                                  |
+| `@blaze-cache/react-query` | `@tanstack/react-query` ≥ 5                     |
+| `@blaze-cache/swr`         | `swr` ≥ 2                                       |
 
 npm 7+ and pnpm install peers automatically; yarn classic users need them explicitly.
 
 Three things to know up front:
 
-* **Nothing extra to download.** The `.wasm` binary ships inside `@blaze-cache/core` —
+- **Nothing extra to download.** The `.wasm` binary ships inside `@blaze-cache/core` —
   no CDN configuration, no separate asset package. [Loading the wasm](#loading-the-wasm)
   shows how your bundler resolves it.
-* **Types are bundled — no `@types/*` to install.** Every package ships its own `.d.ts`
+- **Types are bundled — no `@types/*` to install.** Every package ships its own `.d.ts`
   through `exports.types`, so `tsc` and editors resolve them under any `moduleResolution`.
   There is no `@types/blaze-cache/*` and none is needed; skip `@types/axios` too (it is a
   deprecated stub — axios carries its own types, and so does TanStack Query). The only
   type packages a consumer needs are the ones its stack already requires, such as
   `@types/react` for React apps.
-* **ESM only, browser only.** Every package publishes `"type": "module"` with an `import`
+- **ESM only, browser only.** Every package publishes `"type": "module"` with an `import`
   entry point, so `require()` fails by design. Node/SSR targets are deliberately out of
   scope.
 
@@ -244,11 +244,11 @@ nothing to call `on`/`off` on the disposed instance: registration is inert, neve
 
 A cache is a data-structure problem, not a DOM problem. Moving it into Rust buys:
 
-* **Predictable eviction.** SIEVE is a scan-resistant, O(1)-amortised algorithm with a
+- **Predictable eviction.** SIEVE is a scan-resistant, O(1)-amortised algorithm with a
   tiny memory footprint — no JS object churn, no `WeakRef` heuristics.
-* **Real data structures.** A slab allocator plus a hash index means lookups are a
+- **Real data structures.** A slab allocator plus a hash index means lookups are a
   single map hit, and entries are nodes in a queue rather than scattered objects.
-* **A tested core.** The eviction, TTL and tag logic is unit-tested in Rust
+- **A tested core.** The eviction, TTL and tag logic is unit-tested in Rust
   (`cargo test --workspace`), independent of any browser or bundler.
 
 ## Core concepts
@@ -256,8 +256,8 @@ A cache is a data-structure problem, not a DOM problem. Moving it into Rust buys
 ### TTLs
 
 ```ts
-cache.set('token', value, { ttlMs: 60_000 });   // expires after a minute
-cache.set('user', value);                        // no TTL — lives until evicted
+cache.set('token', value, { ttlMs: 60_000 }); // expires after a minute
+cache.set('user', value); // no TTL — lives until evicted
 ```
 
 Expiry is **lazy**: an expired entry stops being visible immediately (`get`, `has`,
@@ -265,10 +265,10 @@ Expiry is **lazy**: an expired entry stops being visible immediately (`get`, `ha
 eviction reaches it. `stats().expirations` counts entries that expired rather than
 being explicitly removed.
 
-A `ttlMs` of `0` (or any non-positive or non-finite value) means *no expiry*. This
+A `ttlMs` of `0` (or any non-positive or non-finite value) means _no expiry_. This
 matches the Rust core, where `Duration::ZERO` is treated as "unbounded". The same holds
 for a TTL so far out that it overflows the monotonic clock: it reads as "never expires"
-rather than raising. A *positive* value below a millisecond is rounded **up** to 1 ms, so
+rather than raising. A _positive_ value below a millisecond is rounded **up** to 1 ms, so
 the shortest TTL you can ask for is one tick — not, as a truncating conversion would make
 it, forever.
 
@@ -277,10 +277,10 @@ it, forever.
 Tags turn a lookup into a group invalidation:
 
 ```ts
-cache.set('user:1', ada,  { tags: ['user:1', 'profile'] });
+cache.set('user:1', ada, { tags: ['user:1', 'profile'] });
 cache.set('user:2', grace, { tags: ['user:2', 'profile'] });
 
-cache.invalidateTags('profile');   // ['user:1', 'user:2'] — deduplicated, in queue order
+cache.invalidateTags('profile'); // ['user:1', 'user:2'] — deduplicated, in queue order
 ```
 
 Writing a key **replaces** its tag set; there is no partial merge. Tag ids are
@@ -312,24 +312,24 @@ const cache = await createCache({ capacity: 1000 });
 
 cache.set('user', data, { ttlMs: 30_000 });
 
-cache.size();        // 1 — non-expired entries only
-cache.capacity();    // 1000
+cache.size(); // 1 — non-expired entries only
+cache.capacity(); // 1000
 
-cache.peek('user');  // data (no hit recorded)
-cache.get('user');   // data (hit recorded)
+cache.peek('user'); // data (no hit recorded)
+cache.get('user'); // data (hit recorded)
 
-cache.ttl('user');   // e.g. 28400
+cache.ttl('user'); // e.g. 28400
 cache.touch('user', { ttlMs: 60_000 }); // refresh TTL to 60s
 ```
 
-* **`size()`** counts entries that are present *and* unexpired, so it always agrees with
+- **`size()`** counts entries that are present _and_ unexpired, so it always agrees with
   `keys()` and `entries()`. `stats().size` is the raw slab count and may still hold slots
   that expired but have not been pruned — `prune()` is what closes that gap.
-* **`peek()`** is `get()` without the paperwork: no hit or miss, no eviction protection,
+- **`peek()`** is `get()` without the paperwork: no hit or miss, no eviction protection,
   nothing reclaimed. Use it for "is this here?" checks that must not move the hit rate.
-* **`ttl()`** returns `undefined` for both *never expires* and *not here* — the first lives
+- **`ttl()`** returns `undefined` for both _never expires_ and _not here_ — the first lives
   until it is evicted, the second will never be found again.
-* **`touch()`** marks the entry used for SIEVE (exactly what a read grants, so it survives
+- **`touch()`** marks the entry used for SIEVE (exactly what a read grants, so it survives
   the next eviction pass) and rewrites the deadline when `ttlMs` is passed. Omit `ttlMs` to
   leave it alone, pass `0` to drop it, and note that it returns `false` for a missing or
   already expired key. The stored value is never changed.
@@ -339,8 +339,8 @@ cache.touch('user', { ttlMs: 60_000 }); // refresh TTL to 60s
 Values are handed back **by reference**: the object you pass to `set` is the very object
 that `get`, `peek`, `entry` and `entries` return later. Mutating either one silently
 rewrites the cache — and, after the next flush, the persisted row — with no error and no
-warning. Treat values living in the cache as read-only: clone on the way *out*
-(`structuredClone(cache.get(key))`) before editing, or clone on the way *in* if you want
+warning. Treat values living in the cache as read-only: clone on the way _out_
+(`structuredClone(cache.get(key))`) before editing, or clone on the way _in_ if you want
 to keep mutating your own copy.
 
 The sharing is deliberate, not an oversight: the hot path never clones or serialises a
@@ -351,17 +351,17 @@ transfer, not deep-copy semantics.
 
 Two 0.4.0 capabilities sit alongside the default, both off unless you ask:
 
-* **Binary values (zero-copy reads).** `cache.setBytes(key, arrayBufferView, options?)`
+- **Binary values (zero-copy reads).** `cache.setBytes(key, arrayBufferView, options?)`
   reserves a region in Wasm linear memory, copies the raw bytes into it once, and stores the
   `(offset, length)` pair as the value. `cache.getBytes(key)` returns a `Uint8Array` **view**
   onto that region — no copy, no serialisation. Views are short-lived: `memory.grow` detaches
   them and an evicted region may be reused, so use `cache.getBytesCopy(key)` for a snapshot
   you need to keep. `set`/`get` keep working exactly as before in the same cache.
-* **JS-authoritative values.** `createCache({ storage: 'js' })` leaves keys, TTL, tags, SIEVE
+- **JS-authoritative values.** `createCache({ storage: 'js' })` leaves keys, TTL, tags, SIEVE
   and stable entry ids in Wasm, but moves the values into a JS `Map<id, V>`. Hot reads call
   Wasm by id, so no key string is marshalled. Events, tag invalidation, `entry()`/`entries()`,
-  statistics and persistence behave identically; the only ownership change is *where the value
-  lives*. Measure before enabling — see
+  statistics and persistence behave identically; the only ownership change is _where the value
+  lives_. Measure before enabling — see
   [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md#stage-2-measured-deltas): on the
   Stage 1 workloads the JS store is **slower** than the default, because the key scratch
   already removed the cost this mode was meant to avoid.
@@ -373,7 +373,7 @@ cache.stats();
 // { hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }
 ```
 
-`has()`, `entry()`, `peek()` and `ttl()` deliberately do *not* touch statistics or eviction
+`has()`, `entry()`, `peek()` and `ttl()` deliberately do _not_ touch statistics or eviction
 state — they are the non-observing reads, useful for persistence and for UI checks.
 
 ### Events
@@ -397,27 +397,27 @@ cache.on((event) => {
 
 const offClear = cache.once('clear', () => console.log('first clear, only once'));
 
-cache.off('evict');   // every `evict` listener
-cache.off();          // every listener, period
-offEvict();           // …or just this one handle (idempotent)
-offClear();           // …and cancels the `once` if it has not fired yet
+cache.off('evict'); // every `evict` listener
+cache.off(); // every listener, period
+offEvict(); // …or just this one handle (idempotent)
+offClear(); // …and cancels the `once` if it has not fired yet
 ```
 
-| Event | Emitted when | Payload |
-| --- | --- | --- |
-| `set` | a key was stored (insert or replace) | `key` |
-| `delete` | a key was removed and was present | `key` |
-| `clear` | the cache was emptied | — |
-| `invalidate` | `invalidateTags()` removed entries | `keys` |
-| `prune` | `prune()` removed expired entries | `keys` |
-| `touch` | `touch()` renewed a live entry's deadline | `key` |
-| `evict` | the core dropped an entry to stay within capacity | `key`, `value` |
-| `expire` | the core reclaimed an entry whose TTL elapsed | `key`, `value` |
-| `hit` | `get()` / `getMany()` found a live entry | `key`, `value` |
-| `miss` | a lookup found nothing (absent or expired) | `key` |
+| Event        | Emitted when                                      | Payload        |
+| ------------ | ------------------------------------------------- | -------------- |
+| `set`        | a key was stored (insert or replace)              | `key`          |
+| `delete`     | a key was removed and was present                 | `key`          |
+| `clear`      | the cache was emptied                             | —              |
+| `invalidate` | `invalidateTags()` removed entries                | `keys`         |
+| `prune`      | `prune()` removed expired entries                 | `keys`         |
+| `touch`      | `touch()` renewed a live entry's deadline         | `key`          |
+| `evict`      | the core dropped an entry to stay within capacity | `key`, `value` |
+| `expire`     | the core reclaimed an entry whose TTL elapsed     | `key`, `value` |
+| `hit`        | `get()` / `getMany()` found a live entry          | `key`, `value` |
+| `miss`       | a lookup found nothing (absent or expired)        | `key`          |
 
 Eight of those are raised in TypeScript around the call you made. `evict` and `expire` are
-the exception — capacity sweeps and TTL reclamation happen *inside* the Rust core, mid-`set`
+the exception — capacity sweeps and TTL reclamation happen _inside_ the Rust core, mid-`set`
 or lazily during a `get`, where no JavaScript exists to observe them. For those the core
 keeps an opt-in **drop log**: the first listener interested in `evict`/`expire` (typed or
 wildcard) switches it on through the wasm binding, and after each operation that can
@@ -430,13 +430,13 @@ Listeners run synchronously and in registration order (typed listeners first, wi
 last), a throwing listener is logged and skipped — never able to undo or block a mutation —
 and reads that record nothing (`peek`, `has`, `ttl`, `size`, `keys`, `entry`) emit nothing.
 Delivery walks a snapshot of each listener set and re-checks membership per listener: a
-listener removed *during* an event — by its own unsubscribe, by `off(type, fn)`, or
+listener removed _during_ an event — by its own unsubscribe, by `off(type, fn)`, or
 wholesale by `off(type)`/`off()` — is never visited for that event, while a listener added
 mid-delivery only hears later ones. A pending `once` listener is cancellable the same way:
 `off(type, fn)` (or `off(fn)`) finds it through its `.listener` tag, exactly like Node's
 `EventEmitter`.
 
-Legacy code that used the original `on(listener)` keeps working: that form *is* the
+Legacy code that used the original `on(listener)` keeps working: that form _is_ the
 wildcard now, so such listeners additionally see `hit`/`miss`/`evict`/`expire`.
 
 ### Subscriptions
@@ -448,7 +448,7 @@ first one:
 
 ```ts
 const stop = cache.subscribe('user:42', (user, change) => {
-  console.log(change.type, user);      // 'set' → the new value, 'delete' → undefined
+  console.log(change.type, user); // 'set' → the new value, 'delete' → undefined
 });
 
 const stopMany = cache.subscribeMany(['a', 'b'], (key, value, change) => {
@@ -459,10 +459,12 @@ const stopTag = cache.subscribeTag('user', ({ tag, keys, change }) => {
   console.log(tag, keys, change.type); // 'user', ['user:42'], 'invalidate'
 });
 
-stop(); stopMany(); stopTag();         // idempotent — also safe from inside a listener
+stop();
+stopMany();
+stopTag(); // idempotent — also safe from inside a listener
 ```
 
-`value` is what the cache holds *now*: the new value after `set`, the unchanged one after
+`value` is what the cache holds _now_: the new value after `set`, the unchanged one after
 `touch`, and `undefined` after `delete`, `evict`, `expire`, `invalidate`, `prune` or
 `clear` — for `evict`/`expire` the dropped reference is still on `change.value`. The second
 argument is the mutation itself, so a listener can tell a renewal from a replacement
@@ -480,7 +482,7 @@ actually hit — including entries dropped by a capacity sweep or by a TTL that 
 Delivery follows the event system exactly: synchronous, a throwing subscriber logged with
 `console.error` and skipped (the mutation stands, the others run), a snapshot re-checked
 before every call so one that stops mid-notification is never visited, and `{ once: true }`
-fires once then unsubscribes itself. `cache.off()` clears *event* listeners only — live
+fires once then unsubscribes itself. `cache.off()` clears _event_ listeners only — live
 subscriptions re-bind their own immediately — while releasing the last subscription
 detaches the layer completely.
 
@@ -500,37 +502,37 @@ stop function switches it back off.
 is a method on the returned cache. Reads that record nothing are marked ⊘ — no hit, no
 miss, no eviction state, no event.
 
-| | Method | Returns / does |
-| --- | --- | --- |
-| **Read** | `get(key)` | value or `undefined` — counts a hit or a miss |
-| | `getMany(keys)` | one entry per key, same accounting as `get` |
-| | `peek(key)` ⊘ | value or `undefined`, invisible to stats and eviction |
-| | `has(key)` / `hasMany(keys)` ⊘ | presence of live (unexpired) entries |
-| | `entry(key)` / `entries()` ⊘ | `{ key, value, ttlMs, tags }` snapshots |
-| | `keys()` ⊘ | every live key |
-| | `ttl(key)` ⊘ | ms left, or `undefined` for *never expires* or *not here* |
-| | `size()` / `capacity()` ⊘ | live entries / the normalised bound |
-| | `stats()` ⊘ | `{ hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }` |
-| | `keysWithTag(tag)` / `tagsOf(key)` / `hasTag(key, tag)` ⊘ | tag index reads |
-| **Write** | `set(key, value, { ttlMs, tags })` | stores (insert or replace) |
-| | `setMany(entries)` | batched `set` |
-| | `touch(key, { ttlMs })` | marks used; renews the deadline when `ttlMs` is given |
-| | `delete(key)` / `deleteMany(keys)` | `true` when the key was present |
-| | `invalidateTags(...tags)` | the keys removed |
-| | `prune()` | the expired keys reclaimed |
-| | `clear()` | empties the cache |
-| | `resetStats()` | zeroes the counters, entries untouched |
-| **Observe** | `on(type, listener)` / `on(listener)` | subscribe (typed / wildcard); returns unsubscribe |
-| | `once(…)` | the same, listener removed as it fires |
-| | `off()` / `off(type)` / `off(type, listener)` / `off(listener)` | removes listeners without the handle |
-| | `subscribe(key, fn)` / `subscribeMany(keys, fn)` | current value per changed key; returns stop |
-| | `subscribeTag(tag, fn)` | `{ tag, keys, change }` per tag hit; returns stop |
-| **Persist** | `flush()` | awaits the pending write-through queue |
-| | `dispose()` | flushes, frees the wasm memory, drops every listener |
-| | `persistence.flush()` / `persistence.clear()` / `persistence.hydrate()` | control API — write now / empty storage only / reload storage into memory |
-| | `persistence.stats()` | `{ enabled, namespace, generation, pending, hydrates, restored, skipped, flushes, recordsWritten, aborted, rotations, errors, lastError, lastFlushAt, lastHydrateAt }` |
-| | `persistence.rotate(generation)` | switches the session bucket, dropping queued and in-flight writes (see [Accounts](#accounts-and-logoutlogin)) |
-| | `persistence.enabled` / `persistence.generation` | whether storage is attached / the current session token |
+|             | Method                                                                  | Returns / does                                                                                                                                                         |
+| ----------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Read**    | `get(key)`                                                              | value or `undefined` — counts a hit or a miss                                                                                                                          |
+|             | `getMany(keys)`                                                         | one entry per key, same accounting as `get`                                                                                                                            |
+|             | `peek(key)` ⊘                                                           | value or `undefined`, invisible to stats and eviction                                                                                                                  |
+|             | `has(key)` / `hasMany(keys)` ⊘                                          | presence of live (unexpired) entries                                                                                                                                   |
+|             | `entry(key)` / `entries()` ⊘                                            | `{ key, value, ttlMs, tags }` snapshots                                                                                                                                |
+|             | `keys()` ⊘                                                              | every live key                                                                                                                                                         |
+|             | `ttl(key)` ⊘                                                            | ms left, or `undefined` for _never expires_ or _not here_                                                                                                              |
+|             | `size()` / `capacity()` ⊘                                               | live entries / the normalised bound                                                                                                                                    |
+|             | `stats()` ⊘                                                             | `{ hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }`                                                                                     |
+|             | `keysWithTag(tag)` / `tagsOf(key)` / `hasTag(key, tag)` ⊘               | tag index reads                                                                                                                                                        |
+| **Write**   | `set(key, value, { ttlMs, tags })`                                      | stores (insert or replace)                                                                                                                                             |
+|             | `setMany(entries)`                                                      | batched `set`                                                                                                                                                          |
+|             | `touch(key, { ttlMs })`                                                 | marks used; renews the deadline when `ttlMs` is given                                                                                                                  |
+|             | `delete(key)` / `deleteMany(keys)`                                      | `true` when the key was present                                                                                                                                        |
+|             | `invalidateTags(...tags)`                                               | the keys removed                                                                                                                                                       |
+|             | `prune()`                                                               | the expired keys reclaimed                                                                                                                                             |
+|             | `clear()`                                                               | empties the cache                                                                                                                                                      |
+|             | `resetStats()`                                                          | zeroes the counters, entries untouched                                                                                                                                 |
+| **Observe** | `on(type, listener)` / `on(listener)`                                   | subscribe (typed / wildcard); returns unsubscribe                                                                                                                      |
+|             | `once(…)`                                                               | the same, listener removed as it fires                                                                                                                                 |
+|             | `off()` / `off(type)` / `off(type, listener)` / `off(listener)`         | removes listeners without the handle                                                                                                                                   |
+|             | `subscribe(key, fn)` / `subscribeMany(keys, fn)`                        | current value per changed key; returns stop                                                                                                                            |
+|             | `subscribeTag(tag, fn)`                                                 | `{ tag, keys, change }` per tag hit; returns stop                                                                                                                      |
+| **Persist** | `flush()`                                                               | awaits the pending write-through queue                                                                                                                                 |
+|             | `dispose()`                                                             | flushes, frees the wasm memory, drops every listener                                                                                                                   |
+|             | `persistence.flush()` / `persistence.clear()` / `persistence.hydrate()` | control API — write now / empty storage only / reload storage into memory                                                                                              |
+|             | `persistence.stats()`                                                   | `{ enabled, namespace, generation, pending, hydrates, restored, skipped, flushes, recordsWritten, aborted, rotations, errors, lastError, lastFlushAt, lastHydrateAt }` |
+|             | `persistence.rotate(generation)`                                        | switches the session bucket, dropping queued and in-flight writes (see [Accounts](#accounts-and-logoutlogin))                                                          |
+|             | `persistence.enabled` / `persistence.generation`                        | whether storage is attached / the current session token                                                                                                                |
 
 Values travel **by reference** in and out of every read and write — see
 [Values](#values) before mutating one.
@@ -542,13 +544,13 @@ Persistence is optional and off by default.
 ```ts
 const cache = await createCache({
   persistence: {
-    namespace: 'app',        // isolates this cache from others in the database
-    debounceMs: 250,         // coalesce writes for 250 ms before hitting storage
-    maxEntries: 2000,        // cap on records written by a single flush
-    restoreExpired: false,   // never resurrect records that expired while the tab was away
-    writeMode: 'debounce',   // or 'immediate' — flush on the next task
-    onError: (err) => report(err),   // failures nobody awaited
-    onActivity: (a) => debug(a),     // hydrate/flush/rotate lifecycle
+    namespace: 'app', // isolates this cache from others in the database
+    debounceMs: 250, // coalesce writes for 250 ms before hitting storage
+    maxEntries: 2000, // cap on records written by a single flush
+    restoreExpired: false, // never resurrect records that expired while the tab was away
+    writeMode: 'debounce', // or 'immediate' — flush on the next task
+    onError: (err) => report(err), // failures nobody awaited
+    onActivity: (a) => debug(a), // hydrate/flush/rotate lifecycle
   },
 });
 ```
@@ -561,16 +563,16 @@ the same cache — never collide. Writes are debounced (`debounceMs`), coalesced
 on `pagehide` and `visibilitychange`, and absolute expiry is reconstructed from
 `storedAt` at hydration.
 
-| Option | Default | What it does |
-| --- | --- | --- |
-| `namespace` | `'default'` | Key prefix isolating this cache in the store. No `\0`. |
-| `generation` | `''` | Session bucket (see [Accounts](#accounts-and-logoutlogin)); change it via `cache.persistence.rotate()`, not by hand. |
-| `debounceMs` | `400` | How long a write waits for more writes before reaching storage. Finite, `>= 0`. |
-| `maxEntries` | `2000` | Records one flush writes at most (newest dirty keys win). Integer `>= 1`. |
-| `restoreExpired` | `false` | Restore records that expired while away — with their original TTL window restarted from now, never the dead remainder. |
-| `writeMode` | `'debounce'` | `'debounce'` waits `debounceMs`; `'immediate'` flushes on the next task while still coalescing the current one. |
-| `onError` | `console.error` | Receives failures **nobody awaited** (timer, pagehide, startup degrade). Awaited calls still reject. |
-| `onActivity` | — | Hydrate/flush start·finish, aborts, rotations, errors — see `PersistenceActivity`. |
+| Option           | Default         | What it does                                                                                                           |
+| ---------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `namespace`      | `'default'`     | Key prefix isolating this cache in the store. No `\0`.                                                                 |
+| `generation`     | `''`            | Session bucket (see [Accounts](#accounts-and-logoutlogin)); change it via `cache.persistence.rotate()`, not by hand.   |
+| `debounceMs`     | `400`           | How long a write waits for more writes before reaching storage. Finite, `>= 0`.                                        |
+| `maxEntries`     | `2000`          | Records one flush writes at most (newest dirty keys win). Integer `>= 1`.                                              |
+| `restoreExpired` | `false`         | Restore records that expired while away — with their original TTL window restarted from now, never the dead remainder. |
+| `writeMode`      | `'debounce'`    | `'debounce'` waits `debounceMs`; `'immediate'` flushes on the next task while still coalescing the current one.        |
+| `onError`        | `console.error` | Receives failures **nobody awaited** (timer, pagehide, startup degrade). Awaited calls still reject.                   |
+| `onActivity`     | —               | Hydrate/flush start·finish, aborts, rotations, errors — see `PersistenceActivity`.                                     |
 
 The legacy spellings `flushDelayMs` and `maxRecords` still work as aliases of
 `debounceMs`/`maxEntries`; passing both spellings with different values throws.
@@ -578,28 +580,28 @@ The legacy spellings `flushDelayMs` and `maxRecords` still work as aliases of
 Every option is validated when persistence is attached: a non-finite or negative
 `debounceMs`, an `maxEntries` below `1`, an unknown `writeMode` or a `\0` in the
 namespace/generation throws a `RangeError`/`TypeError` from `create` rather than
-misbehaving later (`maxEntries: 0` would persist *everything* — `slice(-0)` is the whole
+misbehaving later (`maxEntries: 0` would persist _everything_ — `slice(-0)` is the whole
 array, not the empty one).
 
 ### The control API: `cache.persistence`
 
 ```ts
-await cache.persistence.flush();    // write pending changes now (same as cache.flush())
-await cache.persistence.clear();    // empty this namespace in storage + drop queued writes — memory untouched
-await cache.persistence.hydrate();  // reload storage into memory (merge, not replace)
-cache.persistence.stats();          // { enabled, namespace, generation, pending, hydrates, restored,
-                                    //   skipped, flushes, recordsWritten, aborted, rotations,
-                                    //   errors, lastError, lastFlushAt, lastHydrateAt }
+await cache.persistence.flush(); // write pending changes now (same as cache.flush())
+await cache.persistence.clear(); // empty this namespace in storage + drop queued writes — memory untouched
+await cache.persistence.hydrate(); // reload storage into memory (merge, not replace)
+cache.persistence.stats(); // { enabled, namespace, generation, pending, hydrates, restored,
+//   skipped, flushes, recordsWritten, aborted, rotations,
+//   errors, lastError, lastFlushAt, lastHydrateAt }
 await cache.persistence.rotate('user-42'); // switch session generation — see below
-cache.persistence.enabled;          // false when persistence was never attached
-cache.persistence.generation;       // the current session token ('' when unused)
+cache.persistence.enabled; // false when persistence was never attached
+cache.persistence.generation; // the current session token ('' when unused)
 ```
 
 Every method is safe to call on a cache created **without** persistence: they resolve as
 no-ops and `stats()` reports `enabled: false`, so application code never has to branch.
 
 `hydrate()` merges — memory-only entries survive — which makes it usable as a
-"storage caught up, pull it in" call. A failure rejects *that* promise (you asked for the
+"storage caught up, pull it in" call. A failure rejects _that_ promise (you asked for the
 read) while leaving persistence attached and healthy; core reads and writes are never
 affected.
 
@@ -613,19 +615,19 @@ await cache.persistence.rotate(`user:${userId}`); // previous session's queued +
 // (optionally) await cache.persistence.hydrate();  // pull the new account's rows in
 
 // logout
-await cache.persistence.rotate('');               // back to the anonymous bucket
-cache.clear();                                     // memory is the caller's to drop
+await cache.persistence.rotate(''); // back to the anonymous bucket
+cache.clear(); // memory is the caller's to drop
 ```
 
 Rotation is stronger than clearing memory:
 
-* Every write **queued** by the previous session is discarded — it never reaches storage.
-* Every flush or hydrate still **in flight** fails its next epoch check and drops the work
+- Every write **queued** by the previous session is discarded — it never reaches storage.
+- Every flush or hydrate still **in flight** fails its next epoch check and drops the work
   it claimed, so a slow write cannot repopulate the next session's rows (counted in
   `stats().aborted`, never as an error).
-* The adapter snapshots its bucket per operation, so a write that started before
-  `rotate()` lands in the *previous* generation's rows — invisible to the new one.
-* Rows already stored are preserved: log back in as that account and they are there.
+- The adapter snapshots its bucket per operation, so a write that started before
+  `rotate()` lands in the _previous_ generation's rows — invisible to the new one.
+- Rows already stored are preserved: log back in as that account and they are there.
   Call `clear()` first if you want them wiped instead.
 
 ### Schema versioning
@@ -638,10 +640,10 @@ themselves: the rest of the hydrate proceeds, with a single warning for the run.
 
 Failures are contained at both ends. An adapter that cannot open at all (private mode,
 enterprise policy) degrades to memory-only with a console warning rather than breaking
-the app. A flush that fails *later* — a quota error, a transient IndexedDB problem — is
+the app. A flush that fails _later_ — a quota error, a transient IndexedDB problem — is
 reported (`onError` when nobody awaited it) and, crucially, every record it had claimed
 is put straight back on the queue, so the next flush retries them instead of losing them.
-The one exception is a record that fails *on its own* — an unserializable value, an
+The one exception is a record that fails _on its own_ — an unserializable value, an
 adapter that rejects one specific row: it earns one strike per failed pass, and after
 three consecutive failures it is dropped from the queue with a console warning (the entry
 stays in memory) so one poison record cannot block every later flush. Any successful pass
@@ -656,8 +658,8 @@ interface CachePersistence {
   save(records: PersistedRecord[]): Promise<void>;
   remove(keys: string[]): Promise<void>;
   clear(): Promise<void>;
-  keys?(): Promise<string[]>;                       // reconciliation — see below
-  write?(ops: { clear?, save, remove }): Promise<void>; // one batch, one transaction — see below
+  keys?(): Promise<string[]>; // reconciliation — see below
+  write?(ops: { clear?; save; remove }): Promise<void>; // one batch, one transaction — see below
   rotate?(generation: string): void | Promise<void>; // adopt a session bucket
   close?(): Promise<void>;
 }
@@ -665,7 +667,7 @@ interface CachePersistence {
 
 `keys()` — the optional method that keeps storage honest — exists because the wasm core
 drops entries on its own: a capacity eviction or a lapsed TTL never queues a delete for
-persistence (the `evict`/`expire` events reach *subscribers*, not the flush bookkeeping),
+persistence (the `evict`/`expire` events reach _subscribers_, not the flush bookkeeping),
 so without a way to list what storage still holds, those rows would outlive every flush,
 re-hydrate at the next startup and eat quota until persistence dies. Implementing it is
 recommended; adapters that skip it keep working exactly as before.
@@ -718,56 +720,56 @@ import { installBlazeCache } from '@blaze-cache/axios';
 installBlazeCache(api, { cache, ttlMs: 30_000 });
 
 const response = await api.get('/users/42');
-response.fromBlazeCache;              // true on a hit
-response.headers['x-blaze-cache'];    // 'HIT' | 'MISS'
+response.fromBlazeCache; // true on a hit
+response.headers['x-blaze-cache']; // 'HIT' | 'MISS'
 ```
 
 Behaviour worth knowing:
 
-* The adapter stores the **raw** response body, so axios runs `transformResponse` on a
+- The adapter stores the **raw** response body, so axios runs `transformResponse` on a
   hit exactly as it would on a network response — a hit is indistinguishable from a miss.
-* `Cache-Control` is honoured on both sides: `max-age` overrides `ttlMs` **minus the
+- `Cache-Control` is honoured on both sides: `max-age` overrides `ttlMs` **minus the
   response's `Age`** (a `max-age=60, Age: 50` response has ten seconds left, not sixty);
   `no-store` (on the request or the response) bypasses the cache entirely, and `no-cache`
   — the per-field `no-cache="set-cookie"` spelling included — plus `max-age=0` on the
   request skip the read. Malformed directives are ignored rather than guessed at: an
-  empty `max-age=` reads as *no directive*, not as zero (that would send every response
+  empty `max-age=` reads as _no directive_, not as zero (that would send every response
   back to the network), and a duplicated directive keeps its first value (RFC 9111 §5.2.3).
-* `responseType: 'stream'` is never stored: `response.data` is a live Node stream the
+- `responseType: 'stream'` is never stored: `response.data` is a live Node stream the
   caller is about to consume, so there is nothing complete to replay to the next caller.
   The `x-blaze-cache` marker is stripped from the stored headers as well — it describes
-  *this* exchange, not the stored representation.
-* Params containers `JSON.stringify` cannot see into — `URLSearchParams`, `FormData`,
+  _this_ exchange, not the stored representation.
+- Params containers `JSON.stringify` cannot see into — `URLSearchParams`, `FormData`,
   `Map` — are keyed by their actual contents instead of the `'{}'` they stringify to, so
   two requests differing only in those params no longer collide. Order is preserved for
   `URLSearchParams` (axios sends it verbatim) and ignored for `FormData` parts and `Map`
   keys.
-* A request body folds into the key as well: an opted-in `POST` with two different
+- A request body folds into the key as well: an opted-in `POST` with two different
   payloads occupies two entries instead of replaying one response for the other. A body
   the key cannot read (raw bytes, a stream) leaves the request uncached rather than
   guessed at — the same "unknown ⇒ do not store" rule `Vary` follows — unless a `key`
   callback describes it.
-* Freshness is enforced by the adapter, not trusted from the store: every record carries
+- Freshness is enforced by the adapter, not trusted from the store: every record carries
   the deadline it was written with, so a store that never expires anything (a plain `Map`
   shim qualifies) still cannot replay a stale entry.
-* The key is built from the URL axios will actually request — an absolute `url` ignores
+- The key is built from the URL axios will actually request — an absolute `url` ignores
   `baseURL`, and slashes are collapsed exactly as axios' own `buildFullPath` does — so one
   endpoint occupies one entry instead of several spellings of it.
-* `Authorization` participates in the default key (hashed, never stored verbatim), so a
+- `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`.
   A response's own `Vary` is checked too: `Vary: *` is never stored, and one varying on a
   header outside `varyHeaders` is left uncached rather than risk replaying the wrong
   variant — add the server's headers there to opt those responses in.
-* A cached response is replayed through the *current* request's `validateStatus`, so a
+- A cached response is replayed through the _current_ request's `validateStatus`, so a
   stored `404` rejects just like a live one — with the same `error.code` the network path
   would produce: `4xx` is `ERR_BAD_REQUEST`, while a sub-400 that failed a custom
   `validateStatus` (and any `5xx`) is `ERR_BAD_RESPONSE`, exactly axios' own `settle`
   partition.
-* Only responses that pass `validateStatus` are candidates for storage; the default
+- Only responses that pass `validateStatus` are candidates for storage; the default
   stores `GET` requests answering `2xx`.
-* A cache that throws costs one extra request, never a failed response: reads and writes
+- A cache that throws costs one extra request, never a failed response: reads and writes
   are guarded, and the failure is reported once on the console.
-* `installBlazeCache` captures the instance's existing adapter *before* replacing it,
+- `installBlazeCache` captures the instance's existing adapter _before_ replacing it,
   which is what guarantees the wrapper can never call itself.
 
 ## fetch
@@ -778,8 +780,8 @@ import { createBlazeFetch } from '@blaze-cache/fetch';
 const cachedFetch = createBlazeFetch(cache, { ttlMs: 30_000 });
 
 const response = await cachedFetch('/api/users/42');
-response.headers.get('x-blaze-cache');   // 'HIT' | 'MISS' | 'STALE'
-response.fromBlazeCache;                  // true on a HIT / STALE
+response.headers.get('x-blaze-cache'); // 'HIT' | 'MISS' | 'STALE'
+response.fromBlazeCache; // true on a HIT / STALE
 await response.json();
 ```
 
@@ -795,17 +797,17 @@ const api = {
 
 Behaviour worth knowing:
 
-* Only `GET` is cached by default (`methods` adds `'HEAD'`), and only `2xx` responses are
+- Only `GET` is cached by default (`methods` adds `'HEAD'`), and only `2xx` responses are
   stored unless `shouldCache` says otherwise.
-* `Cache-Control` is honoured on both sides: `max-age`, minus the response's `Age`,
-  overrides `ttlMs`; `no-store` bypasses the read *and* the write; `cache: 'no-cache'`,
+- `Cache-Control` is honoured on both sides: `max-age`, minus the response's `Age`,
+  overrides `ttlMs`; `no-store` bypasses the read _and_ the write; `cache: 'no-cache'`,
   `forceRefresh` and `max-age=0` on the request skip the read and rewrite the entry; a
   response `no-cache` — per-field spelling included — is never stored; and
   `must-revalidate`/`proxy-revalidate` closes the stale window entirely, however short.
   Malformed directives are ignored rather than guessed at: an empty `max-age=` reads as
-  *no directive*, not as zero, and a duplicated directive keeps its first value
+  _no directive_, not as zero, and a duplicated directive keeps its first value
   (RFC 9111 §5.2.3).
-* Identical concurrent requests **coalesce**: one caller leads, and the rest wait for its
+- Identical concurrent requests **coalesce**: one caller leads, and the rest wait for its
   write to settle and replay the record it stored, so a burst of the same `GET` opens one
   connection instead of N. Only cacheable requests lead (a `POST` is never folded into
   another), callers that explicitly demanded the network are never joined, and a leader
@@ -813,36 +815,36 @@ Behaviour worth knowing:
   joiner waits on the leader's write but still honours **its own** caller's signal:
   unmount or cancel and it rejects immediately instead of hanging until the leader's
   network call settles.
-* A cache-layer failure never fails a response the network delivered: a throwing
+- A cache-layer failure never fails a response the network delivered: a throwing
   `cache.get`, `cache.set` or `shouldCache` callback costs at most one console warning,
   after which the wrapper keeps working uncached.
-* `staleWhileRevalidate` serves the stale body immediately and refetches in the background.
+- `staleWhileRevalidate` serves the stale body immediately and refetches in the background.
   Those responses are marked **`STALE`** rather than `HIT` — the one marker value beyond
   `HIT | MISS`, so a stale paint stays visible in the network tab. The background refresh
-  runs on the wrapper's own fresh signal: a caller that merely *noticed* the staleness
+  runs on the wrapper's own fresh signal: a caller that merely _noticed_ the staleness
   aborting right after being served (an unmount, a route change) cannot kill it — with a
   `Request` input the wrapper overrides the `Request`'s own signal explicitly, so the entry
   is never left stale forever because the noticing caller went away.
-* `Authorization` participates in the default key (hashed, never stored verbatim), so a
+- `Authorization` participates in the default key (hashed, never stored verbatim), so a
   personalized response is never served to a different user. Configure with `varyHeaders`,
   or replace the whole key with `key`.
-* A response's own `Vary` is honoured before anything is stored: `Vary: *` is never cached,
+- A response's own `Vary` is honoured before anything is stored: `Vary: *` is never cached,
   and a response varying on a header you have not listed in `varyHeaders` is deliberately
   left uncached — an unknown variant must never be replayed to the caller it doesn't belong
   to. This is the conservative default; add the server's headers to `varyHeaders` if you
   want those responses cached.
-* The `Response` is handed back immediately — the bytes are buffered in the background from
+- The `Response` is handed back immediately — the bytes are buffered in the background from
   a teed clone, so a streaming body is never held up waiting for the cache. A hit still
   replays exactly the bytes the network sent — status, headers and `url` included.
-* Binary, `Blob` and chunked bodies are handled: the payload is buffered as raw bytes, so a
+- Binary, `Blob` and chunked bodies are handled: the payload is buffered as raw bytes, so a
   hit replays byte-for-byte with `content-type` intact and `blob()` still reports the right
   type and size. Because `fetch` has already decoded the body, `content-encoding` and
   `transfer-encoding` are dropped and `content-length` is corrected to the stored size —
-  otherwise a hit would claim the *compressed* length for decoded bytes.
-* `markerHeader` renames `x-blaze-cache` or switches it off (`markerHeader: false`).
-* Requests tune the cache per call through `blazeCache`: `blazeCache: false` bypasses the
-  read *and* the write, while `{ enabled, ttlMs, tags, key, varyHeaders, forceRefresh,
-  invalidateTags }` overrides a single request — a mutation can drop related tags after
+  otherwise a hit would claim the _compressed_ length for decoded bytes.
+- `markerHeader` renames `x-blaze-cache` or switches it off (`markerHeader: false`).
+- Requests tune the cache per call through `blazeCache`: `blazeCache: false` bypasses the
+  read _and_ the write, while `{ enabled, ttlMs, tags, key, varyHeaders, forceRefresh,
+invalidateTags }` overrides a single request — a mutation can drop related tags after
   its own response lands (`invalidateCacheTags(cache, ...tags)` does the same from
   outside). Every response also carries `fromBlazeCache` — `false` on a network MISS,
   `true` on a HIT or STALE — alongside the marker header.
@@ -883,22 +885,22 @@ await api('users/42'); // HIT  — replayed from cache, x-blaze-cache: HIT
 
 What you get:
 
-* Custom keys are `key: (request) => string`; the default is `defaultCacheKey` (method +
+- Custom keys are `key: (request) => string`; the default is `defaultCacheKey` (method +
   URL + a hash of `varyHeaders` and the request body), exported from `@blaze-cache/ky` —
   call it to look an
   entry up yourself, or supply your own `key`. Tags are
   `tags: (response, request) => readonly string[]` and TTL is
   `ttlMs: number | (response, request) => number`; `markerHeader`, `varyHeaders`,
   `shouldCache` and `cacheControl` behave exactly as in `fetch`.
-* Cache hits keep ky semantics: a non-2xx response replayed from cache still throws
+- Cache hits keep ky semantics: a non-2xx response replayed from cache still throws
   `ky.HTTPError`, because the hook hands ky a real `Response` rather than swallowing it.
-* `Cache-Control` parsing is the same code `@blaze-cache/fetch` uses — malformed
+- `Cache-Control` parsing is the same code `@blaze-cache/fetch` uses — malformed
   directives (`max-age=` with no value) are ignored rather than read as zero, and a
   duplicated directive keeps its first value (RFC 9111 §5.2.3).
-* Both hook shapes are supported at runtime — ky v1 passes four positional arguments,
+- Both hook shapes are supported at runtime — ky v1 passes four positional arguments,
   ky v2 passes a single state object. The hook detects which, so the same build works
   with `ky@^1.14` and `ky@^2`.
-* No stale-while-revalidate here — `stale-while-revalidate` responses are served once and
+- No stale-while-revalidate here — `stale-while-revalidate` responses are served once and
   then miss. For SWR (with an `STALE` marker) use [`@blaze-cache/fetch`](#fetch).
 
 Full option reference: [`packages/ky`](packages/ky).
@@ -930,32 +932,32 @@ const api2 = createBlazeOfetch(cache, {
   tags: () => ['v1'],
 });
 
-await api('/users/42');      // MISS — network, parsed JSON stored in the background
-await api('/users/42');      // HIT  — replayed from cache
-await api.raw('/users/42');  // HIT  — FetchResponse with x-blaze-cache: HIT
+await api('/users/42'); // MISS — network, parsed JSON stored in the background
+await api('/users/42'); // HIT  — replayed from cache
+await api.raw('/users/42'); // HIT  — FetchResponse with x-blaze-cache: HIT
 ```
 
 What you get:
 
-* Custom keys are `key: ({ method, url, headers, body, ... }) => string`; the default is
+- Custom keys are `key: ({ method, url, headers, body, ... }) => string`; the default is
   method + resolved URL (after `baseURL`/`query`) plus a hash of `varyHeaders` and the
   request body, exported as
   `defaultCacheKey`. Tags are `tags: (response, ctx) => readonly string[]` and TTL is
   `ttlMs: number | (response, ctx) => number`; `markerHeader`, `varyHeaders`,
   `shouldCache`, and `cacheControl` behave like the other HTTP adapters.
-* `Cache-Control` is honoured on both sides when `cacheControl` is on (the default):
+- `Cache-Control` is honoured on both sides when `cacheControl` is on (the default):
   request `no-store`/`no-cache`/`max-age=0` skip the read (and `no-store` also skips the
   write); response `max-age` overrides `ttlMs`, `Age` is deducted, and `no-store`/`no-cache`
   (including per-field `no-cache="…"`) stop storage. `Vary` is always honoured.
-* The wrapped instance keeps ofetch's full API — call it directly for parsed data, `.raw()`
+- The wrapped instance keeps ofetch's full API — call it directly for parsed data, `.raw()`
   for the `FetchResponse` (with the `x-blaze-cache` marker), `.native` for the underlying
   fetch, and `.create()` for derived instances (which remain cached, with their options
-  applied to *both* the request and the cache key — an instance's own `baseURL`, which
+  applied to _both_ the request and the cache key — an instance's own `baseURL`, which
   ofetch keeps hidden in a closure, is learned from the first response instead). Identity
   defaults that affect the key (`headers`, `query`, `params`) are forwarded automatically by
   `createBlazeOfetch`; pass them as `defaults` when wrapping a pre-configured instance so two
   callers cannot share a personalized entry.
-* No stale-while-revalidate here. For SWR (with an `STALE` marker) use
+- No stale-while-revalidate here. For SWR (with an `STALE` marker) use
   [`@blaze-cache/fetch`](#fetch).
 
 Full option reference: [`packages/ofetch`](packages/ofetch).
@@ -967,7 +969,7 @@ import { createBlazeQueryClient, useBlazeQuery } from '@blaze-cache/react-query'
 
 const queryClient = createBlazeQueryClient({ cache });
 
-<QueryClientProvider client={queryClient}>…</QueryClientProvider>
+<QueryClientProvider client={queryClient}>…</QueryClientProvider>;
 
 const todos = useBlazeQuery(cache, {
   queryKey: ['todos', userId],
@@ -975,7 +977,7 @@ const todos = useBlazeQuery(cache, {
 });
 ```
 
-TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
+TanStack owns freshness _within_ a session; Blaze Cache owns it _across_ sessions.
 `useBlazeQuery` seeds `initialData` **with its original `dataUpdatedAt`**, so the first
 paint after a reload is instant while TanStack still considers the data stale and
 refetches in the background. Options that already carry `initialData` or
@@ -991,24 +993,24 @@ survives the removal; invalidation deliberately keeps the data so stale-while-re
 still has something to paint. Ordinary garbage collection
 — a query that sat unobserved past `gcTime` — is housekeeping rather than a purge, so the
 mirror survives it: that copy is what paints the next session. A refetch rewrites the
-record with the *existing* entry's tags and TTL when it has them: a helper that wrote
+record with the _existing_ entry's tags and TTL when it has them: a helper that wrote
 `tags: ['todos']` under a short TTL keeps both across refetches instead of being
 re-stamped with the sync defaults. Error states stay in TanStack.
 
 ### Full API
 
-* `useBlazeQuery(cache, options)` — `useQuery` seeded from the mirror; `useBlazeInfiniteQuery`
+- `useBlazeQuery(cache, options)` — `useQuery` seeded from the mirror; `useBlazeInfiniteQuery`
   does the same for infinite queries (the whole `InfiniteData`, pages included, seeds back
   as `initialData` — but only when the mirrored value really is `InfiniteData`; a plain
   record under the key is left unseeded and the query fetches normally),
   `useBlazeQueries` does it for parallel queries.
-* `useBlazeMutation(cache, options)` — `useMutation` that runs the given
+- `useBlazeMutation(cache, options)` — `useMutation` that runs the given
   `invalidate` filters through the two-sided helpers after success.
-* `prefetchBlazeQuery(cache, client, options)` — prefetch; seeds from the mirror first,
+- `prefetchBlazeQuery(cache, client, options)` — prefetch; seeds from the mirror first,
   mirrors the fetched result.
-* `setBlazeQueryData(cache, client, queryKey, data, options?)` — write through to the
+- `setBlazeQueryData(cache, client, queryKey, data, options?)` — write through to the
   mirror (TanStack first, then Blaze, with the caller's TTL/tags).
-* `invalidateBlazeQueries(cache, client, filters)` / `removeBlazeQueries(cache, client, filters)`
+- `invalidateBlazeQueries(cache, client, filters)` / `removeBlazeQueries(cache, client, filters)`
   — invalidate (mark stale + purge persisted data) / remove, query-key, tag or predicate
   based, on both caches at once.
 
@@ -1032,37 +1034,37 @@ Every integration takes the same `cache` — one instance per app is the intende
 ```ts
 const cache = await createCache({ capacity: 1000, persistence: { namespace: 'app' } });
 
-installBlazeCache(api, { cache });                     // @blaze-cache/axios
-const fetch = createBlazeFetch(cache);                 // @blaze-cache/fetch
-const api2 = createBlazeKy(cache, { ttlMs: 30_000 });  // @blaze-cache/ky
+installBlazeCache(api, { cache }); // @blaze-cache/axios
+const fetch = createBlazeFetch(cache); // @blaze-cache/fetch
+const api2 = createBlazeKy(cache, { ttlMs: 30_000 }); // @blaze-cache/ky
 const queryClient = createBlazeQueryClient({ cache }); // @blaze-cache/react-query
 // useBlazeSWR(cache, key, fetcher, { ttlMs, tags })   // @blaze-cache/swr
 ```
 
 Key formats are disjoint by default — axios/fetch/ky file `get <url>?<fnv1a>`, TanStack
 files its own `queryHash`, SWR its own serialization — so entries from different
-integrations never overwrite each other. What *is* shared:
+integrations never overwrite each other. What _is_ shared:
 
-* **Tags are one namespace at the core.** Default tags (`axios`, `fetch`, `ky`,
+- **Tags are one namespace at the core.** Default tags (`axios`, `fetch`, `ky`,
   `react-query`, `swr`) keep `cache.invalidateTags('<integration>')` scoped to a single
   package, and
-  every integration's purge helpers select *their own records* by shape before they read
+  every integration's purge helpers select _their own records_ by shape before they read
   tags — so `invalidateBlazeQueries(cache, client, { tags: ['todos'] })` purges mirror
   records tagged `'todos'` and leaves an axios/SWR entry tagged `'todos'` in place. A
   direct `cache.invalidateTags('todos')` is the one call that spans everything tagged —
-  useful when one purge *should* cover the whole domain.
-* **Purge helpers without a filter stay on their own records.**
+  useful when one purge _should_ cover the whole domain.
+- **Purge helpers without a filter stay on their own records.**
   `removeBlazeQueries(cache, client)` (and the unfiltered `invalidateBlazeQueries`)
-  removes every entry that *looks like* a react-query record (`dataUpdatedAt`), leaving
+  removes every entry that _looks like_ a react-query record (`dataUpdatedAt`), leaving
   axios/fetch/ky/SWR entries on a shared store untouched. `{ queryKey }` and `{ tags }`
   narrow it further.
-* **Every integration shape-checks values it did not write.** axios treats a foreign
+- **Every integration shape-checks values it did not write.** axios treats a foreign
   value as a miss — it neither serves nor deletes it; ky likewise (its records carry a
   numeric `freshUntil` and an `ArrayBuffer` body); react-query seeds only records
   carrying its own `dataUpdatedAt` stamp; SWR seeds only its `{ kind: 'swr' }` envelope.
   With default keys collisions cannot happen at all, and with custom keys a foreign
   value reads as a clean miss instead of being shown as data.
-* **Capacity, stats, events and the persistence flush are one pool.** Size `capacity` for
+- **Capacity, stats, events and the persistence flush are one pool.** Size `capacity` for
   the combined write volume — a busy integration evicts other entries. Reads differ too:
   react-query/SWR render with `peek` (never moving hit rate or eviction), axios/fetch/ky
   read with `get` (counting, as request-driven reads should).
@@ -1187,9 +1189,11 @@ or `Response`, raw bytes, or a precompiled `Module`:
 const cache = await createCache({
   capacity: 1000,
   instantiate: async () =>
-    (await fetch('/assets/blaze_cache_wasm_bg.wasm', {
-      headers: { authorization: `Bearer ${token}` },
-    })).arrayBuffer(),
+    (
+      await fetch('/assets/blaze_cache_wasm_bg.wasm', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).arrayBuffer(),
 });
 ```
 
@@ -1201,11 +1205,11 @@ why.
 
 ### Choosing a source
 
-| Option | Use it when |
-| --- | --- |
-| *(none)* | Default — Vite and any bundler that does not pre-bundle dependencies |
-| `wasmUrl` | Public asset path, CDN, Next.js, or pre-bundled dependencies |
-| `module` | You already hold a compiled `WebAssembly.Module` |
+| Option        | Use it when                                                          |
+| ------------- | -------------------------------------------------------------------- |
+| _(none)_      | Default — Vite and any bundler that does not pre-bundle dependencies |
+| `wasmUrl`     | Public asset path, CDN, Next.js, or pre-bundled dependencies         |
+| `module`      | You already hold a compiled `WebAssembly.Module`                     |
 | `instantiate` | The fetch itself needs custom logic (auth, retries, in-memory bytes) |
 
 Pass **at most one** — two at once throws a `TypeError` rather than silently picking one.
@@ -1217,11 +1221,11 @@ compile failure — each with what to try instead.
 
 When you do point at the binary yourself, every bundler's URL import works:
 
-| Bundler | Import |
-| --- | --- |
-| Vite | `wasmUrl: '/assets/blaze_cache_wasm_bg.wasm'` (after copying it to `public/`) |
-| webpack 5 | `new URL('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url)` |
-| Next.js | `wasmUrl` with a `public/` asset — browser only |
+| Bundler   | Import                                                                        |
+| --------- | ----------------------------------------------------------------------------- |
+| Vite      | `wasmUrl: '/assets/blaze_cache_wasm_bg.wasm'` (after copying it to `public/`) |
+| webpack 5 | `new URL('@blaze-cache/core/pkg/blaze_cache_wasm_bg.wasm', import.meta.url)`  |
+| Next.js   | `wasmUrl` with a `public/` asset — browser only                               |
 
 Or pass pre-read bytes directly, which is what the Node test suites do (Node cannot
 `fetch()` a `file:` URL):
@@ -1274,7 +1278,10 @@ pnpm test             # cargo test --workspace
 pnpm test:js          # build the wasm, then run every package's tests against dist/
 pnpm test:live        # all six live suites against real public APIs
 pnpm bench            # blaze adapters vs React Query and SWR (~40s)
-pnpm lint             # clippy -D warnings + rustfmt + tsc --noEmit
+pnpm lint             # rustfmt + clippy -D warnings + tsc + ESLint + Prettier check
+pnpm lint:js          # ESLint over JS/ESM sources (scripts, benchmarks, configs, tests)
+pnpm format           # Prettier --write across the workspace
+pnpm format:check     # Prettier --check (part of pnpm lint)
 pnpm test:wasm        # wasm-pack test --node (the bindings, against the wasm crate)
 pnpm dev              # build, then serve the ky example
 pnpm dev:core         # build, then serve the @blaze-cache/core playground
@@ -1287,17 +1294,24 @@ pnpm dev:swr          # build, then serve the @blaze-cache/swr example
 pnpm clean            # remove build outputs
 ```
 
+Husky hooks enforce the same gates locally: `commit-msg` runs commitlint (Conventional
+Commits plus this repo's `bench:` type), `pre-commit` runs ESLint, the Prettier check, and —
+when Rust files are staged — `cargo fmt --check` + clippy. `pre-push` runs the full
+`pnpm lint` + host/wasm/JS suites + `pnpm bench:ci` (retried once when a short benchmark sample
+is noisy) before any branch is pushed. Hooks are installed automatically by `pnpm install`
+(`prepare`).
+
 Every package carries its own suite in `packages/<name>/test/`, run with `node --test`
 (`pnpm --filter @blaze-cache/fetch test` for one of them). The suites exercise the
 **built** artifacts — the real wasm binary plus `packages/*/dist` — so they fail if
-either side drifts, and each marker-header assertion is paired with a look *inside*
+either side drifts, and each marker-header assertion is paired with a look _inside_
 the store, so a green run means the payload really landed there.
 
 The network-facing packages additionally ship an opt-in **live** suite that talks to real
 public APIs — `api.github.com` (keyless, and well within GitHub's unauthenticated 60
 requests/hour; the fetch suite also exercises `raw.githubusercontent.com` and
 `jsonplaceholder.typicode.com`). The HTTP integrations (`fetch`, `axios`, `ky`) prove that
-*real* `Cache-Control` and `Vary` headers are parsed and honoured; `swr` and
+_real_ `Cache-Control` and `Vary` headers are parsed and honoured; `swr` and
 `react-query` prove their persist/mirror round-trips against a real response body; and
 `integration-tests` drives all five, sharing one cache. `core` has no live suite — its
 engine never talks to a network:
@@ -1326,7 +1340,7 @@ update PRs for dependencies and those pins.
 against `Map`, `quick-lru`, `lru-cache` and hand-rolled feature stacks over ten workloads:
 cold fill, a hit, a miss, a 90/10 mixed load, the `full-featured` headline, plus TTL churn,
 eviction pressure, tag invalidation at scale and the persistence flush/hydration pair. Before
-a single timing is taken, every adapter in a scenario must produce *deeply equal* probe
+a single timing is taken, every adapter in a scenario must produce _deeply equal_ probe
 observations, so the adapters are provably asked the same question rather than a similar-looking
 one. `pnpm bench:browser` runs the same suites in headless Chrome through
 [`benchmarks/browser/`](benchmarks/browser), so the numbers cross the Wasm boundary in the
@@ -1337,12 +1351,12 @@ The published results, methodology, hardware, raw JSON and caveats are in
 [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md). In brief, on an Apple M2 with a
 10 000-entry cache, `full-featured` at a ~1 KB payload measured (ns/op, **lower is better**):
 
-| Adapter | Node | Browser |
-| --- | ---: | ---: |
-| Map + LRU + TTL + tags | 211.2 | 190.3 |
-| QuickLRU + tag index | **109.3** | **88.2** |
-| lru-cache + tag index | 231.3 | 100.0 |
-| blaze-cache | 183.6 | 208.6 |
+| Adapter                |      Node |  Browser |
+| ---------------------- | --------: | -------: |
+| Map + LRU + TTL + tags |     211.2 |    190.3 |
+| QuickLRU + tag index   | **109.3** | **88.2** |
+| lru-cache + tag index  |     231.3 |    100.0 |
+| blaze-cache            |     183.6 |    208.6 |
 
 The payload matrix (≤64 B → 1 MB, as structured-cloneable objects **and** `Uint8Array`) is the
 important result: payload size barely moves a hot read or a full-featured operation, because
@@ -1352,3 +1366,8 @@ these numbers rather than assumed. The honest claim is narrow: blaze replaces a 
 application code at roughly the same cost (faster on Node reads, about even in the browser),
 and pays a clear write-path premium against native LRU libraries whose TTL is built in.
 Numbers move with the machine — read the results page before quoting any figure.
+
+## Community
+
+Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+Please read it before opening issues or pull requests.
