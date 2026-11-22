@@ -196,7 +196,13 @@ export type CacheListener = (change: CacheChange) => void;
  */
 export type CacheMutation<V = any> = CacheEventMap<V>[Exclude<
   CacheEventType,
-  'hit' | 'miss' | 'remote-set' | 'remote-delete' | 'remote-clear' | 'remote-invalidate' | 'remote-rotate'
+  | 'hit'
+  | 'miss'
+  | 'remote-set'
+  | 'remote-delete'
+  | 'remote-clear'
+  | 'remote-invalidate'
+  | 'remote-rotate'
 >];
 
 /**
@@ -219,10 +225,7 @@ export interface CacheTagChange<V = any> {
  * that removed it is the second argument, and for `evict`/`expire` its `value` field still
  * holds the dropped reference.
  */
-export type CacheKeySubscriber<V = any> = (
-  value: V | undefined,
-  change: CacheMutation<V>,
-) => void;
+export type CacheKeySubscriber<V = any> = (value: V | undefined, change: CacheMutation<V>) => void;
 
 /** A {@link BlazeCache.subscribeMany} listener: which key, its value, then what changed. */
 export type CacheManySubscriber<V = any> = (

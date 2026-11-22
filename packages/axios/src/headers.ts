@@ -2,9 +2,7 @@ import { AxiosHeaders } from 'axios';
 
 /** `hasOwnProperty` over an unknown source — also correct for `Object.create(null)` records. */
 const hasOwn = (source: unknown, key: string): boolean =>
-  source !== null &&
-  source !== undefined &&
-  Object.prototype.hasOwnProperty.call(source, key);
+  source !== null && source !== undefined && Object.prototype.hasOwnProperty.call(source, key);
 
 /**
  * Case-insensitive header lookup that works with both `AxiosHeaders` and plain objects.

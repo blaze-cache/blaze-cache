@@ -213,7 +213,9 @@ async function main() {
       process.stderr.write(`  measuring ${cell} / ${scenario} / ${adapter}\n`),
   };
 
-  const result = flags.has('matrix') ? await runPayloadMatrix(options) : await runBenchmark(options);
+  const result = flags.has('matrix')
+    ? await runPayloadMatrix(options)
+    : await runBenchmark(options);
 
   const json = `${JSON.stringify(result, null, 2)}\n`;
   if (values.out) {

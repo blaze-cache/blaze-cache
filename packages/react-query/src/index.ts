@@ -34,10 +34,7 @@ export { createBlazeQueryClient, syncBlazeQueryCache } from './sync.js';
 export { isMirrorRecord } from './record.js';
 export { hashQueryKey, resolveQueryHash } from './hash.js';
 export { readBlazeRecord, seedBlazeQueryOptions, useBlazeQuery } from './useBlazeQuery.js';
-export {
-  seedBlazeInfiniteQueryOptions,
-  useBlazeInfiniteQuery,
-} from './useBlazeInfiniteQuery.js';
+export { seedBlazeInfiniteQueryOptions, useBlazeInfiniteQuery } from './useBlazeInfiniteQuery.js';
 export { seedBlazeQueriesOptions, useBlazeQueries } from './useBlazeQueries.js';
 export type { UseBlazeQueriesOptions } from './useBlazeQueries.js';
 export {

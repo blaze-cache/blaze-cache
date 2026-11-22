@@ -93,8 +93,7 @@ function sameValue(actual, expected) {
   if (actual === expected) return true;
   if (actual instanceof Uint8Array && expected instanceof Uint8Array) {
     return (
-      actual.length === expected.length &&
-      actual.every((byte, index) => byte === expected[index])
+      actual.length === expected.length && actual.every((byte, index) => byte === expected[index])
     );
   }
   return false;
@@ -372,7 +371,10 @@ export function buildScenarios(options = {}) {
       ],
       setup: (adapter) => {
         for (let i = 0; i < capacity; i += 1) {
-          adapter.set(keys[i], values[i], { ttlMs: HOUR_MS, tags: [SCALE_TAGS[i % SCALE_TAG_COUNT]] });
+          adapter.set(keys[i], values[i], {
+            ttlMs: HOUR_MS,
+            tags: [SCALE_TAGS[i % SCALE_TAG_COUNT]],
+          });
         }
       },
       op: (adapter, i) => {
@@ -385,7 +387,10 @@ export function buildScenarios(options = {}) {
         adapter.clear();
         const writes = Math.min(capacity, 256);
         for (let i = 0; i < writes; i += 1) {
-          adapter.set(keys[i], values[i], { ttlMs: HOUR_MS, tags: [SCALE_TAGS[i % SCALE_TAG_COUNT]] });
+          adapter.set(keys[i], values[i], {
+            ttlMs: HOUR_MS,
+            tags: [SCALE_TAGS[i % SCALE_TAG_COUNT]],
+          });
         }
         const before = adapter.size();
         const removed = adapter.invalidateTags(SCALE_TAGS[0]).length;
@@ -481,5 +486,4 @@ export function buildScenarios(options = {}) {
   }
 
   return scenariosResults;
-
 }

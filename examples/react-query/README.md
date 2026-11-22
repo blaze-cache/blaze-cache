@@ -8,20 +8,20 @@ latency and the server counts its own hits). Because mirrored entries keep their
 `dataUpdatedAt`, a reload paints instantly from the persisted mirror while the query
 refetches in the background — TanStack's own stale-while-revalidate, surviving sessions.
 
-* **Instant first paint** — after a reload, the list appears from the mirror before the 400 ms
+- **Instant first paint** — after a reload, the list appears from the mirror before the 400 ms
   fetch completes; `isFetching` shows the background revalidation.
-* **Two-sided invalidation** — “Invalidate ‘todos’” marks the query stale in TanStack **and**
+- **Two-sided invalidation** — “Invalidate ‘todos’” marks the query stale in TanStack **and**
   purges the persisted mirror entry via `invalidateBlazeQueries`.
-* **Request log** — every real network fetch is logged with its latency; cache reads taken at
+- **Request log** — every real network fetch is logged with its latency; cache reads taken at
   render time use `peek` and don't show up (they don't move the hit rate either).
-* **Cache statistics** — hits/misses/entries/evictions/expirations for the mirror.
-* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+- **Cache statistics** — hits/misses/entries/evictions/expirations for the mirror.
+- **Value storage** — the default keeps values as by-reference externrefs in Wasm;
   open with `?storage=js` (or use the toggle in the page header) to run the same demo
   with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
   and stable ids. Each mode has its own IndexedDB namespace.
-* **Reload** — entries persist to IndexedDB under `blaze-example-react-query-wasm` / `blaze-example-react-query-js`.
+- **Reload** — entries persist to IndexedDB under `blaze-example-react-query-wasm` / `blaze-example-react-query-js`.
 
-* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+- **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
 
 ## Run
 

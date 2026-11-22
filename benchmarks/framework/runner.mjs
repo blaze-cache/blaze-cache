@@ -62,9 +62,7 @@ function renderTable(rows) {
   ]);
   const widths = headers.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i].length)));
   const fmt = (line) =>
-    line
-      .map((cell, i) => (i === 0 ? cell.padEnd(widths[i]) : cell.padStart(widths[i])))
-      .join('  ');
+    line.map((cell, i) => (i === 0 ? cell.padEnd(widths[i]) : cell.padStart(widths[i]))).join('  ');
   return [fmt(headers), widths.map((w) => '-'.repeat(w)).join('  '), ...cells.map(fmt)].join('\n');
 }
 
@@ -90,12 +88,24 @@ function render(result) {
   }
 
   lines.push('Notes');
-  lines.push('  * Cache-store microbenchmarks in Node, not full React hook/app render/fetch benchmarks.');
-  lines.push('  * p50/p95 are over recorded samples; warmup samples discarded; gc() runs before timing when available.');
-  lines.push('  * Blaze uses @blaze-cache/core (WASM). TanStack Query uses real QueryClient (query-key hashing/bookkeeping included).');
-  lines.push('  * SWR uses real initCache store in Node (real SWR apps also pay key serialization/hook behavior).');
-  lines.push('  * Map/QuickLRU baselines live in benchmarks/cache; this suite focuses on framework cache stores.');
-  lines.push('  * invalidate-by-key deletes distinct pre-filled keys (iterations <= capacity). "vs best" is per scenario.');
+  lines.push(
+    '  * Cache-store microbenchmarks in Node, not full React hook/app render/fetch benchmarks.',
+  );
+  lines.push(
+    '  * p50/p95 are over recorded samples; warmup samples discarded; gc() runs before timing when available.',
+  );
+  lines.push(
+    '  * Blaze uses @blaze-cache/core (WASM). TanStack Query uses real QueryClient (query-key hashing/bookkeeping included).',
+  );
+  lines.push(
+    '  * SWR uses real initCache store in Node (real SWR apps also pay key serialization/hook behavior).',
+  );
+  lines.push(
+    '  * Map/QuickLRU baselines live in benchmarks/cache; this suite focuses on framework cache stores.',
+  );
+  lines.push(
+    '  * invalidate-by-key deletes distinct pre-filled keys (iterations <= capacity). "vs best" is per scenario.',
+  );
   return lines.join('\n');
 }
 

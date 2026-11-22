@@ -45,7 +45,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /** The `useSWRNext`-shaped chain — copies the offline suite's driver. */
 function runMiddleware(cache, middlewareOptions, key, fetcher, config = {}) {
@@ -57,7 +58,10 @@ function runMiddleware(cache, middlewareOptions, key, fetcher, config = {}) {
     isLoading: false,
     mutate: () => {},
   };
-  const hook = blazeSWRMiddleware(cache, middlewareOptions)((k, f, c) => {
+  const hook = blazeSWRMiddleware(
+    cache,
+    middlewareOptions,
+  )((k, f, c) => {
     captured.key = k;
     captured.fetcher = f;
     captured.config = c;
@@ -109,19 +113,23 @@ describe('live: real public API', () => {
     }
   });
 
-  it('seeds a fresh middleware run from the mirror — without any network', { skip: SKIP }, async () => {
-    const cache = await makeCache();
-    const { fetcher, requests } = realFetcher();
-    const first = runMiddleware(cache, {}, REPO, fetcher);
-    const data = await first.fetcher(REPO);
-    assert.equal(requests(), 1);
+  it(
+    'seeds a fresh middleware run from the mirror — without any network',
+    { skip: SKIP },
+    async () => {
+      const cache = await makeCache();
+      const { fetcher, requests } = realFetcher();
+      const first = runMiddleware(cache, {}, REPO, fetcher);
+      const data = await first.fetcher(REPO);
+      assert.equal(requests(), 1);
 
-    // A "new session": fresh chain, same cache. The hydration read must come off the
-    // mirror alone — no fetcher call, no network.
-    const second = runMiddleware(cache, {}, REPO, fetcher);
-    assert.equal(requests(), 1, 'seeding the fresh run made no network call');
-    assert.deepEqual(second.config.fallbackData, data, 'the payload came off the mirror');
-  });
+      // A "new session": fresh chain, same cache. The hydration read must come off the
+      // mirror alone — no fetcher call, no network.
+      const second = runMiddleware(cache, {}, REPO, fetcher);
+      assert.equal(requests(), 1, 'seeding the fresh run made no network call');
+      assert.deepEqual(second.config.fallbackData, data, 'the payload came off the mirror');
+    },
+  );
 
   it('a failing fetcher persists nothing', { skip: SKIP }, async () => {
     const cache = await makeCache();

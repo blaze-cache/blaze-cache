@@ -43,21 +43,21 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 
 ## Behaviour
 
-* Successful fetches and `setQueryData` are written to the shared cache.
-* An **explicit** `removeQueries` or `clear` deletes from it — and only when the value
+- Successful fetches and `setQueryData` are written to the shared cache.
+- An **explicit** `removeQueries` or `clear` deletes from it — and only when the value
   under the key is a mirror record (carries `dataUpdatedAt`), so a foreign entry parked
   at a colliding key on a shared cache survives the removal. Ordinary garbage
   collection — a query left unobserved past `gcTime` — deliberately does **not**: that
   is in-session housekeeping, and the persisted copy is what paints the next session.
-* Invalidation keeps the data too, so stale-while-revalidate always has something to
+- Invalidation keeps the data too, so stale-while-revalidate always has something to
   paint.
-* A refetch rewrites the record with the *existing* entry's tags and TTL when it has
+- A refetch rewrites the record with the _existing_ entry's tags and TTL when it has
   them: a helper that wrote `tags: ['todos']` under a short TTL keeps both across
   refetches instead of being re-stamped with the sync defaults. No reader on the cache
   (or no existing record) falls back to the defaults, exactly as before.
-* Renders never touch cache statistics: the pre-fetch lookup prefers `peek` over `get`,
+- Renders never touch cache statistics: the pre-fetch lookup prefers `peek` over `get`,
   so StrictMode's double render cannot move the hit rate or influence eviction.
-* That holds for events too — `peek` emits nothing, so renders are silent; the writes the
+- That holds for events too — `peek` emits nothing, so renders are silent; the writes the
   mirror performs surface as `set` events on the shared cache:
 
   ```ts
@@ -66,8 +66,9 @@ up with TanStack's own hashing, so a custom `queryKeyHashFn` is honoured.
 
   `on` returns its own unsubscribe function; the full event table is in the
   [repository README](https://github.com/blaze-cache/blaze-cache#events).
-* Error states stay in TanStack — only data crosses into the cache.
-* TanStack owns freshness *within* a session; Blaze Cache owns it *across* sessions.
+
+- Error states stay in TanStack — only data crosses into the cache.
+- TanStack owns freshness _within_ a session; Blaze Cache owns it _across_ sessions.
 
 ## API
 
@@ -77,23 +78,23 @@ imperative helpers and the seed/read functions take `(cache, client, …)` with 
 client explicit. `hashQueryKey`, `resolveQueryHash` and `isMirrorRecord` work from a
 query key, a `QueryClient` and a plain value — no cache needed.
 
-| Export | What it does |
-| --- | --- |
-| `createBlazeQueryClient` / `syncBlazeQueryCache` | Mirror TanStack cache writes into the Blaze Cache (see [Behaviour](#behaviour)). |
-| `useBlazeQuery` | `useQuery` seeded from the mirror. |
-| `useBlazeInfiniteQuery` | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData` — only for `InfiniteData`-shaped records; a plain record under the key is left unseeded. |
-| `useBlazeQueries` | `useQueries` over several keys, each seeded independently. |
-| `useBlazeMutation` | `useMutation` that invalidates queries after success. |
+| Export                                                                                | What it does                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createBlazeQueryClient` / `syncBlazeQueryCache`                                      | Mirror TanStack cache writes into the Blaze Cache (see [Behaviour](#behaviour)).                                                                                                                                                           |
+| `useBlazeQuery`                                                                       | `useQuery` seeded from the mirror.                                                                                                                                                                                                         |
+| `useBlazeInfiniteQuery`                                                               | `useInfiniteQuery` seeded with the whole `InfiniteData` (all pages) as `initialData` — only for `InfiniteData`-shaped records; a plain record under the key is left unseeded.                                                              |
+| `useBlazeQueries`                                                                     | `useQueries` over several keys, each seeded independently.                                                                                                                                                                                 |
+| `useBlazeMutation`                                                                    | `useMutation` that invalidates queries after success.                                                                                                                                                                                      |
 | `seedBlazeQueryOptions` / `seedBlazeInfiniteQueryOptions` / `seedBlazeQueriesOptions` | The seeding the hooks do, as options transforms you can call yourself: fill `initialData` + `initialDataUpdatedAt` from the mirror — an explicit `initialData` always wins, and the infinite one only seeds `InfiniteData`-shaped records. |
-| `readBlazeRecord` | The lookup every seed shares: resolve the hash the way TanStack does, `peek` over `get` (a render must not skew stats) and accept only records this package could have written. |
-| `resolveQueryHash` | The hash TanStack will file a query under — an explicit `queryHash`, then the configured `queryKeyHashFn` (per-query, `setQueryDefaults` or client defaults), else the default hasher. |
-| `hashQueryKey` | TanStack's own canonical hash for a query key. |
-| `isMirrorRecord` | Shape guard: does this value carry a numeric `dataUpdatedAt` — is it a record the sync layer could have written? |
-| `prefetchBlazeQuery` | Imperatively seed + prefetch, mirroring the fetched result. |
-| `setBlazeQueryData` | Write data through to the mirror (TanStack first, then Blaze). |
-| `invalidateBlazeQueries` | Invalidate in TanStack **and** purge the mirror. |
-| `removeBlazeQueries` | Remove from TanStack **and** purge the mirror. |
-| `dehydrateBlazeQueryClient` / `hydrateBlazeQueryClient` | Serialize / restore the mirror as a TanStack `DehydratedState`. |
+| `readBlazeRecord`                                                                     | The lookup every seed shares: resolve the hash the way TanStack does, `peek` over `get` (a render must not skew stats) and accept only records this package could have written.                                                            |
+| `resolveQueryHash`                                                                    | The hash TanStack will file a query under — an explicit `queryHash`, then the configured `queryKeyHashFn` (per-query, `setQueryDefaults` or client defaults), else the default hasher.                                                     |
+| `hashQueryKey`                                                                        | TanStack's own canonical hash for a query key.                                                                                                                                                                                             |
+| `isMirrorRecord`                                                                      | Shape guard: does this value carry a numeric `dataUpdatedAt` — is it a record the sync layer could have written?                                                                                                                           |
+| `prefetchBlazeQuery`                                                                  | Imperatively seed + prefetch, mirroring the fetched result.                                                                                                                                                                                |
+| `setBlazeQueryData`                                                                   | Write data through to the mirror (TanStack first, then Blaze).                                                                                                                                                                             |
+| `invalidateBlazeQueries`                                                              | Invalidate in TanStack **and** purge the mirror.                                                                                                                                                                                           |
+| `removeBlazeQueries`                                                                  | Remove from TanStack **and** purge the mirror.                                                                                                                                                                                             |
+| `dehydrateBlazeQueryClient` / `hydrateBlazeQueryClient`                               | Serialize / restore the mirror as a TanStack `DehydratedState`.                                                                                                                                                                            |
 
 ## Example usage
 
@@ -228,11 +229,11 @@ Setup and the full integration reference live in the
 
 ## Part of Blaze Cache
 
-* [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
-* [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
-* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
-* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
-* [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
+- [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+- [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
+- [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+- [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
+- [`@blaze-cache/swr`](https://www.npmjs.com/package/@blaze-cache/swr) — SWR middleware + hook
 
 ## License
 

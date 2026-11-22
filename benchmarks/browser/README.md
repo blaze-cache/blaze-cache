@@ -24,12 +24,12 @@ other than the platform default.
 
 ## Layout
 
-| File | Role |
-| --- | --- |
-| `index.html`, `src/main.js` | the page; exposes the shared harness and the browser adapter registry |
-| `vite.config.js` | serves `../cache/` shared modules and emits the wasm asset as an HTTP resource |
-| `runner.mjs` | Vite + Playwright driver, CLI, table/JSON rendering |
-| `test/modules.test.mjs` | asserts the shared modules contain no `node:` imports |
+| File                        | Role                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `index.html`, `src/main.js` | the page; exposes the shared harness and the browser adapter registry          |
+| `vite.config.js`            | serves `../cache/` shared modules and emits the wasm asset as an HTTP resource |
+| `runner.mjs`                | Vite + Playwright driver, CLI, table/JSON rendering                            |
+| `test/modules.test.mjs`     | asserts the shared modules contain no `node:` imports                          |
 
 The adapters come from `../cache/adapters.browser.mjs`: identical store implementations to the
 Node suite (`../cache/stores.mjs`), with blaze left to fetch its own `.wasm` asset through the

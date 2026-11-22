@@ -26,10 +26,7 @@ describe('wasm failure diagnostics', () => {
   it('describes the whole cause chain', () => {
     const root = new TypeError('root cause');
     const wrapper = new Error('outer failure', { cause: root });
-    assert.equal(
-      describeError(wrapper),
-      'Error: outer failure <- caused by TypeError: root cause',
-    );
+    assert.equal(describeError(wrapper), 'Error: outer failure <- caused by TypeError: root cause');
     assert.equal(describeError('a string'), 'Error: a string');
   });
 
@@ -64,7 +61,10 @@ describe('wasm failure diagnostics', () => {
       const cache = instrumentCache(target);
       assert.equal(cache.ok(), 42);
       assert.equal(cache.constructor, Object);
-      assert.throws(() => cache.trap('a'.repeat(200)), (error) => error === boom);
+      assert.throws(
+        () => cache.trap('a'.repeat(200)),
+        (error) => error === boom,
+      );
     });
 
     assert.equal(logs.length, 1, 'successful calls stay silent');

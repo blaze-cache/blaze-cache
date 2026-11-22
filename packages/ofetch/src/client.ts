@@ -193,11 +193,19 @@ export function blazeOfetch(
       url = (request as Request).url;
     }
 
-    const method = (opts.method ?? (typeof request !== 'string' && 'method' in request ? (request as Request).method : undefined) ?? 'GET').toUpperCase();
+    const method = (
+      opts.method ??
+      (typeof request !== 'string' && 'method' in request
+        ? (request as Request).method
+        : undefined) ??
+      'GET'
+    ).toUpperCase();
     const headers = mergeHeaders(
       options.defaults?.headers,
       inherited.headers,
-      typeof request !== 'string' && 'headers' in request ? (request as Request).headers : undefined,
+      typeof request !== 'string' && 'headers' in request
+        ? (request as Request).headers
+        : undefined,
       opts.headers as HeadersInit | undefined,
     );
     const body =
@@ -220,7 +228,8 @@ export function blazeOfetch(
    * per-call options over the instance defaults, so passing it here makes the two agree.
    */
   function wireOptions(callOpts: FetchOptions, inherited: FetchOptions): FetchOptions {
-    const base = callOpts.baseURL ?? inherited.baseURL ?? options.baseURL ?? options.defaults?.baseURL;
+    const base =
+      callOpts.baseURL ?? inherited.baseURL ?? options.baseURL ?? options.defaults?.baseURL;
     return base === undefined ? callOpts : { ...callOpts, baseURL: base };
   }
 
@@ -233,7 +242,11 @@ export function blazeOfetch(
    * is accepted only if applying it round-trips back to exactly the URL the response came
    * from — a suffix match alone would let `/users` be "resolved" from `…/notusers`.
    */
-  function learnOrigin(state: WrapState, ctx: BlazeOfetchKeyContext, response: FetchResponse<unknown> | undefined): void {
+  function learnOrigin(
+    state: WrapState,
+    ctx: BlazeOfetchKeyContext,
+    response: FetchResponse<unknown> | undefined,
+  ): void {
     if (state.resolvedBase !== undefined) return;
     if (isAbsoluteUrl(ctx.url)) return; // already names its origin — nothing to learn
     const finalUrl = response?.url;
@@ -262,11 +275,14 @@ export function blazeOfetch(
   ): Promise<void> {
     if (response.status === 0) return;
 
-    const control = cacheControl ? parseCacheControl(response.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = cacheControl
+      ? parseCacheControl(response.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     if (control.noStore || control.noCache) return;
 
     const configured = options.ttlMs;
-    const ttl = typeof configured === 'function' ? configured(response, ctx) : (configured ?? DEFAULT_TTL_MS);
+    const ttl =
+      typeof configured === 'function' ? configured(response, ctx) : (configured ?? DEFAULT_TTL_MS);
     const age = cacheControl ? parseAgeMs(response.headers.get('Age')) : 0;
     const freshMs = (control.maxAgeMs ?? ttl) - age;
     if (!(freshMs > 0)) return;
@@ -321,7 +337,9 @@ export function blazeOfetch(
       return target(request as string, wire) as Promise<T>;
     }
 
-    const control = cacheControl ? parseCacheControl(ctx.headers.get('Cache-Control')) : NO_DIRECTIVES;
+    const control = cacheControl
+      ? parseCacheControl(ctx.headers.get('Cache-Control'))
+      : NO_DIRECTIVES;
     const requestCache = (callOpts as { cache?: string }).cache;
     let bypassRead =
       control.noStore ||
@@ -359,13 +377,20 @@ export function blazeOfetch(
         let record = read(key);
         if (!canServe(record, callOpts)) {
           const pending = pendingWrites.get(key);
-          if (pending && (await settleOrAbort(pending, (callOpts as { signal?: AbortSignal }).signal))) {
+          if (
+            pending &&
+            (await settleOrAbort(pending, (callOpts as { signal?: AbortSignal }).signal))
+          ) {
             record = read(key);
           }
         }
         if (isRecord(record)) {
           if (requestCache !== 'force-cache' && Date.now() > record.freshUntil) {
-            try { cache.delete?.(key); } catch (error) { warnCacheFailure(error); }
+            try {
+              cache.delete?.(key);
+            } catch (error) {
+              warnCacheFailure(error);
+            }
           } else {
             return replay(record, 'HIT', wantRaw) as T | FetchResponse<T>;
           }
@@ -401,7 +426,9 @@ export function blazeOfetch(
         }
         if (keep) {
           const gateKey = key;
-          const write = store(response as FetchResponse<unknown>, ctx, gateKey).catch(warnCacheFailure);
+          const write = store(response as FetchResponse<unknown>, ctx, gateKey).catch(
+            warnCacheFailure,
+          );
           void write.finally(() => {
             if (pendingWrites.get(gateKey) === write) pendingWrites.delete(gateKey);
           });
@@ -411,7 +438,8 @@ export function blazeOfetch(
     }
 
     const marked = await mark(response, 'MISS');
-    return (wantRaw ? marked : (marked as FetchResponse<T> & { _data?: T })._data) as T | FetchResponse<T>;
+    return (wantRaw ? marked : (marked as FetchResponse<T> & { _data?: T })._data) as
+      T | FetchResponse<T>;
   }
 
   function replay(record: OfetchCacheRecord, marker: BlazeOfetchMarker, wantRaw: boolean): unknown {
@@ -435,7 +463,10 @@ export function blazeOfetch(
     return wantRaw ? response : response._data;
   }
 
-  async function mark<T>(response: FetchResponse<T>, marker: BlazeOfetchMarker): Promise<FetchResponse<T>> {
+  async function mark<T>(
+    response: FetchResponse<T>,
+    marker: BlazeOfetchMarker,
+  ): Promise<FetchResponse<T>> {
     if (markerHeader === false) return response;
     try {
       response.headers.set(markerHeader, marker);
@@ -445,7 +476,11 @@ export function blazeOfetch(
       const headers = new Headers(response.headers);
       headers.set(markerHeader, marker);
       let body: ArrayBuffer | null = null;
-      if (response.body !== null || response.bodyUsed || (response as { _data?: unknown })._data !== undefined) {
+      if (
+        response.body !== null ||
+        response.bodyUsed ||
+        (response as { _data?: unknown })._data !== undefined
+      ) {
         try {
           body = response.bodyUsed
             ? await encodeData((response as { _data?: unknown })._data, response.headers)
@@ -480,22 +515,28 @@ export function blazeOfetch(
     const run = <T>(request: any, opts: any, wantRaw: boolean): Promise<T | FetchResponse<T>> =>
       execute(target, state, request, opts, wantRaw);
 
-    const wrapped = ((request: any, opts?: any) => run(request, opts, false)) as BlazeOfetchInstance;
-    wrapped.raw = ((request: any, opts?: any) => run(request, opts, true)) as BlazeOfetchInstance['raw'];
+    const wrapped = ((request: any, opts?: any) =>
+      run(request, opts, false)) as BlazeOfetchInstance;
+    wrapped.raw = ((request: any, opts?: any) =>
+      run(request, opts, true)) as BlazeOfetchInstance['raw'];
     wrapped.native = target.native?.bind ? target.native.bind(target) : target.native;
     wrapped.create = ((defaultOptions?: any, customGlobalOptions?: any) =>
-      wrap(target.create(defaultOptions, customGlobalOptions), defaultOptions)) as BlazeOfetchInstance['create'];
+      wrap(
+        target.create(defaultOptions, customGlobalOptions),
+        defaultOptions,
+      )) as BlazeOfetchInstance['create'];
     return wrapped;
   }
 
   return wrap(instance, options.defaults);
 }
 
-
-
 // --- helpers (mirrored from @blaze-cache/ky for shared-cache compatibility) ---
 
-function canServe(value: OfetchCacheRecord | undefined, opts: FetchOptions): value is OfetchCacheRecord {
+function canServe(
+  value: OfetchCacheRecord | undefined,
+  opts: FetchOptions,
+): value is OfetchCacheRecord {
   return (
     isRecord(value) &&
     ((opts as { cache?: string }).cache === 'force-cache' || Date.now() <= value.freshUntil)
@@ -511,7 +552,11 @@ function settleOrAbort(
   signal: AbortSignal | null | undefined,
 ): Promise<boolean> {
   if (signal?.aborted) return Promise.resolve(false);
-  if (!signal) return pending.then(() => true, () => true);
+  if (!signal)
+    return pending.then(
+      () => true,
+      () => true,
+    );
   return new Promise<boolean>((resolve) => {
     const onAbort = (): void => {
       signal.removeEventListener('abort', onAbort);
@@ -539,7 +584,12 @@ function storedHeaders(headers: Headers, body: ArrayBuffer): Record<string, stri
 function headersToRecord(headers: Headers): Record<string, string> {
   const record: Record<string, string> = {};
   headers.forEach((value, name) => {
-    Object.defineProperty(record, name, { value, enumerable: true, writable: true, configurable: true });
+    Object.defineProperty(record, name, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   });
   return record;
 }
@@ -552,7 +602,9 @@ function headersFromRecord(record: Record<string, string>): Headers {
   return headers;
 }
 
-function mergeHeaders(...sources: (HeadersInit | Request['headers'] | undefined | null)[]): Headers {
+function mergeHeaders(
+  ...sources: (HeadersInit | Request['headers'] | undefined | null)[]
+): Headers {
   const out = new Headers();
   for (const src of sources) {
     if (!src) continue;
@@ -571,7 +623,12 @@ function mergeHeaders(...sources: (HeadersInit | Request['headers'] | undefined 
 
 function defineOwn(target: object, key: string, value: unknown): void {
   try {
-    Object.defineProperty(target, key, { value, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(target, key, {
+      value,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   } catch {
     // Frozen: cosmetic, never worth failing a hit over.
   }
@@ -620,17 +677,32 @@ function getHeader(
 ): string | null | undefined {
   if (!headers) return undefined;
   if (headers instanceof Headers) return headers.get(name);
-  return (headers as Record<string, string>)[name] ?? (headers as Record<string, string>)[name.toLowerCase()];
+  return (
+    (headers as Record<string, string>)[name] ??
+    (headers as Record<string, string>)[name.toLowerCase()]
+  );
 }
 
-function decodeData(body: ArrayBuffer, headers: Record<string, string>, responseType?: string): unknown {
+function decodeData(
+  body: ArrayBuffer,
+  headers: Record<string, string>,
+  responseType?: string,
+): unknown {
   if (responseType === 'arrayBuffer') return body;
   if (responseType === 'blob') return new Blob([body]);
   const text = new TextDecoder().decode(body);
   const ct = headers['content-type'] ?? '';
-  const type = responseType ?? (ct.includes('json') || /^\s*application\/(?:[\w!#$%&*.^`~-]*\+)?json/i.test(ct) ? 'json' : 'text');
+  const type =
+    responseType ??
+    (ct.includes('json') || /^\s*application\/(?:[\w!#$%&*.^`~-]*\+)?json/i.test(ct)
+      ? 'json'
+      : 'text');
   if (type === 'json' || type === undefined) {
-    try { return JSON.parse(text); } catch { return text; }
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   }
   return text;
 }

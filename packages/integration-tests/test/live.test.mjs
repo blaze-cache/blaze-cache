@@ -30,10 +30,7 @@ import { installBlazeCache } from '@blaze-cache/axios';
 import { createBlazeFetch } from '@blaze-cache/fetch';
 import { createBlazeKy } from '@blaze-cache/ky';
 import { createBlazeOfetch } from '@blaze-cache/ofetch';
-import {
-  createBlazeQueryClient,
-  prefetchBlazeQuery,
-} from '@blaze-cache/react-query';
+import { createBlazeQueryClient, prefetchBlazeQuery } from '@blaze-cache/react-query';
 import { blazeSWRMiddleware } from '@blaze-cache/swr';
 
 import { createDiagnosticCache } from './wasm-diagnostics.mjs';
@@ -82,7 +79,10 @@ function runSwrMiddleware(cache, middlewareOptions, key, fetcher, config = {}) {
     isLoading: false,
     mutate: () => {},
   };
-  const hook = blazeSWRMiddleware(cache, middlewareOptions)((k, f, c) => {
+  const hook = blazeSWRMiddleware(
+    cache,
+    middlewareOptions,
+  )((k, f, c) => {
     captured.key = k;
     captured.fetcher = f;
     captured.config = c;
@@ -163,93 +163,110 @@ const allIntegrations = (cache, network) => {
 };
 
 describe('live: six integrations, one shared cache', () => {
-  it('each integration reached the real API exactly once, and the cache holds all six', {
-    skip: SKIP,
-  }, async () => {
-    const cache = await makeCache();
-    const network = realNetwork();
-    const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(cache, network);
+  it(
+    'each integration reached the real API exactly once, and the cache holds all six',
+    {
+      skip: SKIP,
+    },
+    async () => {
+      const cache = await makeCache();
+      const network = realNetwork();
+      const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(
+        cache,
+        network,
+      );
 
-    const ax = await axiosApi.get(REPO);
-    assert.equal(ax.status, 200, 'the endpoint answered');
-    assert.equal(ax.headers.get('x-blaze-cache'), 'MISS');
+      const ax = await axiosApi.get(REPO);
+      assert.equal(ax.status, 200, 'the endpoint answered');
+      assert.equal(ax.headers.get('x-blaze-cache'), 'MISS');
 
-    const ft = await fetchWrap(REPO);
-    assert.equal(ft.status, 200);
-    assert.equal(ft.headers.get('x-blaze-cache'), 'MISS');
+      const ft = await fetchWrap(REPO);
+      assert.equal(ft.status, 200);
+      assert.equal(ft.headers.get('x-blaze-cache'), 'MISS');
 
-    const ky = await kyApi.get(REPO);
-    assert.equal(ky.status, 200);
-    assert.equal(ky.headers.get('x-blaze-cache'), 'MISS');
+      const ky = await kyApi.get(REPO);
+      assert.equal(ky.status, 200);
+      assert.equal(ky.headers.get('x-blaze-cache'), 'MISS');
 
-    const of = await ofetchApi.raw(REPO);
-    assert.equal(of.status, 200);
-    assert.equal(of.headers.get('x-blaze-cache'), 'MISS');
+      const of = await ofetchApi.raw(REPO);
+      assert.equal(of.status, 200);
+      assert.equal(of.headers.get('x-blaze-cache'), 'MISS');
 
-    await prefetch();
+      await prefetch();
 
-    const run = swr();
-    await run.fetcher(REPO);
+      const run = swr();
+      await run.fetcher(REPO);
 
-    await whenStored(cache, 6);
-    assert.equal(network.state.requests, 6, 'each integration made exactly one round-trip');
-    assert.equal(cache.size(), 6, 'one entry per integration on the shared cache');
-  });
+      await whenStored(cache, 6);
+      assert.equal(network.state.requests, 6, 'each integration made exactly one round-trip');
+      assert.equal(cache.size(), 6, 'one entry per integration on the shared cache');
+    },
+  );
 
-  it('every integration’s second read is served from the store — the counter does not move', {
-    skip: SKIP,
-  }, async () => {
-    const cache = await makeCache();
-    const network = realNetwork();
-    const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(cache, network);
+  it(
+    'every integration’s second read is served from the store — the counter does not move',
+    {
+      skip: SKIP,
+    },
+    async () => {
+      const cache = await makeCache();
+      const network = realNetwork();
+      const { axiosApi, fetchWrap, kyApi, ofetchApi, prefetch, swr } = allIntegrations(
+        cache,
+        network,
+      );
 
-    await axiosApi.get(REPO);
-    await fetchWrap(REPO);
-    await kyApi.get(REPO);
-    await ofetchApi.raw(REPO);
-    await prefetch();
-    await swr().fetcher(REPO);
-    await whenStored(cache, 6);
-    const afterWarm = network.state.requests;
-    assert.equal(afterWarm, 6);
+      await axiosApi.get(REPO);
+      await fetchWrap(REPO);
+      await kyApi.get(REPO);
+      await ofetchApi.raw(REPO);
+      await prefetch();
+      await swr().fetcher(REPO);
+      await whenStored(cache, 6);
+      const afterWarm = network.state.requests;
+      assert.equal(afterWarm, 6);
 
-    assert.equal((await axiosApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
-    assert.equal((await fetchWrap(REPO)).headers.get('x-blaze-cache'), 'HIT');
-    assert.equal((await kyApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
-    assert.equal((await ofetchApi.raw(REPO)).headers.get('x-blaze-cache'), 'HIT');
+      assert.equal((await axiosApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
+      assert.equal((await fetchWrap(REPO)).headers.get('x-blaze-cache'), 'HIT');
+      assert.equal((await kyApi.get(REPO)).headers.get('x-blaze-cache'), 'HIT');
+      assert.equal((await ofetchApi.raw(REPO)).headers.get('x-blaze-cache'), 'HIT');
 
-    await prefetch({ staleTime: 60_000 });
+      await prefetch({ staleTime: 60_000 });
 
-    const fresh = swr();
-    assert.equal(fresh.config.fallbackData?.full_name, 'blaze-cache/blaze-cache');
+      const fresh = swr();
+      assert.equal(fresh.config.fallbackData?.full_name, 'blaze-cache/blaze-cache');
 
-    assert.equal(
-      network.state.requests,
-      afterWarm,
-      'not one of those reads left the process',
-    );
-  });
+      assert.equal(network.state.requests, afterWarm, 'not one of those reads left the process');
+    },
+  );
 
-  it('fetch stores, ky replays the same entry for identical request identity', { skip: SKIP }, async () => {
-    const cache = await makeCache();
-    const network = realNetwork();
+  it(
+    'fetch stores, ky replays the same entry for identical request identity',
+    { skip: SKIP },
+    async () => {
+      const cache = await makeCache();
+      const network = realNetwork();
 
-    const fetchWrap = createBlazeFetch(cache, { fetch: network.fetchCounting, varyHeaders: VARY });
-    const kyApi = createBlazeKy(cache, { fetch: network.fetchCounting, varyHeaders: VARY });
+      const fetchWrap = createBlazeFetch(cache, {
+        fetch: network.fetchCounting,
+        varyHeaders: VARY,
+      });
+      const kyApi = createBlazeKy(cache, { fetch: network.fetchCounting, varyHeaders: VARY });
 
-    const f = await fetchWrap(REPO);
-    assert.equal(f.headers.get('x-blaze-cache'), 'MISS');
-    const fBytes = new Uint8Array(await f.arrayBuffer());
-    await whenStored(cache, 1);
+      const f = await fetchWrap(REPO);
+      assert.equal(f.headers.get('x-blaze-cache'), 'MISS');
+      const fBytes = new Uint8Array(await f.arrayBuffer());
+      await whenStored(cache, 1);
 
-    const k = await kyApi.get(REPO);
-    assert.equal(k.headers.get('x-blaze-cache'), 'HIT', 'ky replayed the entry fetch stored');
-    assert.equal(network.state.requests, 1, 'and made no round-trip of its own');
-    assert.equal(cache.size(), 1, 'one shared entry, not two');
+      const k = await kyApi.get(REPO);
+      assert.equal(k.headers.get('x-blaze-cache'), 'HIT', 'ky replayed the entry fetch stored');
+      assert.equal(network.state.requests, 1, 'and made no round-trip of its own');
+      assert.equal(cache.size(), 1, 'one shared entry, not two');
 
-    const kBytes = new Uint8Array(await k.arrayBuffer());
-    assert.deepEqual(kBytes, fBytes, 'byte-identical bodies cross the integration boundary');
-  });
+      const kBytes = new Uint8Array(await k.arrayBuffer());
+      assert.deepEqual(kBytes, fBytes, 'byte-identical bodies cross the integration boundary');
+    },
+  );
 
   it('a default-tag purge removes exactly that integration’s entry', { skip: SKIP }, async () => {
     const cache = await makeCache();

@@ -8,20 +8,20 @@ latency and the server counts its own hits). The adapter turns cache reads into 
 replays — marked `x-blaze-cache: HIT` (`response.fromBlazeCache` is also available when you
 cast the response).
 
-* **Miss → Hit** — the first fetch pays 400 ms; the next is instant. Entries stay fresh for
+- **Miss → Hit** — the first fetch pays 400 ms; the next is instant. Entries stay fresh for
   15 s.
-* **Request log** — every request with its marker, latency and URL. POSTs are never cached.
-* **Cache statistics** — hits, misses, hit rate, entries, evictions and expirations.
-* **Invalidate / Clear / Prune** — `invalidateTags('axios')`, empty the cache, or reclaim
+- **Request log** — every request with its marker, latency and URL. POSTs are never cached.
+- **Cache statistics** — hits, misses, hit rate, entries, evictions and expirations.
+- **Invalidate / Clear / Prune** — `invalidateTags('axios')`, empty the cache, or reclaim
   expired entries.
-* **Value storage** — the default keeps values as by-reference externrefs in Wasm;
+- **Value storage** — the default keeps values as by-reference externrefs in Wasm;
   open with `?storage=js` (or use the toggle in the page header) to run the same demo
   with `storage: 'js'`, where values live in a JS Map and Wasm keeps keys, TTL, tags
   and stable ids. Each mode has its own IndexedDB namespace.
-* **Reload** — entries persist to IndexedDB under `blaze-example-axios-wasm` / `blaze-example-axios-js`; the list paints
+- **Reload** — entries persist to IndexedDB under `blaze-example-axios-wasm` / `blaze-example-axios-js`; the list paints
   instantly on return.
 
-* **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
+- **Multi-tab & persistence toggles** — the cache enables `multiTab` by default; add `?sync=off` to disable cross-tab propagation or `?persistence=off` to run memory-only. The page header shows the current state and has links that flip either option (reloading the demo to recreate the cache).
 
 ## Run
 

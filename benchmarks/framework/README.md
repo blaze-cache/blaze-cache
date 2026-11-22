@@ -43,9 +43,9 @@ pnpm bench:framework -- --json
 
 ## Scenarios
 
-| Scenario | Timed op | Notes |
-| --- | --- | --- |
-| `warm-hit` | `get(key)` | present key, filled cache |
-| `miss` | `get(key)` | absent key, filled cache |
-| `write` | `set(key, value)` | fresh value object per iteration |
-| `invalidate-by-key` | `delete(key)` | distinct key per iteration; `iterations <= capacity` |
+| Scenario            | Timed op          | Notes                                                |
+| ------------------- | ----------------- | ---------------------------------------------------- |
+| `warm-hit`          | `get(key)`        | present key, filled cache                            |
+| `miss`              | `get(key)`        | absent key, filled cache                             |
+| `write`             | `set(key, value)` | fresh value object per iteration                     |
+| `invalidate-by-key` | `delete(key)`     | distinct key per iteration; `iterations <= capacity` |

@@ -41,7 +41,8 @@ const REPO = 'https://api.github.com/repos/blaze-cache/blaze-cache';
 /** Also real, but answered with `cache-control: no-cache`. */
 const NO_CACHE = 'https://api.github.com/rate_limit';
 /** A real PNG straight off the raw host, for the binary round-trip. */
-const PNG = 'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
+const PNG =
+  'https://raw.githubusercontent.com/blaze-cache/blaze-cache/main/docs/assets/blaze-cache-logo.png';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const wasmBytes = await readFile(
@@ -49,7 +50,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * The real `globalThis.fetch`, counting every request that actually leaves the process.
@@ -135,7 +137,11 @@ describe('live: real public API', () => {
     const hit = await settle(api.get(REPO));
     assert.equal(requests(), 1, 'no second round-trip left the process');
     assert.equal(hit.headers.get('x-blaze-cache'), 'HIT');
-    assert.equal((await hit.json()).full_name, 'blaze-cache/blaze-cache', 'the replayed body parsed');
+    assert.equal(
+      (await hit.json()).full_name,
+      'blaze-cache/blaze-cache',
+      'the replayed body parsed',
+    );
 
     const { key, record } = onlyRecord(cache);
     assert.ok(key.includes('repos/blaze-cache/blaze-cache'), `got ${key}`);

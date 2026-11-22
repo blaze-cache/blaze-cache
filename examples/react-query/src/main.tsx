@@ -1,13 +1,13 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { QueryClientProvider } from '@tanstack/react-query'
 
-import App from './App.js';
-import { queryClient } from './blaze.js';
-import './style.css';
+import App from './App.js'
+import { queryClient } from './blaze.js'
+import './style.css'
 
-const container = document.getElementById('root');
-if (!container) throw new Error('blaze-example-react-query: #root is missing');
+const container = document.getElementById('root')
+if (!container) throw new Error('blaze-example-react-query: #root is missing')
 
 createRoot(container).render(
   <StrictMode>
@@ -15,4 +15,4 @@ createRoot(container).render(
       <App />
     </QueryClientProvider>
   </StrictMode>,
-);
+)

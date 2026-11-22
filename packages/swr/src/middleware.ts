@@ -1,9 +1,4 @@
-import type {
-  BareFetcher,
-  Middleware,
-  SWRConfiguration,
-  SWRResponse,
-} from 'swr';
+import type { BareFetcher, Middleware, SWRConfiguration, SWRResponse } from 'swr';
 
 import { resolveBlazeKey } from './key.js';
 import { readBlazeSWRRecord } from './record.js';

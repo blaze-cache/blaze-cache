@@ -83,7 +83,9 @@ export function logWasmFailure(stage, error, detail = {}) {
   const fingerprint = {
     binary: BINARY.href,
     bytes: loadedBytes?.length ?? null,
-    sha256: loadedBytes ? createHash('sha256').update(loadedBytes).digest('hex').slice(0, 16) : null,
+    sha256: loadedBytes
+      ? createHash('sha256').update(loadedBytes).digest('hex').slice(0, 16)
+      : null,
   };
   console.error(`[blaze-cache:integration] wasm failure during ${stage}: ${describeError(error)}`, {
     ...fingerprint,

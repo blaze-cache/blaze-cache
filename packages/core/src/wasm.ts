@@ -172,8 +172,7 @@ class KeyScratch {
       if (code > 0x7f) break;
       view[base + j] = code;
     }
-    this.len =
-      j === n ? n : textEncoder.encodeInto(key, view.subarray(base, base + n * 3)).written;
+    this.len = j === n ? n : textEncoder.encodeInto(key, view.subarray(base, base + n * 3)).written;
     this.ptr = base;
     this.#last = key;
   }
@@ -191,7 +190,10 @@ class KeyScratch {
     offsets: Uint32Array;
     lengths: Uint32Array;
   } {
-    const need = Math.max(SCRATCH_MIN, keys.reduce((sum, key) => sum + key.length * 3, 0));
+    const need = Math.max(
+      SCRATCH_MIN,
+      keys.reduce((sum, key) => sum + key.length * 3, 0),
+    );
     if (need > this.#cap) this.#grow(need);
     const view = this.#viewForWrite();
     const offsets = new Uint32Array(keys.length);
@@ -543,9 +545,9 @@ async function fetchWasmBinary(target: string | URL): Promise<Response> {
 function adoptWasmSource(source: WasmSource): WasmSource {
   if (isWasmSource(source)) return source;
   throw new Error(
-    "@blaze-cache/core: `instantiate` must resolve to a *source* — a URL, a Request or " +
+    '@blaze-cache/core: `instantiate` must resolve to a *source* — a URL, a Request or ' +
       'Response, raw bytes, or a precompiled WebAssembly.Module — not to a ' +
-      'WebAssembly.Instance or to an object\'s exports. wasm-bindgen\'s generated glue owns ' +
+      "WebAssembly.Instance or to an object's exports. wasm-bindgen's generated glue owns " +
       'the import object and has to create the instance itself, so an instance built ' +
       'elsewhere can never be wired up. Return the source instead, for example ' +
       '`(await fetch(url)).arrayBuffer()`.',

@@ -22,7 +22,7 @@ pnpm bench -- --stage2      # include the opt-in js-storage / bytes adapters
 ```
 
 `pnpm bench` rebuilds the wasm and the core first, so the numbers are never taken against a
-stale binary, and runs `node` with `--expose-gc` so garbage can be collected *between*
+stale binary, and runs `node` with `--expose-gc` so garbage can be collected _between_
 samples rather than during them. Without `--expose-gc` the table still prints, but the
 spread column gets noisier.
 
@@ -30,20 +30,20 @@ spread column gets noisier.
 
 Each scenario picks three or four of these.
 
-| Adapter | Store | Eviction | TTL | Tags |
-| --- | --- | --- | --- | --- |
-| `Map` | native `Map` | **none** — grows forever | none | none |
-| `QuickLRU` | `quick-lru` v8 | LRU at `maxSize` | built-in `maxAge` | none |
-| `lru-cache` | `lru-cache` v11 | LRU at `max` | built-in `ttl` | none |
-| `Map + LRU` | `Map` + one layer you would write | hand-rolled LRU | none | none |
-| `Map + LRU + TTL + tags` | `Map` + three layers you would write | hand-rolled LRU | hand-rolled deadline check | key→tags / tag→keys mirror |
-| `QuickLRU + tag index` | `quick-lru` + one layer you would write | LRU | built-in `maxAge` | the same mirror |
-| `lru-cache + tag index` | `lru-cache` + one layer you would write | LRU | built-in `ttl` | the same mirror |
-| `blaze-cache` | Rust core, through wasm | SIEVE at `capacity` | built-in | built-in |
-| `blaze-cache + persistence` | core + real write-through layer | SIEVE | built-in | built-in |
-| `Map`/`QuickLRU + written queue` | a store + hand-rolled pending writes | as the store | as the store | none |
+| Adapter                          | Store                                   | Eviction                 | TTL                        | Tags                       |
+| -------------------------------- | --------------------------------------- | ------------------------ | -------------------------- | -------------------------- |
+| `Map`                            | native `Map`                            | **none** — grows forever | none                       | none                       |
+| `QuickLRU`                       | `quick-lru` v8                          | LRU at `maxSize`         | built-in `maxAge`          | none                       |
+| `lru-cache`                      | `lru-cache` v11                         | LRU at `max`             | built-in `ttl`             | none                       |
+| `Map + LRU`                      | `Map` + one layer you would write       | hand-rolled LRU          | none                       | none                       |
+| `Map + LRU + TTL + tags`         | `Map` + three layers you would write    | hand-rolled LRU          | hand-rolled deadline check | key→tags / tag→keys mirror |
+| `QuickLRU + tag index`           | `quick-lru` + one layer you would write | LRU                      | built-in `maxAge`          | the same mirror            |
+| `lru-cache + tag index`          | `lru-cache` + one layer you would write | LRU                      | built-in `ttl`             | the same mirror            |
+| `blaze-cache`                    | Rust core, through wasm                 | SIEVE at `capacity`      | built-in                   | built-in                   |
+| `blaze-cache + persistence`      | core + real write-through layer         | SIEVE                    | built-in                   | built-in                   |
+| `Map`/`QuickLRU + written queue` | a store + hand-rolled pending writes    | as the store             | as the store               | none                       |
 
-The hand-written wrappers exist so that a store without a feature still has to *do the work*
+The hand-written wrappers exist so that a store without a feature still has to _do the work_
 of that feature — otherwise blaze would be timed doing work its rivals never attempted, or
 spared it, and neither comparison means anything. The stacked `Map` row is the point of the
 exercise: **it is the cache you would otherwise write and then own**. QuickLRU and lru-cache get
@@ -66,21 +66,21 @@ is wrong. The published matrix shows exactly that — see
 
 Ten: three diagnostics, one control, the headline, five scenario types added in Stage 1.
 `overwrite`, `get-with-ttl` and `set-with-tags` were folded into the headline — they measured
-TTL and tags *in isolation*, where a rival can look cheap because nothing else is being asked
+TTL and tags _in isolation_, where a rival can look cheap because nothing else is being asked
 of it, and their story is now told by the control/headline pair.
 
-| Scenario | Adapters | What it measures |
-| --- | --- | --- |
-| `fill` | Map, QuickLRU, lru-cache, blaze | cold insert of `capacity` distinct keys |
-| `get-hit` | as above | random reads over the resident set |
-| `get-miss` | as above | reads from a disjoint namespace, against a full cache |
-| `mixed-90-10` | as above | 90/10 hot-read/cold-write under pressure — **the control** |
-| `full-featured` | Map stack, QuickLRU + tags, lru-cache + tags, blaze | the same load plus TTL, tags and periodic invalidation — **the headline** |
-| `ttl-churn` | the three full-featured stacks | lazy expiry reclamation on every read |
-| `eviction-pressure` | Map + LRU, QuickLRU, lru-cache, blaze | a reclaim on every write into a full cache |
-| `tag-invalidation-scale` | the three full-featured stacks | a 128-tag index under a background read load |
-| `persistence-flush` | blaze + persistence, Map/QuickLRU + queue | a whole 10 000-record flush (reported per record) |
-| `hydration` | as above | restoring 10 000 stored records (reported per record) |
+| Scenario                 | Adapters                                            | What it measures                                                          |
+| ------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------- |
+| `fill`                   | Map, QuickLRU, lru-cache, blaze                     | cold insert of `capacity` distinct keys                                   |
+| `get-hit`                | as above                                            | random reads over the resident set                                        |
+| `get-miss`               | as above                                            | reads from a disjoint namespace, against a full cache                     |
+| `mixed-90-10`            | as above                                            | 90/10 hot-read/cold-write under pressure — **the control**                |
+| `full-featured`          | Map stack, QuickLRU + tags, lru-cache + tags, blaze | the same load plus TTL, tags and periodic invalidation — **the headline** |
+| `ttl-churn`              | the three full-featured stacks                      | lazy expiry reclamation on every read                                     |
+| `eviction-pressure`      | Map + LRU, QuickLRU, lru-cache, blaze               | a reclaim on every write into a full cache                                |
+| `tag-invalidation-scale` | the three full-featured stacks                      | a 128-tag index under a background read load                              |
+| `persistence-flush`      | blaze + persistence, Map/QuickLRU + queue           | a whole 10 000-record flush (reported per record)                         |
+| `hydration`              | as above                                            | restoring 10 000 stored records (reported per record)                     |
 
 The persistence pair is async: one timed operation is the whole batch, divided by the record
 count so its `ns/op` is comparable to the point operations. blaze uses its real write-through
@@ -108,56 +108,57 @@ scenario's median, trimming single-sample outliers and allowing for the remainin
 fails any regression above 20%. In CI the baseline is regenerated **from the base revision on
 the same runner** before the PR head is measured, so laptop-vs-hosted-runner drift cannot fail a
 PR; the checked-in file is the local convenience baseline.
+
 ## Methodology
 
-* **Identical work, not similar work.** Every adapter in a scenario is fed the same
+- **Identical work, not similar work.** Every adapter in a scenario is fed the same
   precomputed key sequence — a deterministic, pre-shuffled ring indexed with `i & mask`
   rather than `i % n`, so the modulo is a bitmask and costs the same negligible amount for
   everyone. Reads hit a random resident key, not a walk a prefetcher could make free.
-* **Calibrated batches.** A batch is doubled until it costs ~20 ms, then scaled to ~120 ms,
+- **Calibrated batches.** A batch is doubled until it costs ~20 ms, then scaled to ~120 ms,
   so a 30 ns `Map.get` and a 120 ns wasm round trip are measured over comparable spans
   instead of one of them being timed by a clock noisier than the work itself.
-* **Warm-up, then median.** Three discarded batches let the JIT reach its steady tier;
+- **Warm-up, then median.** Three discarded batches let the JIT reach its steady tier;
   the reported figure is the median of the recorded samples, with the full range kept for
   the spread column. `prepare` runs outside the timed region, so `fill` is not charged for
   the `clear()` that makes each batch a genuine cold fill.
-* **Equivalence is asserted before anything is timed.** Each adapter is built fresh and
-  asked for its `probe` observations, which must be *deeply equal* across all of them. A
+- **Equivalence is asserted before anything is timed.** Each adapter is built fresh and
+  asked for its `probe` observations, which must be _deeply equal_ across all of them. A
   missing method, an option silently ignored or an adapter storing nothing fails here,
   loudly, rather than quietly producing a flattering number — that guard caught a real bug
   while this suite was being written, where both wrappers read `size` as a property and
   returned the function object itself (`function >= n` is `NaN >= n`, quietly `false`).
-  The smoke tests include a case that *proves the guard still rejects* an unequal pair.
-* **Every `op` returns what it read.** Not decoration: a discarded `Map.get` is a pure read
+  The smoke tests include a case that _proves the guard still rejects_ an unequal pair.
+- **Every `op` returns what it read.** Not decoration: a discarded `Map.get` is a pure read
   with an unused result, which is exactly what a compiler may delete. `mixed-90-10`
   originally reported `Map` at **11.0 ns/op while `get-hit` reported 33.1 ns/op for an
   identical `Map.get` — in the same run**: the loop had been optimised down to its index
   arithmetic, with the lookup removed. Returning the value is what makes that scenario's row
   in the table above mean anything.
-* **The hand-written tag index is told when its store drops a key.** blaze removes an
+- **The hand-written tag index is told when its store drops a key.** blaze removes an
   entry's tag membership when it evicts it, so the mirrors must too: `LruAdapter` reports
-  every key it removes, and QuickLRU's `onEvicted` — a *constructor* option, with no way to
+  every key it removes, and QuickLRU's `onEvicted` — a _constructor_ option, with no way to
   subscribe afterwards — is handed its handler at construction, which is why `quicklru-full`
   is assembled in two steps rather than composed in one expression. Skip that link and a
   mirror keeps rows for keys that are already gone, so `invalidateTags` would report entries
-  the store no longer holds: strictly *less* work than blaze does, and in exactly the
+  the store no longer holds: strictly _less_ work than blaze does, and in exactly the
   direction a flattering benchmark would want.
 
 ## Layout
 
-| File | Role |
-| --- | --- |
-| `bench.mjs` | CLI, table rendering, `--json`/`--out` |
-| `runner.mjs` | orchestration: validate a scenario, then measure it (shared with the browser) |
-| `harness.mjs` | calibration, warm-up, sampling, median/spread, async pair |
-| `payloads.mjs` | the 5 × 2 payload matrix and its shared-reference factory |
-| `scenarios.mjs` | the ten workloads and their probes |
-| `stores.mjs` | the stores, plus the LRU/TTL/tag and persistence wrappers (shared with the browser) |
-| `adapters.mjs` | Node registry: supplies the wasm bytes read from disk |
-| `adapters.browser.mjs` | browser registry: lets core fetch its own wasm asset |
-| `test/bench.test.mjs` | guards the machinery (run by `pnpm -r test`) |
-| `test/compare-bench.test.mjs` | guards the `bench:ci` regression gate |
-| `../browser/` | Vite + Playwright workspace that runs this suite in Chrome |
+| File                          | Role                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `bench.mjs`                   | CLI, table rendering, `--json`/`--out`                                              |
+| `runner.mjs`                  | orchestration: validate a scenario, then measure it (shared with the browser)       |
+| `harness.mjs`                 | calibration, warm-up, sampling, median/spread, async pair                           |
+| `payloads.mjs`                | the 5 × 2 payload matrix and its shared-reference factory                           |
+| `scenarios.mjs`               | the ten workloads and their probes                                                  |
+| `stores.mjs`                  | the stores, plus the LRU/TTL/tag and persistence wrappers (shared with the browser) |
+| `adapters.mjs`                | Node registry: supplies the wasm bytes read from disk                               |
+| `adapters.browser.mjs`        | browser registry: lets core fetch its own wasm asset                                |
+| `test/bench.test.mjs`         | guards the machinery (run by `pnpm -r test`)                                        |
+| `test/compare-bench.test.mjs` | guards the `bench:ci` regression gate                                               |
+| `../browser/`                 | Vite + Playwright workspace that runs this suite in Chrome                          |
 
 `test/bench.test.mjs` runs against the built `dist/` plus the wasm binary, so it needs
 `pnpm build:wasm` to have run — the same requirement as the core suite.

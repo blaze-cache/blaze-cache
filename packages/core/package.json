@@ -39,8 +39,13 @@
     },
     "./pkg/*": "./pkg/*"
   },
-  "files": ["dist", "pkg"],
-  "sideEffects": ["./dist/wasm.js"],
+  "files": [
+    "dist",
+    "pkg"
+  ],
+  "sideEffects": [
+    "./dist/wasm.js"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "pnpm run build && node --test",

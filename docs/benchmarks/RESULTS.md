@@ -10,30 +10,30 @@ in the [0.4.0 roadmap](../plan/0.4.0-roadmap.md) is worth building — not to wi
 > **Read the caveat first.** Values are held **by reference** in the Rust slab. Neither `get`
 > nor `set` serialises a payload; the cost under test is the **boundary crossing and the
 > bookkeeping** (key marshalling, tag `Vec<String>` marshalling, TTL/SIEVE/tag maintenance).
-> A larger object therefore should *not* make `get`/`set` much slower — and in these numbers it
+> A larger object therefore should _not_ make `get`/`set` much slower — and in these numbers it
 > does not. That is evidence against the "serialising JS objects is the bottleneck" premise,
 > and is the reason Stage 2 is gated rather than assumed.
 
 ## Hardware and versions
 
-| | Node suite | Browser suite |
-|---|---|---|
-| Machine | Apple M2, 8 logical cores, macOS | same machine, headless Google Chrome 157 |
-| Runtime | Node v24.5.0 | Chrome/157.0.0.0 (headless) |
-| Wasm | `wasm-pack` 0.15.0, `--target web`, release | identical binary, fetched over HTTP by Vite |
-| Capacity | 10 000 entries | 10 000 entries |
-| Samples | 7 recorded × ~120 ms, 3 discarded warm-ups | identical |
-| Clock | `process.hrtime.bigint()` | `performance.now()` (coarser; batches calibrated to tens of ms) |
+|          | Node suite                                  | Browser suite                                                   |
+| -------- | ------------------------------------------- | --------------------------------------------------------------- |
+| Machine  | Apple M2, 8 logical cores, macOS            | same machine, headless Google Chrome 157                        |
+| Runtime  | Node v24.5.0                                | Chrome/157.0.0.0 (headless)                                     |
+| Wasm     | `wasm-pack` 0.15.0, `--target web`, release | identical binary, fetched over HTTP by Vite                     |
+| Capacity | 10 000 entries                              | 10 000 entries                                                  |
+| Samples  | 7 recorded × ~120 ms, 3 discarded warm-ups  | identical                                                       |
+| Clock    | `process.hrtime.bigint()`                   | `performance.now()` (coarser; batches calibrated to tens of ms) |
 
 Raw outputs (one row per scenario × adapter × payload size; includes every sample, spread and
 environment block):
 
-* [`node-matrix-object.json`](../../benchmarks/results/node-matrix-object.json) — 5 sizes × structured-cloneable objects
-* [`node-matrix-bytes.json`](../../benchmarks/results/node-matrix-bytes.json) — 5 sizes × `Uint8Array`
-* [`browser-matrix-object.json`](../../benchmarks/results/browser-matrix-object.json)
-* [`browser-matrix-bytes.json`](../../benchmarks/results/browser-matrix-bytes.json)
-* [`baseline.node.json`](../../benchmarks/results/baseline.node.json) — the checked-in CI gate baseline (`--quick`)
-* [`framework.json`](../../benchmarks/results/framework.json) — TanStack Query / SWR / blaze cache-store comparison (Node)
+- [`node-matrix-object.json`](../../benchmarks/results/node-matrix-object.json) — 5 sizes × structured-cloneable objects
+- [`node-matrix-bytes.json`](../../benchmarks/results/node-matrix-bytes.json) — 5 sizes × `Uint8Array`
+- [`browser-matrix-object.json`](../../benchmarks/results/browser-matrix-object.json)
+- [`browser-matrix-bytes.json`](../../benchmarks/results/browser-matrix-bytes.json)
+- [`baseline.node.json`](../../benchmarks/results/baseline.node.json) — the checked-in CI gate baseline (`--quick`)
+- [`framework.json`](../../benchmarks/results/framework.json) — TanStack Query / SWR / blaze cache-store comparison (Node)
 
 Reproduce: `pnpm bench -- --matrix` and `pnpm bench:browser -- --matrix` (add
 `--payload-kind=bytes` for the typed-array half). Both accept `--json`.
@@ -57,12 +57,12 @@ therefore **per record**, not per batch.
 blaze-cache, `ns/op` (lower is better). Tiny = ≤64 B, small ≈1 KB, medium ≈10 KB, large ≈100 KB,
 massive ≈1 MB.
 
-| Scenario | Runtime | tiny | small | medium | large | massive |
-|---|---|---:|---:|---:|---:|---:|
-| `get-hit` | Node | 93 | 112 | 107 | 107 | 108 |
-| `full-featured` | Node | 169 | 184 | 183 | 183 | 191 |
-| `get-hit` | Browser | 86 | 86 | 86 | 85 | 90 |
-| `full-featured` | Browser | 184 | 209 | 208 | 194 | 193 |
+| Scenario        | Runtime | tiny | small | medium | large | massive |
+| --------------- | ------- | ---: | ----: | -----: | ----: | ------: |
+| `get-hit`       | Node    |   93 |   112 |    107 |   107 |     108 |
+| `full-featured` | Node    |  169 |   184 |    183 |   183 |     191 |
+| `get-hit`       | Browser |   86 |    86 |     86 |    85 |      90 |
+| `full-featured` | Browser |  184 |   209 |    208 |   194 |     193 |
 
 Both value representations say the same thing (the `Uint8Array` tables differ by a few ns, not
 by an order of magnitude). A 16 000× increase in payload size moves a hot read by roughly
@@ -75,21 +75,21 @@ to attack, and it is far smaller than the original proposal assumed.
 
 Bounded, expiring, tag-invalidatable — the question this cache exists to answer. `ns/op`:
 
-| Adapter | Node / object | Node / bytes | Browser / object | Browser / bytes |
-|---|---:|---:|---:|---:|
-| Map + LRU + TTL + tags | 211.2 | 206.4 | 190.3 | 180.2 |
-| QuickLRU + tag index | **109.3** | **107.0** | **88.2** | **86.5** |
-| lru-cache + tag index | 231.3 | 234.7 | 100.0 | 91.1 |
-| blaze-cache | 183.6 | 190.3 | 208.6 | 194.2 |
+| Adapter                | Node / object | Node / bytes | Browser / object | Browser / bytes |
+| ---------------------- | ------------: | -----------: | ---------------: | --------------: |
+| Map + LRU + TTL + tags |         211.2 |        206.4 |            190.3 |           180.2 |
+| QuickLRU + tag index   |     **109.3** |    **107.0** |         **88.2** |        **86.5** |
+| lru-cache + tag index  |         231.3 |        234.7 |            100.0 |            91.1 |
+| blaze-cache            |         183.6 |        190.3 |            208.6 |           194.2 |
 
 Two comparisons are meaningful, and they point in opposite directions:
 
-* **Against the three layers you would otherwise write and own** (an LRU on a `Map`, a deadline
+- **Against the three layers you would otherwise write and own** (an LRU on a `Map`, a deadline
   wrapped around every value, a tag mirror kept in step): blaze is **1.15× faster** in Node, and
   **about even — 8–10% slower** — in the browser. Whether that trade is worth it is not a
   speed question alone: blaze also owns the eviction callback, the stale-index bugs and the
   invalidation bookkeeping, and holds exactly `capacity` entries.
-* **Against a library that implements LRU and TTL natively and only needs a hand-written tag
+- **Against a library that implements LRU and TTL natively and only needs a hand-written tag
   mirror:** blaze is **1.7× slower** in Node and **2.2–2.4× slower** in the browser. Every `set`
   crosses the JS→wasm boundary and marshals key, deadline and a `Vec<String>` of tags; that is
   the premium the by-reference design pays for keeping the policy and the data in one place.
@@ -102,12 +102,12 @@ that stack on Node reads, and pays a clear write-path premium against native LRU
 
 The same load plan without deadlines or tags — `mixed-90-10`, small payload, `ns/op`:
 
-| Adapter | Node | Browser |
-|---|---:|---:|
-| Map (unbounded — does strictly less work) | 52.6 | 42.7 |
-| QuickLRU | 73.9 | 66.2 |
-| lru-cache | 183.1 | 68.5 |
-| blaze-cache | 119.3 | 113.4 |
+| Adapter                                   |  Node | Browser |
+| ----------------------------------------- | ----: | ------: |
+| Map (unbounded — does strictly less work) |  52.6 |    42.7 |
+| QuickLRU                                  |  73.9 |    66.2 |
+| lru-cache                                 | 183.1 |    68.5 |
+| blaze-cache                               | 119.3 |   113.4 |
 
 Read this beside the headline, not instead of it. The delta between the two tables is the price
 of TTL + tags + invalidation on identical work. `Map` is a floor, not a rival: it has no
@@ -119,13 +119,13 @@ blaze holds exactly `capacity`.
 
 `ns/op` (per record for the two persistence rows), small payload, object values:
 
-| Scenario | Node | Browser | What it isolates |
-|---|---:|---:|---|
-| `ttl-churn` | blaze 110.8 vs 50.2 (Map stack) | 92.4 vs 36.0 | lazy expiry reclamation on access |
-| `eviction-pressure` | blaze 219.4 vs 62.2 (QuickLRU) | 197.0 vs 39.1 | a reclaim on every write |
-| `tag-invalidation-scale` | blaze 71.5 vs 15.2 (Map stack) | 56.6 vs 12.8 | a 128-tag index under a read load |
-| `persistence-flush` | blaze 1415.0 vs 99.4 (QuickLRU queue) | 1536.2 vs 109.5 | write-through reconciliation + one batched write |
-| `hydration` | blaze 127.1 vs 57.1 (QuickLRU queue) | 119.7 vs 33.7 | restoring 10 000 records into memory |
+| Scenario                 |                                  Node |         Browser | What it isolates                                 |
+| ------------------------ | ------------------------------------: | --------------: | ------------------------------------------------ |
+| `ttl-churn`              |       blaze 110.8 vs 50.2 (Map stack) |    92.4 vs 36.0 | lazy expiry reclamation on access                |
+| `eviction-pressure`      |        blaze 219.4 vs 62.2 (QuickLRU) |   197.0 vs 39.1 | a reclaim on every write                         |
+| `tag-invalidation-scale` |        blaze 71.5 vs 15.2 (Map stack) |    56.6 vs 12.8 | a 128-tag index under a read load                |
+| `persistence-flush`      | blaze 1415.0 vs 99.4 (QuickLRU queue) | 1536.2 vs 109.5 | write-through reconciliation + one batched write |
+| `hydration`              |  blaze 127.1 vs 57.1 (QuickLRU queue) |   119.7 vs 33.7 | restoring 10 000 records into memory             |
 
 The persistence premium is the largest gap in the suite, and it is not a serialization cost:
 blaze's flush builds `PersistedRecord`s from live wasm entries, reconciles rows the core evicted
@@ -151,14 +151,14 @@ under the new mode's label; see
 
 ## Suite layout
 
-| Scenario | Adapters | Category |
-|---|---|---|
-| `fill`, `get-hit`, `get-miss` | Map, QuickLRU, lru-cache, blaze | diagnostic |
-| `mixed-90-10` | as above | control for the headline |
-| `full-featured` | Map + LRU + TTL + tags, QuickLRU + tag index, lru-cache + tag index, blaze | headline |
-| `ttl-churn`, `tag-invalidation-scale` | the three full-featured stacks | lifetime / features |
-| `eviction-pressure` | Map + LRU, QuickLRU, lru-cache, blaze | lifetime |
-| `persistence-flush`, `hydration` | blaze + persistence, Map + queue, QuickLRU + queue | persistence |
+| Scenario                              | Adapters                                                                   | Category                 |
+| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------ |
+| `fill`, `get-hit`, `get-miss`         | Map, QuickLRU, lru-cache, blaze                                            | diagnostic               |
+| `mixed-90-10`                         | as above                                                                   | control for the headline |
+| `full-featured`                       | Map + LRU + TTL + tags, QuickLRU + tag index, lru-cache + tag index, blaze | headline                 |
+| `ttl-churn`, `tag-invalidation-scale` | the three full-featured stacks                                             | lifetime / features      |
+| `eviction-pressure`                   | Map + LRU, QuickLRU, lru-cache, blaze                                      | lifetime                 |
+| `persistence-flush`, `hydration`      | blaze + persistence, Map + queue, QuickLRU + queue                         | persistence              |
 
 ## Stage 2: measured deltas
 
@@ -175,16 +175,16 @@ the same process — an artifact of process-level measurement, not a product reg
 `bench:ci` gate therefore runs the original adapter set only, so base and head are compared
 like-for-like.
 
-| Scenario | Payload | `blaze-cache` (default) | `blaze-cache (js storage)` | `blaze-cache (bytes)` |
-|---|---|---:|---:|---:|
-| `get-hit` | object | 125.4 | 150.8 (+20%) | — |
-| `fill` | object | 140.2 | 259.0 (+85%) | — |
-| `full-featured` | object | 212.7 | 353.1 (+66%) | — |
-| `get-hit` | bytes | 123.5 | 155.7 (+26%) | 171.9 (+39%) |
-| `fill` | bytes | 133.8 | 257.1 (+92%) | 1063.2 (+695%) |
-| `full-featured` | bytes | 175.3 | 292.0 (+67%) | 259.4 (+48%) |
+| Scenario        | Payload | `blaze-cache` (default) | `blaze-cache (js storage)` | `blaze-cache (bytes)` |
+| --------------- | ------- | ----------------------: | -------------------------: | --------------------: |
+| `get-hit`       | object  |                   125.4 |               150.8 (+20%) |                     — |
+| `fill`          | object  |                   140.2 |               259.0 (+85%) |                     — |
+| `full-featured` | object  |                   212.7 |               353.1 (+66%) |                     — |
+| `get-hit`       | bytes   |                   123.5 |               155.7 (+26%) |          171.9 (+39%) |
+| `fill`          | bytes   |                   133.8 |               257.1 (+92%) |        1063.2 (+695%) |
+| `full-featured` | bytes   |                   175.3 |               292.0 (+67%) |          259.4 (+48%) |
 
-**The hypothesis did not survive measurement.** The JS-authoritative store is *slower* than
+**The hypothesis did not survive measurement.** The JS-authoritative store is _slower_ than
 the default on every measured workload: a hot hit still crosses the Wasm boundary (now by id)
 and then pays an extra JS `Map.get`, while the default `getRaw` already avoids key marshalling
 with the shared scratch buffer. The bytes mode trades a copy on `set` for a view on `get`, but
@@ -201,11 +201,11 @@ outputs: [`stage4-node-before.json`](../../benchmarks/results/stage4-node-before
 [`stage4-browser-before.json`](../../benchmarks/results/stage4-browser-before.json) and
 [`stage4-browser-after.json`](../../benchmarks/results/stage4-browser-after.json).
 
-| Scenario | Node before | Node after | Browser before | Browser after |
-|---|---:|---:|---:|---:|
-| `fill` | 124.1 | 127.9 (+3%) | 105.4 | 106.6 (+1%) |
-| `full-featured` (headline) | 175.3 | **171.4 (−2%)** | 190.1 | **182.8 (−4%)** |
-| `get-hit` | 94.4 | 95.2 (flat) | — | — |
+| Scenario                   | Node before |      Node after | Browser before |   Browser after |
+| -------------------------- | ----------: | --------------: | -------------: | --------------: |
+| `fill`                     |       124.1 |     127.9 (+3%) |          105.4 |     106.6 (+1%) |
+| `full-featured` (headline) |       175.3 | **171.4 (−2%)** |          190.1 | **182.8 (−4%)** |
+| `get-hit`                  |        94.4 |     95.2 (flat) |              — |               — |
 
 The headline improved in **both** runtimes by 2–4% — small and inside the spread of the full
 matrix, but consistent across three interleaved Node runs and a browser run. `fill` is a touch
@@ -232,12 +232,12 @@ SWR cache store on point operations. This is **not** a React hook/render or fetc
 TanStack's numbers include query-key hashing and query-cache bookkeeping, and real SWR apps
 also pay key serialisation. `ns/op`, capacity 10 000, 1 KB payloads:
 
-| Scenario | Blaze | TanStack Query | SWR |
-|---|---:|---:|---:|
-| `warm-hit` | 40.5 | 518.7 | 11.9 |
-| `miss` | 28.2 | 504.9 | 11.6 |
-| `write` | 175.3 | 1831.7 | 130.8 |
-| `invalidate-by-key` | 142.7 | 1 427 377.4 | 100.0 |
+| Scenario            | Blaze | TanStack Query |   SWR |
+| ------------------- | ----: | -------------: | ----: |
+| `warm-hit`          |  40.5 |          518.7 |  11.9 |
+| `miss`              |  28.2 |          504.9 |  11.6 |
+| `write`             | 175.3 |         1831.7 | 130.8 |
+| `invalidate-by-key` | 142.7 |    1 427 377.4 | 100.0 |
 
 These are different shapes of API doing different amounts of work, so they are **not** the
 feature-equivalent table for the headline — that is the `Map`/`QuickLRU`/`lru-cache` table above.

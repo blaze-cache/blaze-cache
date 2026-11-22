@@ -40,29 +40,29 @@ for that key) always wins over the cache.
 
 ## Behaviour
 
-* Keys are filed under **SWR's own serialization** (`unstable_serialize`): plain strings
+- Keys are filed under **SWR's own serialization** (`unstable_serialize`): plain strings
   stay themselves, array/object keys get SWR's stable hash — an entry always lines up
   with the key SWR uses internally, and `resolveBlazeKey(key)` exposes it for
   imperative `cache.get` / `cache.set` / `cache.delete`.
-* Successful fetches are written to the shared cache; failed fetches are not — errors
+- Successful fetches are written to the shared cache; failed fetches are not — errors
   stay in SWR, data crosses into Blaze.
-* The cache layer never takes a fetch down with it: a hydration read that throws seeds
+- The cache layer never takes a fetch down with it: a hydration read that throws seeds
   nothing (the hook fetches as plain `useSWR` would, with one console warning), and a
   write that throws — or a `tags` resolver that does — returns the data unwritten,
   warned and otherwise uninterrupted.
-* An `undefined` result is skipped too: SWR reads it as "no data", so there is nothing
+- An `undefined` result is skipped too: SWR reads it as "no data", so there is nothing
   to stamp a TTL onto.
-* What is written is an **envelope** — `{ kind: 'swr', data, storedAt }` — and hydration
+- What is written is an **envelope** — `{ kind: 'swr', data, storedAt }` — and hydration
   only seeds the UI from values carrying it. On a cache shared with `@blaze-cache/axios`,
   `@blaze-cache/fetch` or `@blaze-cache/react-query`, a forced key collision can park a
   foreign value under an SWR key; the envelope keeps an HTTP record from ever being shown
   as this hook's `data`. `readBlazeSWRRecord(cache, key)` exposes the gated read, and
   `isBlazeSWRRecord` the shape check.
-* Renders never touch cache statistics: the hydration read prefers `peek` over `get`,
+- Renders never touch cache statistics: the hydration read prefers `peek` over `get`,
   so StrictMode's double render cannot move the hit rate or influence eviction.
-* Paused keys (`null`/`undefined`/`false`, or a lazy key resolving to one) read and
+- Paused keys (`null`/`undefined`/`false`, or a lazy key resolving to one) read and
   write nothing.
-* SWR owns freshness *within* a session; Blaze Cache owns it *across* sessions —
+- SWR owns freshness _within_ a session; Blaze Cache owns it _across_ sessions —
   `ttlMs` defaults to 24 h, and with no `tags` given every write carries the `'swr'`
   tag, so `cache.invalidateTags('swr')` purges everything this package wrote.
   (Supplied `tags` **replace** the default rather than extending it — add `'swr'`
@@ -73,16 +73,16 @@ for that key) always wins over the cache.
 The entry points take `(cache, …, options?)` — the cache first, then the usual SWR
 arguments, then normal SWR options plus the Blaze-side stamp (`ttlMs`/`tags`/`forceRefresh`).
 
-| Export | What it does |
-| --- | --- |
-| `useBlazeSWR` | `useSWR` seeded from the cache, persisting successful fetches. |
-| `blazeSWRMiddleware` | The same behaviour as a plain SWR middleware, for `SWRConfig` or an existing `useSWR`. |
-| `invalidateBlazeSWR` | Purge this package's entries by tag — foreign records on a shared cache survive — and revalidate the hooks that showed them. |
-| `resolveBlazeKey` | The key an SWR `key` is filed under in the Blaze Cache (`null` when paused). |
-| `readBlazeSWRRecord` | The gated hydration read: `key`'s data, but only when the value is this package's own envelope. |
-| `isBlazeSWRRecord` | The envelope shape check `readBlazeSWRRecord` uses. |
-| `DEFAULT_TTL_MS` / `DEFAULT_TAGS` | The write stamp used when nothing is given: 24 h, `['swr']`. |
-| `BlazeSWROptions` / `BlazeSWRMiddlewareOptions` / `BlazeSWRCacheLike` / `BlazeSWRRecord` / `BlazeSWRTags` / `InvalidateBlazeSWROptions` | The option, cache, record and tag types. |
+| Export                                                                                                                                  | What it does                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `useBlazeSWR`                                                                                                                           | `useSWR` seeded from the cache, persisting successful fetches.                                                               |
+| `blazeSWRMiddleware`                                                                                                                    | The same behaviour as a plain SWR middleware, for `SWRConfig` or an existing `useSWR`.                                       |
+| `invalidateBlazeSWR`                                                                                                                    | Purge this package's entries by tag — foreign records on a shared cache survive — and revalidate the hooks that showed them. |
+| `resolveBlazeKey`                                                                                                                       | The key an SWR `key` is filed under in the Blaze Cache (`null` when paused).                                                 |
+| `readBlazeSWRRecord`                                                                                                                    | The gated hydration read: `key`'s data, but only when the value is this package's own envelope.                              |
+| `isBlazeSWRRecord`                                                                                                                      | The envelope shape check `readBlazeSWRRecord` uses.                                                                          |
+| `DEFAULT_TTL_MS` / `DEFAULT_TAGS`                                                                                                       | The write stamp used when nothing is given: 24 h, `['swr']`.                                                                 |
+| `BlazeSWROptions` / `BlazeSWRMiddlewareOptions` / `BlazeSWRCacheLike` / `BlazeSWRRecord` / `BlazeSWRTags` / `InvalidateBlazeSWROptions` | The option, cache, record and tag types.                                                                                     |
 
 Precedence for the write stamp and `forceRefresh`: the current `useSWR`/`useBlazeSWR`
 options, then the middleware's own options, then the defaults. `useBlazeSWR` keeps
@@ -155,13 +155,13 @@ const { data } = useBlazeSWR(cache, '/api/todos', fetchTodos, {
 // back, so the next mount starts from it
 ```
 
-For a key that must be current *right now* — a pull-to-refresh, a view opened after a
+For a key that must be current _right now_ — a pull-to-refresh, a view opened after a
 mutation elsewhere: the persisted entry is not read, `revalidateOnMount` is forced so the
 fetch runs even where this call or the provider would quiet it (the flag beats an
 explicit `revalidateOnMount: false` — skipping the read is only honest if the network
 runs), and the write still happens. Skip the read, keep the write — the same rule as
 axios/fetch's `forceRefresh`. Caller `fallbackData` and provider `fallback` keep their
-own precedence: they only stop *Blaze* from seeding, never the caller.
+own precedence: they only stop _Blaze_ from seeding, never the caller.
 
 ### Invalidating by tag
 
@@ -177,7 +177,7 @@ await invalidateBlazeSWR(cache, 'todos');
 `invalidateBlazeSWR` only ever touches this package's `{ kind: 'swr' }` envelopes: on a
 cache shared with `@blaze-cache/axios` / `@blaze-cache/fetch` /
 `@blaze-cache/react-query`, an entry another integration wrote — even one wearing the
-same tag — survives. It returns the purged keys. Hooks under a *custom* `SWRConfig`
+same tag — survives. It returns the purged keys. Hooks under a _custom_ `SWRConfig`
 provider need that provider's mutator:
 
 ```ts
@@ -218,11 +218,11 @@ Setup and the full integration reference live in the
 
 ## Part of Blaze Cache
 
-* [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
-* [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
-* [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
-* [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
-* [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror + hook
+- [`@blaze-cache/core`](https://www.npmjs.com/package/@blaze-cache/core) — the cache itself
+- [`@blaze-cache/axios`](https://www.npmjs.com/package/@blaze-cache/axios) — HTTP adapter
+- [`@blaze-cache/fetch`](https://www.npmjs.com/package/@blaze-cache/fetch) — drop-in `fetch()` replacement
+- [`@blaze-cache/ky`](https://www.npmjs.com/package/@blaze-cache/ky) — ky hooks (v1 and v2)
+- [`@blaze-cache/react-query`](https://www.npmjs.com/package/@blaze-cache/react-query) — TanStack Query v5 mirror + hook
 
 ## License
 

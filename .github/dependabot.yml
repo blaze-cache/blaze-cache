@@ -6,16 +6,16 @@
 version: 2
 updates:
   - package-ecosystem: npm # reads pnpm-lock.yaml at the workspace root
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
 
   - package-ecosystem: github-actions
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly

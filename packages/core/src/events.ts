@@ -109,10 +109,7 @@ export class CacheEventBus<V = any> {
   on(listener: CacheEventListener<V>): () => void;
   /** @deprecated The pre-event-system signature — kept so old annotations still compile. */
   on(listener: CacheListener): () => void;
-  on(
-    typeOrListener: CacheEventType | AnyListener,
-    maybeListener?: AnyListener,
-  ): () => void {
+  on(typeOrListener: CacheEventType | AnyListener, maybeListener?: AnyListener): () => void {
     const type = typeof typeOrListener === 'string' ? typeOrListener : undefined;
     const listener = (type === undefined ? typeOrListener : maybeListener) as AnyListener;
 
@@ -136,10 +133,7 @@ export class CacheEventBus<V = any> {
   once(listener: CacheEventListener<V>): () => void;
   /** @deprecated The pre-event-system signature — kept so old annotations still compile. */
   once(listener: CacheListener): () => void;
-  once(
-    typeOrListener: CacheEventType | AnyListener,
-    maybeListener?: AnyListener,
-  ): () => void {
+  once(typeOrListener: CacheEventType | AnyListener, maybeListener?: AnyListener): () => void {
     const type = typeof typeOrListener === 'string' ? typeOrListener : undefined;
     const raw = (type === undefined ? typeOrListener : maybeListener) as AnyListener;
 

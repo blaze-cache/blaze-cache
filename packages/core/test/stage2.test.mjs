@@ -122,10 +122,7 @@ describe('binary value mode', () => {
 
   it('is opt-in — js mode rejects it with a clear message', async () => {
     const cache = await makeCache({ storage: 'js' });
-    assert.throws(
-      () => cache.setBytes('x', new Uint8Array([1])),
-      /storage: "wasm"/,
-    );
+    assert.throws(() => cache.setBytes('x', new Uint8Array([1])), /storage: "wasm"/);
     await cache.dispose();
   });
 });
@@ -232,10 +229,7 @@ describe('JS-authoritative storage (opt-in)', () => {
   });
 
   it('rejects an unknown storage value', async () => {
-    await assert.rejects(
-      () => makeCache({ storage: 'redis' }),
-      /storage must be "wasm" or "js"/,
-    );
+    await assert.rejects(() => makeCache({ storage: 'redis' }), /storage must be "wasm" or "js"/);
   });
 
   it('leaves the default mode byte-for-byte unchanged', async () => {
@@ -244,7 +238,7 @@ describe('JS-authoritative storage (opt-in)', () => {
     cache.set('k', value, { tags: ['t'] });
     assert.equal(cache.get('k'), value);
     assert.equal(cache.getBytes('k'), undefined);
-    assert.deepEqual(await cache.invalidateTags('t') instanceof Array, true);
+    assert.deepEqual((await cache.invalidateTags('t')) instanceof Array, true);
     await cache.dispose();
   });
 });
@@ -363,7 +357,9 @@ describe('JS-authoritative storage — conflict safety', () => {
         assert.deepEqual([...cache.invalidateTags('even')].sort(), doomed.sort());
         for (const key of doomed) expected.delete(key);
       } else {
-        const batch = keys.slice(0, 4).map((k) => ({ key: k, value: values[step % values.length] }));
+        const batch = keys
+          .slice(0, 4)
+          .map((k) => ({ key: k, value: values[step % values.length] }));
         cache.setMany(batch);
         for (const entry of batch) expected.set(entry.key, { value: entry.value, tags: [] });
         assert.deepEqual(
@@ -375,7 +371,11 @@ describe('JS-authoritative storage — conflict safety', () => {
 
       // Invariant: what the cache returns is exactly what the model says, with no stale ids.
       for (const key of keys) {
-        assert.equal(cache.entry(key)?.value, expected.get(key)?.value, `entry(${key}) at step ${step}`);
+        assert.equal(
+          cache.entry(key)?.value,
+          expected.get(key)?.value,
+          `entry(${key}) at step ${step}`,
+        );
       }
     }
 

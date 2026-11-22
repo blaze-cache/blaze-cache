@@ -71,10 +71,7 @@ export function readBlazeRecord(
   // Deliberately `any`-typed generics: callers pass options generic in `TQueryKey`, and a
   // `readonly unknown[]`-constrained pick rejects `QueryKeyHashFunction<TQueryKey>` under
   // contravariance even though every concrete instantiation fits.
-  options: Pick<
-    UseQueryOptions<any, any, any, any>,
-    'queryKey' | 'queryHash' | 'queryKeyHashFn'
-  >,
+  options: Pick<UseQueryOptions<any, any, any, any>, 'queryKey' | 'queryHash' | 'queryKeyHashFn'>,
 ): BlazeQueryRecord | undefined {
   // Sync writes under `query.queryHash`, which honors a configured `queryKeyHashFn`; resolve
   // the hash the same way TanStack does, or a custom hasher points the lookup at a key the

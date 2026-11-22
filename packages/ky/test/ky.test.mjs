@@ -30,7 +30,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * A stand-in for the real network, handed to ky as its `fetch` option.
@@ -187,7 +188,11 @@ for (const { label, ky, prefix } of versions) {
       const { key, record } = onlyRecord(cache);
       assert.ok(key.startsWith(`head ${USERS}`), `stored under the HEAD method, got ${key}`);
       assert.equal(record.headers['content-length'], '12', 'the headers are in the store');
-      assert.equal(new TextDecoder().decode(record.body), '', '…and the body was stored empty, as HEAD sent it');
+      assert.equal(
+        new TextDecoder().decode(record.body),
+        '',
+        '…and the body was stored empty, as HEAD sent it',
+      );
     });
 
     it('stores responses for ttlMs and refetches once they expire', async () => {
@@ -227,10 +232,17 @@ for (const { label, ky, prefix } of versions) {
       await settle(api.get(longLived));
       await settle(api.get(longLived));
       assert.equal(calls.length, 1, 'the longer window was applied');
-      assert.deepEqual(seen, [[200, longLived, 'GET']], 'the callback saw the response and the final request');
+      assert.deepEqual(
+        seen,
+        [[200, longLived, 'GET']],
+        'the callback saw the response and the final request',
+      );
 
       const { record } = onlyRecord(cache);
-      assert.ok(freshFor(record) >= 599_000, `the callback's 600s became the entry TTL, got ${freshFor(record)}ms`);
+      assert.ok(
+        freshFor(record) >= 599_000,
+        `the callback's 600s became the entry TTL, got ${freshFor(record)}ms`,
+      );
     });
 
     it('replays a 204 with no body', async () => {
@@ -287,7 +299,11 @@ for (const { label, ky, prefix } of versions) {
       const miss = await api.get(USERS);
       const body = new Uint8Array(await miss.arrayBuffer());
       assert.deepEqual([...body], bytes, 'the caller gets the bytes, not a cancelled stream');
-      assert.equal(miss.headers.get('x-blaze-cache'), 'MISS', 'and the marker survived the rebuild');
+      assert.equal(
+        miss.headers.get('x-blaze-cache'),
+        'MISS',
+        'and the marker survived the rebuild',
+      );
     });
   });
 
@@ -302,7 +318,10 @@ for (const { label, ky, prefix } of versions) {
 
       await settle(api.get(USERS));
       const stored = onlyRecord(cache).record;
-      assert.ok(freshFor(stored) >= 59_000, `max-age=60 became the entry window, not ttlMs: 1 (got ${freshFor(stored)}ms)`);
+      assert.ok(
+        freshFor(stored) >= 59_000,
+        `max-age=60 became the entry window, not ttlMs: 1 (got ${freshFor(stored)}ms)`,
+      );
 
       await delay(50); // `ttlMs: 1` would have expired long before this
       const hit = await settle(api.get(USERS));
@@ -322,7 +341,10 @@ for (const { label, ky, prefix } of versions) {
       const stored = onlyRecord(cache).record;
       // `max-age=60, Age: 55` has five seconds of life left — not sixty, and not the
       // adapter's own 600s fallback either.
-      assert.ok(freshFor(stored) <= 5_000 && freshFor(stored) >= 4_000, `got ${freshFor(stored)}ms`);
+      assert.ok(
+        freshFor(stored) <= 5_000 && freshFor(stored) >= 4_000,
+        `got ${freshFor(stored)}ms`,
+      );
     });
 
     it('request no-store bypasses the read and the write', async () => {
@@ -359,7 +381,9 @@ for (const { label, ky, prefix } of versions) {
       const cache = await makeCache();
       const { net, calls } = stubNetwork((url) => ({
         body: { url },
-        headers: url.includes('store') ? { 'cache-control': 'no-store' } : { 'cache-control': 'no-cache' },
+        headers: url.includes('store')
+          ? { 'cache-control': 'no-store' }
+          : { 'cache-control': 'no-cache' },
       }));
       const api = hookApi(cache, net, { ttlMs: TTL_MS });
 
@@ -382,7 +406,10 @@ for (const { label, ky, prefix } of versions) {
 
       await settle(api.get(USERS));
       const stored = onlyRecord(cache).record;
-      assert.ok(freshFor(stored) <= 30, `the server's directives were ignored, got ${freshFor(stored)}ms`);
+      assert.ok(
+        freshFor(stored) <= 30,
+        `the server's directives were ignored, got ${freshFor(stored)}ms`,
+      );
     });
   });
 
@@ -509,7 +536,11 @@ for (const { label, ky, prefix } of versions) {
 
       assert.equal(calls.length, 3, 'the rejected response is refetched every time');
       assert.equal(kept.headers.get('x-blaze-cache'), 'MISS');
-      assert.equal(skipped.headers.get('x-blaze-cache'), 'MISS', 'a rejected response is still returned');
+      assert.equal(
+        skipped.headers.get('x-blaze-cache'),
+        'MISS',
+        'a rejected response is still returned',
+      );
       const { record } = onlyRecord(cache);
       assert.ok(record.url.endsWith('/keep'), 'and only the kept one is in the store');
     });
@@ -539,9 +570,16 @@ for (const { label, ky, prefix } of versions) {
       await delay(60);
       const fresh = await settle(api.get(USERS));
       assert.equal(calls.length, 2, 'once the entry expires, the network is back');
-      assert.equal(fresh.headers.get('x-blaze-cache'), null, 'marked only by absence — it is a plain response');
+      assert.equal(
+        fresh.headers.get('x-blaze-cache'),
+        null,
+        'marked only by absence — it is a plain response',
+      );
       const rewritten = onlyRecord(cache).record;
-      assert.ok(rewritten.storedAt > first.storedAt, 'the rewrite came from the fresh network response');
+      assert.ok(
+        rewritten.storedAt > first.storedAt,
+        'the rewrite came from the fresh network response',
+      );
     });
 
     it('does not slide the TTL of a replayed hit', async () => {
@@ -577,7 +615,8 @@ for (const { label, ky, prefix } of versions) {
           hooks: {
             beforeRequest: [
               (requestOrState) => {
-                const request = requestOrState instanceof Request ? requestOrState : requestOrState.request;
+                const request =
+                  requestOrState instanceof Request ? requestOrState : requestOrState.request;
                 request.headers.set('authorization', `Bearer ${token}`);
                 order.push('user-before');
               },
@@ -685,7 +724,11 @@ describe('createBlazeKy', () => {
 
   it('a cached error rejects exactly like a network one', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ status: 404, statusText: 'Not Found', body: { error: 'nope' } }));
+    const { net, calls } = stubNetwork(() => ({
+      status: 404,
+      statusText: 'Not Found',
+      body: { error: 'nope' },
+    }));
     const api = createBlazeKy(cache, {
       fetch: net,
       ttlMs: TTL_MS,
@@ -718,8 +761,15 @@ describe('resilience', () => {
     it(`a throwing cache.get costs one extra request, never a failed response (${label})`, async () => {
       const cache = await makeCache();
       const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
-      const broken = { get() { throw new Error('cache is down'); }, set: (...args) => cache.set(...args) };
-      const api = ky.extend({ fetch: net }).extend({ hooks: blazeKyHook(broken, { ttlMs: TTL_MS }) });
+      const broken = {
+        get() {
+          throw new Error('cache is down');
+        },
+        set: (...args) => cache.set(...args),
+      };
+      const api = ky
+        .extend({ fetch: net })
+        .extend({ hooks: blazeKyHook(broken, { ttlMs: TTL_MS }) });
 
       const warnings = await withWarnings(async () => {
         const first = await settle(api.get(USERS));
@@ -761,7 +811,9 @@ describe('resilience', () => {
       // under the exact key this request will compute, so the read really meets it.
       const foreignKey = defaultCacheKey(new Request(USERS), ['authorization']);
       cache.set(foreignKey, { data: 'not a blaze-ky record' });
-      const api = ky.extend({ fetch: net }).extend({ hooks: blazeKyHook(cache, { ttlMs: TTL_MS }) });
+      const api = ky
+        .extend({ fetch: net })
+        .extend({ hooks: blazeKyHook(cache, { ttlMs: TTL_MS }) });
 
       const response = await settle(api.get(USERS));
 

@@ -74,7 +74,10 @@ export function encodeRequestBody(body: unknown): string | undefined {
   }
   // Raw bytes: refused rather than hashed, because a digest over caller-supplied
   // bytes is a collision surface this key does not need to open.
-  if (typeof ArrayBuffer !== 'undefined' && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
+  if (
+    typeof ArrayBuffer !== 'undefined' &&
+    (body instanceof ArrayBuffer || ArrayBuffer.isView(body))
+  ) {
     return undefined;
   }
 

@@ -5,7 +5,12 @@
  */
 import * as adapters from '../../cache/adapters.browser.mjs';
 import { PAYLOAD_KINDS, PAYLOAD_SIZES } from '../../cache/payloads.mjs';
-import { DEFAULTS, detectEnvironment, runBenchmark, runPayloadMatrix } from '../../cache/runner.mjs';
+import {
+  DEFAULTS,
+  detectEnvironment,
+  runBenchmark,
+  runPayloadMatrix,
+} from '../../cache/runner.mjs';
 
 window.__BLAZE_BENCH__ = {
   adapters,

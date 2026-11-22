@@ -46,7 +46,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /** A `queryFn` over the real network, counting every call that leaves the process. */
 const realQueryFn = (counter) => async () => {
@@ -108,44 +109,48 @@ describe('live: real public API', () => {
     assert.equal(query.state.data?.full_name, 'blaze-cache/blaze-cache');
   });
 
-  it('a dehydrate → hydrate round trip restores the mirror with zero network', {
-    skip: SKIP,
-  }, async () => {
-    const cache = await makeCache();
-    const client = createBlazeQueryClient({ cache });
-    const counter = { calls: 0 };
+  it(
+    'a dehydrate → hydrate round trip restores the mirror with zero network',
+    {
+      skip: SKIP,
+    },
+    async () => {
+      const cache = await makeCache();
+      const client = createBlazeQueryClient({ cache });
+      const counter = { calls: 0 };
 
-    await prefetchBlazeQuery(cache, client, {
-      queryKey: QUERY_KEY,
-      queryFn: realQueryFn(counter),
-    });
-    assert.equal(counter.calls, 1);
+      await prefetchBlazeQuery(cache, client, {
+        queryKey: QUERY_KEY,
+        queryFn: realQueryFn(counter),
+      });
+      assert.equal(counter.calls, 1);
 
-    const state = dehydrateBlazeQueryClient(cache);
-    assert.equal(state.queries.length, 1, 'the mirror is dehydratable');
-    assert.equal(state.queries[0].state.data?.full_name, 'blaze-cache/blaze-cache');
+      const state = dehydrateBlazeQueryClient(cache);
+      assert.equal(state.queries.length, 1, 'the mirror is dehydratable');
+      assert.equal(state.queries[0].state.data?.full_name, 'blaze-cache/blaze-cache');
 
-    // A fresh session: empty cache, empty client — hydration alone must rebuild both.
-    const freshCache = await makeCache();
-    const freshClient = createBlazeQueryClient({ cache: freshCache });
+      // A fresh session: empty cache, empty client — hydration alone must rebuild both.
+      const freshCache = await makeCache();
+      const freshClient = createBlazeQueryClient({ cache: freshCache });
 
-    hydrateBlazeQueryClient(freshCache, freshClient, state, { tags: ['ssr'] });
+      hydrateBlazeQueryClient(freshCache, freshClient, state, { tags: ['ssr'] });
 
-    const restored = readBlazeRecord(freshCache, freshClient, { queryKey: QUERY_KEY });
-    assert.ok(restored, 'the mirror was restored');
-    assert.equal(restored.data?.full_name, 'blaze-cache/blaze-cache');
-    assert.equal(
-      restored.dataUpdatedAt,
-      state.queries[0].state.dataUpdatedAt,
-      'with the original freshness timestamp',
-    );
-    assert.equal(freshCache.size(), 1, 'exactly the one persisted query');
-    assert.ok(
-      freshCache.hasTag(resolveQueryHash(freshClient, QUERY_KEY), 'ssr'),
-      'hydrated with the caller’s tags',
-    );
-    assert.equal(counter.calls, 1, 'hydration made no network call — the fetcher never ran');
-  });
+      const restored = readBlazeRecord(freshCache, freshClient, { queryKey: QUERY_KEY });
+      assert.ok(restored, 'the mirror was restored');
+      assert.equal(restored.data?.full_name, 'blaze-cache/blaze-cache');
+      assert.equal(
+        restored.dataUpdatedAt,
+        state.queries[0].state.dataUpdatedAt,
+        'with the original freshness timestamp',
+      );
+      assert.equal(freshCache.size(), 1, 'exactly the one persisted query');
+      assert.ok(
+        freshCache.hasTag(resolveQueryHash(freshClient, QUERY_KEY), 'ssr'),
+        'hydrated with the caller’s tags',
+      );
+      assert.equal(counter.calls, 1, 'hydration made no network call — the fetcher never ran');
+    },
+  );
 
   it('an aborted fetch leaves the mirror empty', { skip: SKIP }, async () => {
     const cache = await makeCache();

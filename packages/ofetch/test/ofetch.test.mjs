@@ -23,7 +23,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * A stand-in for the real network, handed to ofetch as its `fetch` option.
@@ -35,9 +36,14 @@ const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: 
 const stubNetwork = (handler) => {
   const calls = [];
   const net = async (input, init) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    const method = String(init?.method ?? (typeof input !== 'string' ? input.method : undefined) ?? 'GET').toUpperCase();
-    const headers = new Headers(init?.headers ?? (typeof input !== 'string' ? input.headers : undefined));
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const method = String(
+      init?.method ?? (typeof input !== 'string' ? input.method : undefined) ?? 'GET',
+    ).toUpperCase();
+    const headers = new Headers(
+      init?.headers ?? (typeof input !== 'string' ? input.headers : undefined),
+    );
     calls.push({ url, method });
 
     const spec = handler(url, calls.length, headers, init) ?? {};
@@ -118,7 +124,10 @@ describe('blazeOfetch', () => {
     assert.deepEqual(hit, { ok: true });
 
     const { key } = onlyRecord(cache);
-    assert.ok(key.includes('https://api.example.com/api/users'), `key uses resolved URL, got ${key}`);
+    assert.ok(
+      key.includes('https://api.example.com/api/users'),
+      `key uses resolved URL, got ${key}`,
+    );
   });
 
   it('never caches methods outside `methods`', async () => {
@@ -223,7 +232,10 @@ describe('blazeOfetch', () => {
   it('markerHeader: false omits the marker on raw hits', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
-    const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS, markerHeader: false });
+    const api = blazeOfetch(createFetch({ fetch: net }), cache, {
+      ttlMs: TTL_MS,
+      markerHeader: false,
+    });
 
     await settle(api(USERS));
     const hit = await api.raw(USERS);
@@ -267,7 +279,9 @@ describe('Cache-Control (ofetch)', () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({
       body: { url },
-      headers: url.includes('store') ? { 'cache-control': 'no-store' } : { 'cache-control': 'no-cache' },
+      headers: url.includes('store')
+        ? { 'cache-control': 'no-store' }
+        : { 'cache-control': 'no-cache' },
     }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
@@ -310,7 +324,10 @@ describe('keys and vary (ofetch)', () => {
 
   it('leaves a response varying outside varyHeaders uncached', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ body: { ok: true }, headers: { vary: 'accept-language' } }));
+    const { net, calls } = stubNetwork(() => ({
+      body: { ok: true },
+      headers: { vary: 'accept-language' },
+    }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
     await settle(api(USERS));
@@ -341,7 +358,10 @@ describe('createBlazeOfetch', () => {
     const raw = await api.raw('/api/users');
     assert.equal(raw.headers.get('x-blaze-cache'), 'HIT');
     const { key } = onlyRecord(cache);
-    assert.ok(key.includes('https://api.example.com/api/users'), `keyed on resolved URL, got ${key}`);
+    assert.ok(
+      key.includes('https://api.example.com/api/users'),
+      `keyed on resolved URL, got ${key}`,
+    );
   });
 });
 
@@ -433,7 +453,12 @@ describe('request semantics (ofetch)', () => {
 describe('response handling (ofetch)', () => {
   it('replays a 204 with no body', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ status: 204, statusText: 'No Content', body: undefined, headers: {} }));
+    const { net, calls } = stubNetwork(() => ({
+      status: 204,
+      statusText: 'No Content',
+      body: undefined,
+      headers: {},
+    }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
     // ofetch may return null/undefined for 204 _data; the key behavior is "served from cache".
@@ -447,7 +472,11 @@ describe('response handling (ofetch)', () => {
 
   it('does not cache non-2xx by default when ignoreResponseError is set', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ status: 404, statusText: 'Not Found', body: { error: 'nope' } }));
+    const { net, calls } = stubNetwork(() => ({
+      status: 404,
+      statusText: 'Not Found',
+      body: { error: 'nope' },
+    }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
     await settle(api(USERS, { ignoreResponseError: true }));
@@ -459,7 +488,11 @@ describe('response handling (ofetch)', () => {
 
   it('4xx throws by default and is not cached', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ status: 404, statusText: 'Not Found', body: { error: 'nope' } }));
+    const { net, calls } = stubNetwork(() => ({
+      status: 404,
+      statusText: 'Not Found',
+      body: { error: 'nope' },
+    }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
     await assert.rejects(() => api(USERS));
@@ -496,7 +529,10 @@ describe('vary and key edge cases (ofetch)', () => {
 
   it('stores a response varying on a keyed header', async () => {
     const cache = await makeCache();
-    const { net, calls } = stubNetwork(() => ({ body: { ok: true }, headers: { vary: 'authorization' } }));
+    const { net, calls } = stubNetwork(() => ({
+      body: { ok: true },
+      headers: { vary: 'authorization' },
+    }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, { ttlMs: TTL_MS });
 
     await settle(api(USERS, { headers: { authorization: 'Bearer alice' } }));
@@ -532,7 +568,12 @@ describe('resilience (ofetch)', () => {
   it('a throwing cache.get falls through to the network, never failing the response', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork(() => ({ body: { ok: true } }));
-    const broken = { get() { throw new Error('cache is down'); }, set: (...args) => cache.set(...args) };
+    const broken = {
+      get() {
+        throw new Error('cache is down');
+      },
+      set: (...args) => cache.set(...args),
+    };
     const api = blazeOfetch(createFetch({ fetch: net }), broken, { ttlMs: TTL_MS });
 
     const warnings = [];
@@ -555,7 +596,9 @@ describe('resilience (ofetch)', () => {
     const { net } = stubNetwork(() => ({ body: { ok: true } }));
     const api = blazeOfetch(createFetch({ fetch: net }), cache, {
       ttlMs: TTL_MS,
-      shouldCache: () => { throw new Error('boom'); },
+      shouldCache: () => {
+        throw new Error('boom');
+      },
     });
 
     const warnings = [];
@@ -574,7 +617,12 @@ describe('resilience (ofetch)', () => {
   it('a throwing cache.set does not fail the response', async () => {
     const cache = await makeCache();
     const { net } = stubNetwork(() => ({ body: { ok: true } }));
-    const broken = { get: (k) => cache.get(k), set() { throw new Error('set failed'); } };
+    const broken = {
+      get: (k) => cache.get(k),
+      set() {
+        throw new Error('set failed');
+      },
+    };
     const api = blazeOfetch(createFetch({ fetch: net }), broken, { ttlMs: TTL_MS });
 
     const warnings = [];
@@ -592,7 +640,7 @@ describe('resilience (ofetch)', () => {
 });
 
 describe('regressions (ofetch)', () => {
-  it('never replays one origin\'s response for another (undisclosed instance baseURL)', async () => {
+  it("never replays one origin's response for another (undisclosed instance baseURL)", async () => {
     const cache = await makeCache();
     const alpha = stubNetwork(() => ({ body: { servedBy: 'ALPHA' } }));
     const beta = stubNetwork(() => ({ body: { servedBy: 'BETA' } }));
@@ -614,7 +662,11 @@ describe('regressions (ofetch)', () => {
     const second = await settle(apiB('/users'));
 
     assert.deepEqual(first, { servedBy: 'ALPHA' }, 'alpha is served by alpha');
-    assert.deepEqual(second, { servedBy: 'BETA' }, 'the beta call must reach beta, not replay alpha');
+    assert.deepEqual(
+      second,
+      { servedBy: 'BETA' },
+      'the beta call must reach beta, not replay alpha',
+    );
     assert.equal(alpha.calls.length, 1, 'alpha hit its own network once');
     assert.equal(beta.calls.length, 1, 'beta hit its own network once');
 
@@ -685,18 +737,20 @@ describe('regressions (ofetch)', () => {
 
   it('folds instance default headers into the key (no cross-user replay)', async () => {
     const cache = await makeCache();
-    const stub = () => stubNetwork((url, n, headers) => ({
-      body: { auth: headers.get('authorization') ?? null },
-      headers: { 'content-type': 'application/json', vary: 'authorization' },
-    }));
+    const stub = () =>
+      stubNetwork((url, n, headers) => ({
+        body: { auth: headers.get('authorization') ?? null },
+        headers: { 'content-type': 'application/json', vary: 'authorization' },
+      }));
     const alpha = stub();
     const beta = stub();
-    const makeApi = (network, auth) => createBlazeOfetch(cache, {
-      baseURL: 'https://api.example.com',
-      headers: { authorization: auth },
-      fetch: network.net,
-      ttlMs: TTL_MS,
-    });
+    const makeApi = (network, auth) =>
+      createBlazeOfetch(cache, {
+        baseURL: 'https://api.example.com',
+        headers: { authorization: auth },
+        fetch: network.net,
+        ttlMs: TTL_MS,
+      });
     const apiA = makeApi(alpha, 'Bearer alice');
     const apiB = makeApi(beta, 'Bearer bob');
 
@@ -716,12 +770,13 @@ describe('regressions (ofetch)', () => {
     const cache = await makeCache();
     const alpha = stubNetwork((url) => ({ body: { url } }));
     const beta = stubNetwork((url) => ({ body: { url } }));
-    const makeApi = (network, tenant) => createBlazeOfetch(cache, {
-      baseURL: 'https://api.example.com',
-      query: { tenant },
-      fetch: network.net,
-      ttlMs: TTL_MS,
-    });
+    const makeApi = (network, tenant) =>
+      createBlazeOfetch(cache, {
+        baseURL: 'https://api.example.com',
+        query: { tenant },
+        fetch: network.net,
+        ttlMs: TTL_MS,
+      });
     const apiA = makeApi(alpha, 'alpha');
     const apiB = makeApi(beta, 'beta');
 
@@ -730,7 +785,11 @@ describe('regressions (ofetch)', () => {
     const b = await settle(apiB('/me'));
 
     assert.deepEqual(a, { url: 'https://api.example.com/me?tenant=alpha' });
-    assert.deepEqual(b, { url: 'https://api.example.com/me?tenant=beta' }, 'tenant beta must not replay alpha');
+    assert.deepEqual(
+      b,
+      { url: 'https://api.example.com/me?tenant=beta' },
+      'tenant beta must not replay alpha',
+    );
     assert.equal(beta.calls.length, 1, 'beta reached its own network');
     await delay(20);
     assert.equal(cache.size(), 2);
@@ -746,15 +805,16 @@ describe('regressions (ofetch)', () => {
       body: { auth: headers.get('authorization') ?? null },
       headers: { 'content-type': 'application/json', vary: 'authorization' },
     }));
-    const makeApi = (network, auth) => blazeOfetch(
-      createFetch({ fetch: network.net, defaults: { headers: { authorization: auth } } }),
-      cache,
-      {
-        baseURL: 'https://api.example.com',
-        defaults: { headers: { authorization: auth } },
-        ttlMs: TTL_MS,
-      },
-    );
+    const makeApi = (network, auth) =>
+      blazeOfetch(
+        createFetch({ fetch: network.net, defaults: { headers: { authorization: auth } } }),
+        cache,
+        {
+          baseURL: 'https://api.example.com',
+          defaults: { headers: { authorization: auth } },
+          ttlMs: TTL_MS,
+        },
+      );
     const apiA = makeApi(alpha, 'Bearer alice');
     const apiB = makeApi(beta, 'Bearer bob');
 
@@ -782,7 +842,11 @@ describe('regressions (ofetch)', () => {
     const repeat = await settle(api(USERS, { method: 'POST', body: { id: 1 } }));
 
     assert.deepEqual(first, { served: 1 }, 'the first payload is served');
-    assert.deepEqual(second, { served: 2 }, 'a different payload must never replay the first response');
+    assert.deepEqual(
+      second,
+      { served: 2 },
+      'a different payload must never replay the first response',
+    );
     assert.equal(calls.length, 2, 'the second payload went to the network');
     assert.deepEqual(repeat, { served: 1 }, 'the same payload still hits');
     assert.equal(calls.length, 2, 'the repeat did not');

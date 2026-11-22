@@ -29,7 +29,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /**
  * A stand-in for the global `fetch`, keyed by URL.
@@ -42,7 +43,9 @@ const stubNetwork = (handler) => {
   const calls = [];
   const net = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : 'GET')
+    ).toUpperCase();
     const headers = new Headers(init?.headers);
     calls.push({ url, method });
 
@@ -236,7 +239,11 @@ describe('caching', () => {
     const fetch = createTestFetch(cache, { fetch: net });
 
     const response = await fetch('/sse');
-    assert.equal(response.headers.get('x-blaze-cache'), 'MISS', 'resolved before any buffering finished');
+    assert.equal(
+      response.headers.get('x-blaze-cache'),
+      'MISS',
+      'resolved before any buffering finished',
+    );
 
     const reader = response.body.getReader();
     const { value } = await reader.read();
@@ -499,7 +506,11 @@ describe('Vary', () => {
     assert.equal(varyIsStorable(' , ', ['authorization']), true, '…nor a nameless one');
     assert.equal(varyIsStorable('*', []), false, 'Vary: * is never cacheable');
     assert.equal(varyIsStorable('accept-encoding, *', []), false, '…not even alongside names');
-    assert.equal(varyIsStorable('cookie', ['authorization']), false, 'an unkeyed name blocks storing');
+    assert.equal(
+      varyIsStorable('cookie', ['authorization']),
+      false,
+      'an unkeyed name blocks storing',
+    );
     assert.equal(
       varyIsStorable('Authorization', ['authorization']),
       true,
@@ -627,7 +638,11 @@ describe('stale-while-revalidate', () => {
     assert.equal(calls, 2, 'the refresh still ran after the abort');
     assert.equal(signals[1], null, 'and it did so without inheriting the aborted signal');
     assert.equal((await fetch('/unmount')).headers.get('x-blaze-cache'), 'HIT');
-    assert.deepEqual(storedJson(onlyRecord(cache).record), { version: 2 }, 'the entry is fresh again');
+    assert.deepEqual(
+      storedJson(onlyRecord(cache).record),
+      { version: 2 },
+      'the entry is fresh again',
+    );
   });
 });
 
@@ -675,13 +690,21 @@ describe('in-flight dedup', () => {
 
     assert.equal(calls.length, 1, 'the second caller joined the in-flight request');
     assert.equal(first.headers.get('x-blaze-cache'), 'MISS', 'the leader went to the network');
-    assert.equal(second.headers.get('x-blaze-cache'), 'HIT', 'the joiner replays the stored record');
+    assert.equal(
+      second.headers.get('x-blaze-cache'),
+      'HIT',
+      'the joiner replays the stored record',
+    );
     assert.deepEqual(await first.json(), { version: 1 }, 'with its own readable body,');
     assert.deepEqual(await second.json(), { version: 1 }, 'independently of the leader’s');
 
     assert.equal((await fetch('/dup')).headers.get('x-blaze-cache'), 'HIT', 'later calls hit too');
     assert.equal(calls.length, 1, 'and still only one network call in total');
-    assert.deepEqual(storedJson(onlyRecord(cache).record), { version: 1 }, 'one record, stored once');
+    assert.deepEqual(
+      storedJson(onlyRecord(cache).record),
+      { version: 1 },
+      'one record, stored once',
+    );
   });
 
   it('never answers a forceRefresh caller from an in-flight sibling', async () => {
@@ -807,7 +830,10 @@ describe('keys', () => {
     assert.equal(cache.size(), 2, 'two identities occupy two keys');
 
     const keys = cache.keys();
-    assert.ok(keys.every((key) => key.startsWith('get /me?')), 'both under method + URL + hash');
+    assert.ok(
+      keys.every((key) => key.startsWith('get /me?')),
+      'both under method + URL + hash',
+    );
     const storedTokens = cache
       .entries()
       .map((entry) => storedJson(entry.value).token)
@@ -848,13 +874,25 @@ describe('keys', () => {
     // attack, ~3M tries). Cache keys must use the 128-bit hash so they stay apart.
     const a = 'Bearer sk_live_ae70c7077724d8ba';
     const b = 'Bearer sk_live_6b326ecd982941c8';
-    assert.equal(fnv1a(JSON.stringify([a])), fnv1a(JSON.stringify([b])), 'fixture collides at 32 bits');
+    assert.equal(
+      fnv1a(JSON.stringify([a])),
+      fnv1a(JSON.stringify([b])),
+      'fixture collides at 32 bits',
+    );
 
     const keyFor = (token) =>
-      defaultCacheKey('/api/account', { method: 'GET', headers: new Headers({ authorization: token }) }, ['authorization']);
+      defaultCacheKey(
+        '/api/account',
+        { method: 'GET', headers: new Headers({ authorization: token }) },
+        ['authorization'],
+      );
     const keyA = keyFor(a);
     assert.notEqual(keyA, keyFor(b), 'two identities keep separate cache entries');
-    assert.match(keyA.slice(keyA.lastIndexOf('?') + 1), /^[0-9a-f]{32}$/, '128-bit hex hash suffix');
+    assert.match(
+      keyA.slice(keyA.lastIndexOf('?') + 1),
+      /^[0-9a-f]{32}$/,
+      '128-bit hex hash suffix',
+    );
   });
 
   it('keeps vary values apart that a naive join would collide', () => {
@@ -864,7 +902,11 @@ describe('keys', () => {
     // lists can produce the same input to the hash.
     const varyHeaders = ['x-a', 'x-b'];
     const key = (a, b) =>
-      defaultCacheKey('/collide', { method: 'GET', headers: new Headers({ 'x-a': a, 'x-b': b }) }, varyHeaders);
+      defaultCacheKey(
+        '/collide',
+        { method: 'GET', headers: new Headers({ 'x-a': a, 'x-b': b }) },
+        varyHeaders,
+      );
 
     assert.notEqual(
       key('x y', ''),
@@ -1117,7 +1159,11 @@ describe('binary, encoded and chunked bodies', () => {
     const blob = await blobHit.blob();
     assert.equal(blob.type, 'image/png', 'blob() keeps the MIME type');
     assert.equal(blob.size, png.byteLength, '…and the exact size');
-    assert.equal(hit.headers.get('content-length'), String(png.byteLength), 'so does content-length');
+    assert.equal(
+      hit.headers.get('content-length'),
+      String(png.byteLength),
+      'so does content-length',
+    );
 
     const { record } = onlyRecord(cache);
     assert.equal(record.body.byteLength, png.byteLength, 'the raw bytes are what got stored');
@@ -1474,7 +1520,11 @@ describe('per-request blazeCache options', () => {
     assert.equal(cache.keysWithTag('fn').length, 1, 'the function form landed too');
 
     await fetch('/tag3');
-    assert.equal(cache.keysWithTag('global').length, 1, 'the wrapper-level tag applies when the request has none');
+    assert.equal(
+      cache.keysWithTag('global').length,
+      1,
+      'the wrapper-level tag applies when the request has none',
+    );
     assert.equal(cache.size(), 3, 'three resources, three entries');
   });
 
@@ -1662,11 +1712,19 @@ describe('honourCacheControl', () => {
     const aliased = createTestFetch(cache, { fetch: net, ttlMs: 60_000, cacheControl: false });
     await aliased('/x');
     const aliasHit = await aliased('/x');
-    assert.equal(aliasHit.fromBlazeCache, true, 'server no-store ignored when cacheControl is false');
+    assert.equal(
+      aliasHit.fromBlazeCache,
+      true,
+      'server no-store ignored when cacheControl is false',
+    );
 
     // `honourCacheControl` (the axios-consistent spelling): the same behaviour.
     const cache2 = await makeCache();
-    const preferred = createTestFetch(cache2, { fetch: net, ttlMs: 60_000, honourCacheControl: false });
+    const preferred = createTestFetch(cache2, {
+      fetch: net,
+      ttlMs: 60_000,
+      honourCacheControl: false,
+    });
     await preferred('/x');
     const preferredHit = await preferred('/x');
     assert.equal(preferredHit.fromBlazeCache, true, 'honourCacheControl works the same way');

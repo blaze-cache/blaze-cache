@@ -33,7 +33,8 @@ const wasmBytes = await readFile(
 );
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 /** What the middleware writes — the envelope hydration recognises. */
 const swrRecord = (data, storedAt = Date.now()) => ({ kind: 'swr', data, storedAt });
@@ -51,7 +52,10 @@ function runMiddleware(cache, middlewareOptions, key, fetcher, config = {}) {
     isLoading: false,
     mutate: () => {},
   };
-  const hook = blazeSWRMiddleware(cache, middlewareOptions)((k, f, c) => {
+  const hook = blazeSWRMiddleware(
+    cache,
+    middlewareOptions,
+  )((k, f, c) => {
     captured.key = k;
     captured.fetcher = f;
     captured.config = c;
@@ -128,9 +132,20 @@ describe('resolveBlazeKey', () => {
   });
 
   it('resolves lazy keys the way SWR does — and maps every paused key to null', () => {
-    assert.equal(resolveBlazeKey(() => ['todos', 42]), resolveBlazeKey(['todos', 42]));
-    assert.equal(resolveBlazeKey(() => null), null);
-    assert.equal(resolveBlazeKey(() => { throw new Error('deps not ready'); }), null);
+    assert.equal(
+      resolveBlazeKey(() => ['todos', 42]),
+      resolveBlazeKey(['todos', 42]),
+    );
+    assert.equal(
+      resolveBlazeKey(() => null),
+      null,
+    );
+    assert.equal(
+      resolveBlazeKey(() => {
+        throw new Error('deps not ready');
+      }),
+      null,
+    );
     assert.equal(resolveBlazeKey(null), null);
     assert.equal(resolveBlazeKey(undefined), null);
     assert.equal(resolveBlazeKey(false), null);
@@ -366,12 +381,7 @@ describe('persistence', () => {
 
   it('exposes tag invalidation as cache.invalidateTags for the written entries', async () => {
     const cache = await makeCache();
-    const { fetcher } = runMiddleware(
-      cache,
-      { tags: ['todos'] },
-      '/api/todos',
-      async () => 'data',
-    );
+    const { fetcher } = runMiddleware(cache, { tags: ['todos'] }, '/api/todos', async () => 'data');
     await fetcher('/api/todos');
 
     assert.deepEqual(cache.invalidateTags('todos'), ['/api/todos']);
@@ -395,7 +405,9 @@ describe('persistence', () => {
     };
 
     const first = await createCache({ wasm: wasmBytes, persistence: { adapter } });
-    const session = runMiddleware(first, { tags: ['todos'] }, '/api/todos', async () => [{ id: 1 }]);
+    const session = runMiddleware(first, { tags: ['todos'] }, '/api/todos', async () => [
+      { id: 1 },
+    ]);
     await session.fetcher('/api/todos');
     await first.dispose(); // flush + teardown — the row is on its way to the adapter
 
@@ -441,7 +453,11 @@ describe('forceRefresh', () => {
     });
     await fetcher('/api/todos');
 
-    assert.deepEqual(cache.get('/api/todos').data, [{ id: 2 }], 'the fresh result replaced the old');
+    assert.deepEqual(
+      cache.get('/api/todos').data,
+      [{ id: 2 }],
+      'the fresh result replaced the old',
+    );
   });
 
   it('leaves a caller-supplied fallbackData authoritative', async () => {
@@ -506,7 +522,11 @@ describe('tags resolvers', () => {
 
     await fetcher('/api/users/7');
 
-    assert.deepEqual(seen, [['/api/users/7', { id: 7 }]], 'the resolver saw the fetcher’s arguments');
+    assert.deepEqual(
+      seen,
+      [['/api/users/7', { id: 7 }]],
+      'the resolver saw the fetcher’s arguments',
+    );
     assert.deepEqual(cache.entry('/api/users/7').tags, ['user', 'user:7']);
   });
 

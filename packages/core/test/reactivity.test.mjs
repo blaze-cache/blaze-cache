@@ -16,7 +16,8 @@ import { createCache } from '@blaze-cache/core';
 const wasmBytes = await readFile(new URL('../pkg/blaze_cache_wasm_bg.wasm', import.meta.url));
 
 /** A cache over the real wasm module (Node has no `fetch` for `file:` URLs). */
-const makeCache = (options = {}) => createCache({ wasm: wasmBytes, persistence: false, ...options });
+const makeCache = (options = {}) =>
+  createCache({ wasm: wasmBytes, persistence: false, ...options });
 
 describe('subscription surface', () => {
   it('offers the three subscribe flavours and nothing else new', async () => {
@@ -281,14 +282,7 @@ describe('tag subscriptions', () => {
     cache.set('k', 3, { tags: ['old', 'new'] }); // stays in both
     cache.set('k', 4); // leaves both
 
-    assert.deepEqual(seen, [
-      'old:set',
-      'new:set',
-      'old:set',
-      'new:set',
-      'old:set',
-      'new:set',
-    ]);
+    assert.deepEqual(seen, ['old:set', 'new:set', 'old:set', 'new:set', 'old:set', 'new:set']);
 
     stopOld();
     stopNew();
