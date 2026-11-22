@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+# Reject non-conventional commit messages before the commit is created.
+pnpm exec commitlint --edit "$1"

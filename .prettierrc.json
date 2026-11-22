@@ -1,0 +1,12 @@
+{
+  "singleQuote": true,
+  "printWidth": 100,
+  "trailingComma": "all",
+  "semi": true,
+  "overrides": [
+    {
+      "files": "examples/**/*.{ts,tsx}",
+      "options": { "semi": false }
+    }
+  ]
+}

@@ -30,11 +30,23 @@
     "bench:ci": "pnpm bench -- --quick --out=benchmarks/results/current.node.json > /dev/null && node scripts/compare-bench.mjs benchmarks/results/current.node.json benchmarks/results/baseline.node.json",
     "publish": "pnpm build && pnpm -r publish --no-git-checks",
     "publish:beta": "pnpm build && pnpm -r publish --tag beta --no-git-checks",
-    "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm typecheck",
+    "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm typecheck && pnpm lint:js && pnpm format:check",
+    "lint:js": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "clean": "rm -rf packages/core/pkg packages/*/dist examples/*/dist target",
-    "generate:sbom": "node scripts/generate-sbom.mjs"
+    "generate:sbom": "node scripts/generate-sbom.mjs",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.15.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.10.1",
     "typescript": "^7.0.2"
   }
 }
