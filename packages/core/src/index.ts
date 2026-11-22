@@ -18,7 +18,7 @@
 export { BlazeCache, createCache, DEFAULT_CAPACITY, DEFAULT_FLUSH_DELAY_MS, DEFAULT_MAX_RECORDS } from './cache.js';
 export type { BlazeCacheOptions, CachePersistenceOptions, CreateCacheOptions, IndexedDbPersistenceOptions } from './cache.js';
 
-export { initBlazeWasm, loadBlazeWasm, wasmUrl } from './wasm.js';
+export { initBlazeWasm, loadBlazeWasm, wasmLinearMemory, wasmUrl } from './wasm.js';
 export type { WasmInitInput, WasmLoadOptions, WasmSource } from './wasm.js';
 
 export { MultiTabSync } from './multitab.js';
