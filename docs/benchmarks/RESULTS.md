@@ -192,6 +192,39 @@ the default never copies values at all — so it is a **capability** (genuine ze
 binary payloads that must live in linear memory), not a speed win on these workloads. Both stay
 opt-in for exactly this reason; enabling them is a deliberate trade, not an upgrade.
 
+## Stage 4: final speed optimization (before/after)
+
+Same-run A/B: the committed pre-Stage-4 tree was built in a temporary worktree and measured
+alternately with the working tree on the same machine, using the same `--quick` settings. Raw
+outputs: [`stage4-node-before.json`](../../benchmarks/results/stage4-node-before.json),
+[`stage4-node-after.json`](../../benchmarks/results/stage4-node-after.json),
+[`stage4-browser-before.json`](../../benchmarks/results/stage4-browser-before.json) and
+[`stage4-browser-after.json`](../../benchmarks/results/stage4-browser-after.json).
+
+| Scenario | Node before | Node after | Browser before | Browser after |
+|---|---:|---:|---:|---:|
+| `fill` | 124.1 | 127.9 (+3%) | 105.4 | 106.6 (+1%) |
+| `full-featured` (headline) | 175.3 | **171.4 (−2%)** | 190.1 | **182.8 (−4%)** |
+| `get-hit` | 94.4 | 95.2 (flat) | — | — |
+
+The headline improved in **both** runtimes by 2–4% — small and inside the spread of the full
+matrix, but consistent across three interleaved Node runs and a browser run. `fill` is a touch
+slower because the raw path still encodes the key on the host; `get-hit` is unchanged, as the
+data predicted. No feature-equivalent peer regressed beyond its spread, and `bench:ci` passes.
+
+**What shipped:** a tagged raw-key write (`setRawWithTags`, plus a `setRawWithOneTag` fast path
+for the common single-tag case) takes the key from `KeyScratch` and tags from a shared flat
+`TagScratch`, so neither is marshalled per write; `setManyRaw` extends the same encoding to
+batches; all offsets are validated in safe Rust, with malformed ranges degrading to no tags.
+`cache.setBytesReserved(key, ptr, len)` is the advanced bytes-producer path for callers that
+already wrote into the arena, so a decoder can avoid the JS→Wasm copy entirely.
+
+**What did not ship:** interning tag names at the boundary would add a lookup to the common
+single-tag case without evidence from the matrix that the `Vec<String>` copy is material; the
+Stage 2 drop-log drain already carries ids cheaply. Both were left alone rather than adding
+work for a hypothetical win. Overall the gate is met narrowly on the headline only — this is a
+tuning stage, not an unqualified speed claim.
+
 ## Framework cache stores (Node, cache-store microbenchmark only)
 
 `pnpm bench:framework` compares the real `@tanstack/query-core` `QueryClient` store and the real
