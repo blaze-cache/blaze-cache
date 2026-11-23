@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use blaze_cache_core::bytes as arena;
-use blaze_cache_core::{BytesRef, Cache, EntryOptions};
+use blaze_cache_core::{BytesRef, Cache, EntryOptions, QueryError, QueryFilter};
 use wasm_bindgen::prelude::*;
 
 /// Hard ceiling for a JS-supplied capacity: enough for any realistic workload. The core
@@ -795,6 +795,106 @@ impl BlazeCache {
     #[wasm_bindgen(js_name = capacity)]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
+    }
+
+    // ------------------------------------------------------------- opt-in queries (0.5.0)
+
+    /// Turns on the ordered key, expiry and tag query indexes, backfilling any existing
+    /// entries. A no-op when already enabled; the default cache never allocates them.
+    #[wasm_bindgen(js_name = enableIndexes)]
+    pub fn enable_indexes(&mut self) {
+        self.inner.enable_indexes();
+    }
+
+    /// `true` once the query indexes are live.
+    #[wasm_bindgen(js_name = indexesEnabled)]
+    pub fn indexes_enabled(&self) -> bool {
+        self.inner.indexes_enabled()
+    }
+
+    /// Resolves tag names to interned numeric ids, for hosts that want to pass ids to
+    /// `queryKeys`. Unknown names map to `u32::MAX`.
+    #[wasm_bindgen(js_name = tagIds)]
+    pub fn tag_ids(&self, tags: Vec<String>) -> Vec<u32> {
+        self.inner.tag_ids(&tags)
+    }
+
+    /// Runs a bounded, metadata-only query. Returns
+    /// `{ rows: [{ key, ttlMs, tags }], nextCursor, total }` or throws a setup error when
+    /// indexes were never enabled. Values are deliberately absent: the host fetches them
+    /// separately (and caps them) only when `includeValues` was requested.
+    ///
+    /// Every offset is passed through safe helpers — there are no raw pointers here and both
+    /// crates remain `forbid(unsafe_code)`.
+    // One argument per JS option keeps the generated binding free of a serde round-trip on
+    // the hot query path; wasm-bindgen has no named-argument form.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = queryKeys)]
+    pub fn query_keys(
+        &self,
+        prefix: Option<String>,
+        tags_any: Vec<String>,
+        tags_all: Vec<String>,
+        tags_none: Vec<String>,
+        ttl_min_ms: Option<f64>,
+        ttl_max_ms: Option<f64>,
+        keys: Option<Vec<String>>,
+        limit: usize,
+        cursor: Option<String>,
+        with_total: bool,
+    ) -> Result<JsValue, JsValue> {
+        let finite = |value: Option<f64>| value.filter(|ms| ms.is_finite());
+        let filter = QueryFilter {
+            prefix: prefix.as_deref(),
+            tags_any: &tags_any,
+            tags_all: &tags_all,
+            tags_none: &tags_none,
+            ttl_min_ms: finite(ttl_min_ms),
+            ttl_max_ms: finite(ttl_max_ms),
+            keys: keys.as_deref(),
+            limit,
+            cursor: cursor.as_deref(),
+            with_total,
+        };
+        match self.inner.query_keys(&filter) {
+            Ok(result) => serde_wasm_bindgen::to_value(&result)
+                .map_err(|error| JsValue::from_str(&error.to_string())),
+            Err(QueryError::IndexesDisabled) => Err(JsValue::from_str(
+                "[blaze-cache] query() requires createCache({ indexes: true }) or fullScan: true.",
+            )),
+            Err(QueryError::InvalidLimit) => Err(JsValue::from_str(
+                "[blaze-cache] query() requires a positive integer limit.",
+            )),
+        }
+    }
+
+    /// Number of matching entries, ignoring paging. Also guarded by the indexes setup check.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = queryCount)]
+    pub fn query_count(
+        &self,
+        prefix: Option<String>,
+        tags_any: Vec<String>,
+        tags_all: Vec<String>,
+        tags_none: Vec<String>,
+        ttl_min_ms: Option<f64>,
+        ttl_max_ms: Option<f64>,
+        keys: Option<Vec<String>>,
+    ) -> Result<usize, JsValue> {
+        let finite = |value: Option<f64>| value.filter(|ms| ms.is_finite());
+        let filter = QueryFilter {
+            prefix: prefix.as_deref(),
+            tags_any: &tags_any,
+            tags_all: &tags_all,
+            tags_none: &tags_none,
+            ttl_min_ms: finite(ttl_min_ms),
+            ttl_max_ms: finite(ttl_max_ms),
+            keys: keys.as_deref(),
+            ..QueryFilter::default()
+        };
+        self.inner
+            .query_count(&filter)
+            .map_err(|_| JsValue::from_str("[blaze-cache] count() requires indexes: true."))
     }
 }
 
