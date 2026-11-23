@@ -51,12 +51,14 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
   - [Stats](#stats)
   - [Events](#events)
   - [Subscriptions](#subscriptions)
+  - [Indexed queries](#indexed-queries)
   - [API at a glance](#api-at-a-glance)
 - [Persistence](#persistence)
   - [The control API: `cache.persistence`](#the-control-api-cachepersistence)
   - [Accounts and logout/login](#accounts-and-logoutlogin)
   - [Schema versioning](#schema-versioning)
   - [Multiple tabs](#multiple-tabs)
+- [Devtools](#devtools)
 - Integrations
   - [axios](#axios)
   - [fetch](#fetch)
@@ -88,6 +90,7 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 | [`@blaze-cache/ofetch`](packages/ofetch)           | Caches `ofetch`/`$fetch` responses with the same `Cache` (`HIT`/`MISS`, `Cache-Control`) |
 | [`@blaze-cache/react-query`](packages/react-query) | TanStack Query v5 mirror + a `useQuery` that paints instantly from cache                 |
 | [`@blaze-cache/swr`](packages/swr)                 | SWR middleware + `useSWR` that paints instantly from cache and persists fetches          |
+| [`@blaze-cache/devtools`](packages/devtools)       | Zero-cost observability: registry, versioned snapshots, safe summaries, live event feed  |
 
 ## Installation
 
@@ -472,8 +475,9 @@ without a second lookup.
 point of the split — the event union stays complete for tooling and persistence, while a
 subscription only ever fires for something that changed.
 
-Tag subscriptions are the part the raw events cannot express on their own. A removal
-carries no tags, so the layer keeps a per-tag mirror of the live keys carrying it and
+Tag subscriptions are the part the raw events cannot express on their own. Most removals
+carry no tags (`invalidate` now includes them, additively, in 0.5.0), so the layer keeps a
+per-tag mirror of the live keys carrying it and
 attributes `delete`, `evict`, `expire`, `invalidate`, `prune` and `clear` to the tags they
 actually hit — including entries dropped by a capacity sweep or by a TTL that ran out.
 
@@ -491,6 +495,35 @@ to re-read that key's tags (and only while a tag subscription is live) and reads
 value only for keys somebody subscribed to. Like an `evict`/`expire` listener, a
 subscription switches the core's drop log on, so evictions really are reported — the last
 stop function switches it back off.
+
+### Indexed queries
+
+`keys()` and `entries()` walk every live entry. For a bounded read, opt in to indexes at
+creation time and use `query()`:
+
+```ts
+const cache = await createCache({ capacity: 10_000, indexes: true });
+cache.set('user:1', { name: 'Ada' }, { ttlMs: 60_000, tags: ['user'] });
+
+const page = cache.query({ prefix: 'user:', tags: { all: ['user'] }, limit: 20 });
+// { items: [{ key, ttlMs, tags }, …], nextCursor: 'user:1' | null }
+
+const next = cache.query({ prefix: 'user:', limit: 20, cursor: page.nextCursor! });
+```
+
+`query()` is **metadata-only by default**. `ttlRange: { min?, max? }` filters on remaining
+TTL (not the write stamp); `keys: [...]` is an allow-list; `queryKeys()` returns just keys
+and `count()` counts matches. `limit` is required. Cursors are opaque last-key anchors in
+ascending key order: they survive deletion of the anchor key, and dropping the cursor
+restarts at page one. Without `indexes: true`, `query()` throws a setup error — an explicit
+`fullScan: true` with no other constraints (and, optionally, a `where` post-filter) is the
+only O(n) path.
+
+`includeValues: true` returns the cache's **live by-reference values** and is legal only
+with both `maxEntries` and `maxValueBytes` caps. It is meant for code that needs the actual
+objects, not for display — UI consumers should read the metadata and summarize values
+themselves, as devtools does. Indexes are off by default: an opted-out cache allocates no
+extra structures and its write path is unchanged.
 
 ### API at a glance
 
@@ -512,6 +545,7 @@ miss, no eviction state, no event.
 |             | `size()` / `capacity()` ⊘                                               | live entries / the normalised bound                                                                                                                                    |
 |             | `stats()` ⊘                                                             | `{ hits, misses, evictions, expirations, invalidations, size, capacity, hitRate }`                                                                                     |
 |             | `keysWithTag(tag)` / `tagsOf(key)` / `hasTag(key, tag)` ⊘               | tag index reads                                                                                                                                                        |
+|             | `query(filter)` ⊘ / `queryKeys(filter)` ⊘ / `count(filter?)` ⊘          | bounded indexed reads (require `createCache({ indexes: true })`) — see [Indexed queries](#indexed-queries)                                                             |
 | **Write**   | `set(key, value, { ttlMs, tags })`                                      | stores (insert or replace)                                                                                                                                             |
 |             | `setMany(entries)`                                                      | batched `set`                                                                                                                                                          |
 |             | `touch(key, { ttlMs })`                                                 | marks used; renews the deadline when `ttlMs` is given                                                                                                                  |
@@ -709,6 +743,34 @@ IndexedDB flushes are serialised across tabs with a Web Lock where available.
 
 With the option omitted, behavior is byte-for-byte the old last-writer-wins model — no
 channel is opened and the hot path is untouched.
+
+## Devtools
+
+`@blaze-cache/devtools` attaches to a cache without changing application code. It is inert
+until you call `attach()`: import registers no listeners, snapshots or timers.
+
+```ts
+import { createCache } from '@blaze-cache/core';
+import { attach, onEvent } from '@blaze-cache/devtools';
+
+const cache = await createCache({ indexes: true });
+const devtools = attach(cache, { label: 'HTTP cache' });
+
+devtools.snapshot(); // versioned stats + bounded, summarized entries
+devtools.events(); // recent events (ring buffer, default 500)
+const off = onEvent((event) => console.log(event.type, event.key));
+
+off();
+devtools.detach(); // restores the core's drop-log state exactly
+```
+
+Snapshots use the [indexed query API](#indexed-queries) for bounded reads, cap entries and
+payload bytes, and mark truncation explicitly. Values go through a cycle-safe summarizer:
+`BlazeRecord` envelopes show `kind`/`v` instead of expanding their payload, and keys
+matching the frozen redaction patterns (`authorization`, `token`, `cookie`, …) show as
+`[redacted]`. `@blaze-cache/core/shared` exposes those patterns and the envelope guard so
+server snapshots and framework bindings can apply the same rules. The in-app React panel
+ships in `@blaze-cache/devtools-react` (0.5.0-beta.2).
 
 ## axios
 
