@@ -156,6 +156,36 @@ tombstones. Remote mutations emit `remote-set` / `remote-delete` / `remote-clear
 a cross-tab Web Lock where available. The option is off by default; without it no channel is
 created and behavior is unchanged.
 
+## Indexed queries
+
+`keys()`/`entries()` walk every live entry. `createCache({ indexes: true })` builds opt-in
+ordered key, expiry and tag indexes for bounded reads:
+
+```ts
+const cache = await createCache({ indexes: true });
+cache.set('user:1', { name: 'Ada' }, { tags: ['user'], ttlMs: 60_000 });
+
+const page = cache.query({ prefix: 'user:', tags: { all: ['user'] }, limit: 20 });
+// items are metadata only: { key, ttlMs, tags }
+const more = cache.query({ prefix: 'user:', limit: 20, cursor: page.nextCursor! });
+cache.queryKeys({ prefix: 'user:', limit: 20 }); // keys only
+cache.count({ prefix: 'user:' }); // number of matches
+```
+
+`ttlRange: { min?, max? }` filters remaining TTL; `keys: [...]` is an allow-list; `limit` is
+required and cursors are last-key anchors in ascending key order that survive deletion of
+the anchor key. `query()` throws without `indexes: true` — an explicit `fullScan: true` with
+no other constraint (and optionally a `where` post-filter) is the only O(n) path.
+`includeValues: true` returns live by-reference values and requires both `maxEntries` and
+`maxValueBytes` caps. Indexes are off by default and add nothing to the hot path.
+
+## The `@blaze-cache/core/shared` subpath
+
+A wasm-free, server-safe subpath holding the redaction patterns (`REDACT_KEY_PATTERNS`,
+`isRedactedKey`), the frozen duck-typed `isBlazeRecord` guard and the
+`<binding>:<feature>` kind helpers. Snapshot bridges and framework bindings import it
+without loading the cache runtime, wasm or IndexedDB.
+
 ## Opt-in storage modes
 
 The default keeps values as by-reference externrefs in the Rust slab (see _Good to know_).
