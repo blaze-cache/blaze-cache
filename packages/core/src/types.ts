@@ -79,7 +79,8 @@ export type CacheChange =
   | { type: 'touch'; key: string }
   | { type: 'delete'; key: string }
   | { type: 'clear' }
-  | { type: 'invalidate'; keys: string[] }
+  /** `tags` is additive (0.5.0): the entries are gone, so `tagsOf(key)` cannot recover them. */
+  | { type: 'invalidate'; keys: string[]; tags: string[] }
   | { type: 'prune'; keys: string[] };
 
 /**
@@ -139,7 +140,11 @@ export interface CacheEventMap<V = any> {
   set: { type: 'set'; key: string };
   delete: { type: 'delete'; key: string };
   clear: { type: 'clear' };
-  invalidate: { type: 'invalidate'; keys: string[] };
+  /**
+   * Tags are included since 0.5.0: listeners run after the entries were removed, so the
+   * original tag list cannot be recovered from `tagsOf(key)` any more.
+   */
+  invalidate: { type: 'invalidate'; keys: string[]; tags: string[] };
   prune: { type: 'prune'; keys: string[] };
   touch: { type: 'touch'; key: string };
   /** The cache reclaimed this entry by itself: capacity pressure picked it. */
@@ -156,7 +161,11 @@ export interface CacheEventMap<V = any> {
   'remote-delete': { type: 'remote-delete'; key: string };
   /** A remote tab cleared its cache. */
   'remote-clear': { type: 'remote-clear' };
-  /** A remote tab invalidated one or more tags. */
+  /**
+   * A remote tab invalidated one or more tags. **Keyless by design:** an unknown or
+   * keyless `remote-invalidate` means "broad revalidate — anything may have changed",
+   * so subscribers must re-read rather than assume a specific set of keys disappeared.
+   */
   'remote-invalidate': { type: 'remote-invalidate' };
   /** A remote tab rotated the persistence generation. */
   'remote-rotate': { type: 'remote-rotate' };
