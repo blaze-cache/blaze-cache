@@ -29,7 +29,7 @@ cache.invalidateTags('user:42'); // removes it, synchronously, and syncs Indexed
 ```
 
 Reads and writes are **synchronous**: the wasm module is instantiated once during
-`create`, so the hot path never allocates a `Promise`.
+`createCache()`, so the hot path never allocates a `Promise`.
 
 ## Contents
 
@@ -94,19 +94,17 @@ Reads and writes are **synchronous**: the wasm module is instantiated once durin
 Install the cache itself, then add only the integrations you use:
 
 ```sh
-npm install @blaze-cache/core          # 0.4.0-beta.2
-npm install @blaze-cache/axios         # 0.4.0-beta.2
-npm install @blaze-cache/fetch         # 0.4.0-beta.2
-npm install @blaze-cache/ky            # 0.4.0-beta.2
-npm install @blaze-cache/ofetch        # 0.4.0-beta.2
-npm install @blaze-cache/react-query   # 0.4.0-beta.2
-npm install @blaze-cache/swr           # 0.4.0-beta.2
+npm install @blaze-cache/core          # stable — 0.4.0
+npm install @blaze-cache/axios         # stable — 0.4.0
+npm install @blaze-cache/fetch         # stable — 0.4.0
+npm install @blaze-cache/ky            # stable — 0.4.0
+npm install @blaze-cache/ofetch        # stable — 0.4.0
+npm install @blaze-cache/react-query   # stable — 0.4.0
+npm install @blaze-cache/swr           # stable — 0.4.0
 ```
 
-`pnpm add …` and `yarn add …` are equivalent. This block documents the
-`0.4.0-beta.2` prerelease: append `@beta` to any command (for example
-`@blaze-cache/core@beta`) to install it, or leave the tag off to install the last
-stable release.
+`pnpm add …` and `yarn add …` are equivalent. These commands install the stable
+0.4.0 line; append `@beta` to any of them to install a prerelease instead.
 
 | Package                    | Expects as a peer dependency                    |
 | -------------------------- | ----------------------------------------------- |
@@ -154,8 +152,8 @@ export const cache = await createCache({
 That is the whole default path: the package fetches the `.wasm` shipped inside itself,
 streams it into `WebAssembly.instantiateStreaming` when the server allows it, and reuses
 one load for every `createCache()` on the page. Top-level `await` is fine in any ESM
-module: the wasm is instantiated during `create`, so every `get`/`set` after it resolves
-is synchronous. Only when the binary lives somewhere else do you say so — pass
+module: the wasm is instantiated during `createCache()`, so every `get`/`set` after it
+resolves is synchronous. Only when the binary lives somewhere else do you say so — pass
 `wasmUrl` (see [Loading the wasm](#loading-the-wasm)):
 
 ```ts
@@ -165,7 +163,7 @@ export const cache = await createCache({
 });
 ```
 
-With `persistence` enabled, `create` hydrates from IndexedDB before it resolves, so data
+With `persistence` enabled, `createCache()` hydrates from IndexedDB before it resolves, so data
 written by the previous session is readable on the very next line. A row that no longer
 matches the record shape — an older package version, another tab, a flaky adapter — is
 skipped individually and reported once, so one bad row costs that row rather than the
@@ -579,7 +577,7 @@ The legacy spellings `flushDelayMs` and `maxRecords` still work as aliases of
 
 Every option is validated when persistence is attached: a non-finite or negative
 `debounceMs`, an `maxEntries` below `1`, an unknown `writeMode` or a `\0` in the
-namespace/generation throws a `RangeError`/`TypeError` from `create` rather than
+namespace/generation throws a `RangeError`/`TypeError` from `createCache()` rather than
 misbehaving later (`maxEntries: 0` would persist _everything_ — `slice(-0)` is the whole
 array, not the empty one).
 
@@ -858,10 +856,10 @@ Same shape, one hook instead of a `fetch` wrapper. Pass `blazeKyHook(cache)` int
 
 ```ts
 import ky from 'ky';
-import { BlazeCache } from '@blaze-cache/core';
+import { createCache } from '@blaze-cache/core';
 import { blazeKyHook, createBlazeKy } from '@blaze-cache/ky';
 
-const cache = await BlazeCache.create({ wasmSource });
+const cache = await createCache({ capacity: 1000 });
 
 // hook style — any ky you already have
 const api = ky.extend({
@@ -914,10 +912,10 @@ the same `Cache` and replayed from it:
 
 ```ts
 import { ofetch } from 'ofetch';
-import { BlazeCache } from '@blaze-cache/core';
+import { createCache } from '@blaze-cache/core';
 import { blazeOfetch, createBlazeOfetch } from '@blaze-cache/ofetch';
 
-const cache = await BlazeCache.create({ wasmSource });
+const cache = await createCache({ capacity: 1000 });
 
 // wrap an existing instance (including ofetch.create() ones)
 const api = blazeOfetch(ofetch.create({ baseURL: 'https://api.example.com/v1' }), cache, {
@@ -1361,8 +1359,9 @@ The published results, methodology, hardware, raw JSON and caveats are in
 The payload matrix (≤64 B → 1 MB, as structured-cloneable objects **and** `Uint8Array`) is the
 important result: payload size barely moves a hot read or a full-featured operation, because
 values are held **by reference** and are never serialised on the hot path. The residual cost is
-the JS→Wasm boundary crossing itself, which is why Stage 2 of the 0.4.0 roadmap is gated on
-these numbers rather than assumed. The honest claim is narrow: blaze replaces a stack of
+the JS→Wasm boundary crossing itself — Stage 2 of the 0.4.0 roadmap put that cost to the test
+and neither opt-in mode beat the default on these workloads, so by-reference values remain the
+default. The honest claim is narrow: blaze replaces a stack of
 application code at roughly the same cost (faster on Node reads, about even in the browser),
 and pays a clear write-path premium against native LRU libraries whose TTL is built in.
 Numbers move with the machine — read the results page before quoting any figure.
