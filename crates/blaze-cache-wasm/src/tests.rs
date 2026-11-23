@@ -62,6 +62,62 @@ fn round_trips_values_and_presence() {
 }
 
 #[wasm_bindgen_test]
+fn queries_are_opt_in_and_cross_the_boundary_as_bounded_metadata() {
+    let mut cache = BlazeCache::new(8.0);
+    cache.set("b", JsValue::from_f64(2.0), None, vec![]);
+    assert!(
+        cache
+            .query_keys(
+                None,
+                vec![],
+                vec![],
+                vec![],
+                None,
+                None,
+                None,
+                10,
+                None,
+                false
+            )
+            .is_err(),
+        "query without indexes must throw a setup error"
+    );
+
+    cache.enable_indexes();
+    assert!(cache.indexes_enabled());
+    cache.set("a", JsValue::from_f64(1.0), None, vec!["red".to_owned()]);
+
+    let result = cache
+        .query_keys(
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            1,
+            None,
+            true,
+        )
+        .expect("query must serialise");
+    let rows = Array::from(&field(&result, "rows"));
+    assert_eq!(rows.length(), 1, "limit is enforced on the wasm side too");
+    let row = rows.get(0);
+    assert_eq!(field(&row, "key").as_string().as_deref(), Some("a"));
+    assert_eq!(number(&result, "total"), 2.0);
+
+    assert_eq!(
+        cache
+            .query_count(None, vec![], vec![], vec![], None, None, None)
+            .expect("count must work once indexes are on"),
+        2
+    );
+    let ids = cache.tag_ids(vec!["red".to_owned(), "missing".to_owned()]);
+    assert_ne!(ids[0], ids[1], "unknown tags must not alias a real id");
+}
+
+#[wasm_bindgen_test]
 fn stats_cross_the_boundary_as_a_plain_object() {
     let mut cache = BlazeCache::new(4.0);
 
