@@ -41,7 +41,7 @@ cache.invalidateTags('user:42'); // removes it, synchronously, and syncs Indexed
 cache.stats(); // { hits, misses, evictions, expirations, … }
 ```
 
-`create` instantiates the wasm module once, so everything after it is **synchronous** —
+`createCache()` instantiates the wasm module once, so everything after it is **synchronous** —
 `get`/`set` never allocate a `Promise`.
 
 ## Events
@@ -233,7 +233,7 @@ same implementation as before.
   poison row cannot block every later flush, and any successful pass resets the count.
   Options — `namespace`, `debounceMs`, `maxEntries`, `restoreExpired`, `writeMode`,
   `onError`, `onActivity`, `generation` — are validated when persistence is attached and
-  throw from `create` rather than misbehave later (`flushDelayMs`/`maxRecords` remain as
+  throw from `createCache()` rather than misbehave later (`flushDelayMs`/`maxRecords` remain as
   aliases). `cache.persistence` is the control surface: `flush()` writes now, `clear()`
   empties storage without touching memory, `hydrate()` reloads storage into memory,
   `stats()` reports counters, and `rotate(generation)` switches sessions — dropping the

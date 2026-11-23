@@ -206,8 +206,8 @@ The offline suite runs against the built package with a stubbed network — dete
 offline — and executes **almost every test twice**, once on ky v1 and once on ky v2 (installed
 under an npm alias), because the two majors take their hooks in completely different
 shapes. The exceptions run once each — `createBlazeKy` (bound to whatever `ky` resolves
-to in the consumer's app) and the pure `parseCacheControl` checks — so 28 test cases run
-twice and four once: 60 tests in all.
+to in the consumer's app) and the pure `parseCacheControl` checks — so most cases run
+twice, once on each major.
 
 The live suite (4 tests) runs against `api.github.com` and a real PNG from
 `raw.githubusercontent.com`, proving the server's own `Cache-Control`/`Vary` headers are
