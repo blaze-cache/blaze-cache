@@ -43,7 +43,8 @@ handle.detach(); // restores the core's drop-log state exactly
   `@blaze-cache/core/shared` (`authorization`, `token`, `cookie`, …) render as `[redacted]`.
   `valueMode: 'full'` is an explicit opt-in and still returns a clone, not the live object.
 - **Bounded reads:** snapshots use the indexed `query()` API with `maxEntries`/
-  `maxValueBytes` caps and explicit truncation markers.
+  `maxValueBytes` caps and explicit truncation markers, falling back to a bounded full
+  scan on caches created without `indexes: true`.
 
 ## API
 
