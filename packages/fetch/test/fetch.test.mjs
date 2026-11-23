@@ -177,7 +177,9 @@ describe('caching', () => {
   it('stores responses for ttlMs and refetches once they expire', async () => {
     const cache = await makeCache();
     const { net, calls } = stubNetwork((url) => ({ body: { url } }));
-    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 30 });
+    // A short but not razor-thin window: the assertions after the refetch must finish
+    // before it expires again, even when the suites run concurrently on a busy runner.
+    const fetch = createTestFetch(cache, { fetch: net, ttlMs: 200 });
 
     await fetch('/ttl');
     await fetch('/ttl');
@@ -185,9 +187,9 @@ describe('caching', () => {
 
     const before = onlyRecord(cache).record;
     assert.deepEqual(storedJson(before), { url: '/ttl' });
-    assert.ok(freshFor(before) <= 30, `stored for ttlMs, got ${freshFor(before)}ms`);
+    assert.ok(freshFor(before) <= 200, `stored for ttlMs, got ${freshFor(before)}ms`);
 
-    await delay(80);
+    await delay(300);
     await fetch('/ttl');
     assert.equal(calls.length, 2, 'expired entries fall through to the network');
 
