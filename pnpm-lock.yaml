@@ -354,6 +354,16 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/devtools:
+    dependencies:
+      '@blaze-cache/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   packages/fetch:
     dependencies:
       '@blaze-cache/core':
