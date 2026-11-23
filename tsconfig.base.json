@@ -26,6 +26,7 @@
       "@blaze-cache/core": ["./packages/core/src/index.ts"],
       "@blaze-cache/core/shared": ["./packages/core/src/shared.ts"],
       "@blaze-cache/core/*": ["./packages/core/src/*"],
+      "@blaze-cache/devtools": ["./packages/devtools/src/index.ts"],
       "@blaze-cache/axios": ["./packages/axios/src/index.ts"],
       "@blaze-cache/fetch": ["./packages/fetch/src/index.ts"],
       "@blaze-cache/ky": ["./packages/ky/src/index.ts"],

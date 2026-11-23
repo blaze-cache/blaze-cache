@@ -1,0 +1,47 @@
+{
+  "name": "@blaze-cache/devtools",
+  "version": "0.4.0",
+  "description": "Zero-cost-by-default observability for Blaze Cache: registry, versioned snapshot protocol, safe value summaries and a live event feed",
+  "keywords": [
+    "blaze-cache",
+    "devtools",
+    "debugging",
+    "observability",
+    "cache"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blaze-cache/blaze-cache.git",
+    "directory": "packages/devtools"
+  },
+  "homepage": "https://blaze-cache.github.io/docs/",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test",
+    "test:live": "pnpm run build && node --test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@blaze-cache/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
