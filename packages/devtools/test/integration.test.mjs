@@ -11,6 +11,22 @@ const wasmBytes = await readFile(
 );
 
 describe('integration with @blaze-cache/core', () => {
+  it('snapshots a real cache that was created without indexes', async () => {
+    dispose();
+    const cache = await createCache({ wasm: wasmBytes, persistence: false });
+    cache.set('user:1', { name: 'Ada' });
+    const handle = attach(cache);
+    try {
+      const snapshot = handle.snapshot();
+      assert.equal(snapshot.kind, 'snapshot');
+      assert.equal(snapshot.payload.entries.length, 1);
+      assert.equal(snapshot.payload.entries[0].key, 'user:1');
+    } finally {
+      handle.detach();
+      await cache.dispose();
+    }
+  });
+
   it('reads a bounded snapshot through query() and follows real events', async () => {
     dispose();
     const cache = await createCache({ wasm: wasmBytes, indexes: true, capacity: 8 });

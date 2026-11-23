@@ -29,10 +29,57 @@ function summaryBytes(summary: unknown): number {
   }
 }
 
+type SnapshotRow = { key: string; ttlMs: number | null; tags: string[] };
+
+/**
+ * Reads at most `maxEntries` rows. `query()` exists on every `BlazeCache`, but throws when
+ * the cache was created without `indexes: true` — method presence is *not* an index check.
+ * Prefer the indexed read, then the explicit bounded full scan, then a plain `entries()`
+ * slice for cache-like objects that implement no query at all.
+ */
+function readRows(
+  cache: DevtoolsCacheLike,
+  maxEntries: number,
+): {
+  rows: SnapshotRow[];
+  totalEntries: number | undefined;
+} {
+  const fromEntries = () => {
+    const all = cache.entries();
+    return {
+      rows: all.slice(0, maxEntries).map((entry) => ({
+        key: entry.key,
+        ttlMs: entry.ttlMs,
+        tags: entry.tags,
+      })),
+      totalEntries: all.length,
+    };
+  };
+  const fromPage = (page: { items: SnapshotRow[]; total?: number }) => ({
+    rows: page.items.map((item) => ({ key: item.key, ttlMs: item.ttlMs, tags: item.tags })),
+    totalEntries: page.total,
+  });
+
+  if (typeof cache.query !== 'function') return fromEntries();
+  try {
+    return fromPage(cache.query({ limit: maxEntries, withTotal: true }));
+  } catch {
+    // `query()` is always defined; the setup error means indexes are off.
+  }
+  try {
+    // Full scan is bounded by `limit` and runs only on this on-demand path. `size()`
+    // supplies the total without asking the scan to materialise every match.
+    const page = cache.query({ limit: maxEntries, fullScan: true });
+    return { ...fromPage(page), totalEntries: cache.size() };
+  } catch {
+    return fromEntries();
+  }
+}
+
 /**
  * Builds a versioned snapshot message. Uses the cache's bounded `query()` when available
- * (the 0.5.0 query track), so the devtools panel never builds a 100k-row array; a cache
- * without indexes falls back to a bounded `entries()` slice.
+ * (the 0.5.0 query track), so the devtools panel never builds a 100k-row array; caches
+ * without indexes use a bounded full scan instead.
  */
 export function buildSnapshot(
   cache: DevtoolsCacheLike,
@@ -43,25 +90,7 @@ export function buildSnapshot(
   const maxValueBytes = Math.max(1, Math.floor(options.maxValueBytes ?? 64 * 1024));
   const mode = options.valueMode ?? context.valueMode ?? 'summary';
 
-  let rows: Array<{ key: string; ttlMs: number | null; tags: string[] }>;
-  let totalEntries: number | undefined;
-  if (typeof cache.query === 'function') {
-    const page = cache.query({ limit: maxEntries, withTotal: true });
-    rows = page.items.map((item) => ({
-      key: item.key,
-      ttlMs: item.ttlMs,
-      tags: item.tags,
-    }));
-    totalEntries = page.total;
-  } else {
-    const all = cache.entries();
-    rows = all.slice(0, maxEntries).map((entry) => ({
-      key: entry.key,
-      ttlMs: entry.ttlMs,
-      tags: entry.tags,
-    }));
-    totalEntries = all.length;
-  }
+  const { rows, totalEntries } = readRows(cache, maxEntries);
 
   const entries: SnapshotEntry[] = [];
   let bytes = 0;
