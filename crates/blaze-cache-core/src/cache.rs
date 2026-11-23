@@ -11,6 +11,9 @@ use crate::DEFAULT_CAPACITY;
 use crate::entry::EntryOptions;
 use crate::eviction::Sieve;
 use crate::node::Node;
+use crate::query::{
+    QueryError, QueryFilter, QueryIndex, QueryKeysResult, QueryRow, StringQueryIndex,
+};
 use crate::stats::CacheStats;
 use crate::tags::TagIndex;
 
@@ -139,6 +142,9 @@ pub struct Cache<K, V> {
     drops: VecDeque<Dropped<K, V>>,
     /// Whether `drops` is being collected. Off by default.
     track_drops: bool,
+    /// Opt-in ordered indexes for prefix/tag/TTL queries. `None` by default: an opted-out
+    /// cache allocates nothing extra and every mutation pays a single `Option` branch.
+    query_index: Option<Box<dyn QueryIndex<K>>>,
 }
 
 impl<K, V> Cache<K, V>
@@ -167,6 +173,7 @@ where
             ttl_count: 0,
             drops: VecDeque::new(),
             track_drops: false,
+            query_index: None,
         }
     }
 
@@ -712,6 +719,10 @@ where
                 let old_tag_ids =
                     std::mem::take(&mut self.nodes[idx].as_mut().expect("live slot").tags);
                 self.shift_ttl(old_expires_at, expires_at);
+                if let Some(index) = &mut self.query_index {
+                    let key = &self.nodes[idx].as_ref().expect("live slot").key;
+                    index.on_touch(key, old_expires_at, expires_at);
+                }
                 for &id in &old_tag_ids {
                     if !new_tag_ids.contains(&id) {
                         self.tags.detach(id, idx);
@@ -780,6 +791,10 @@ where
                 }
                 self.queue.push_back(&mut self.nodes, idx);
                 self.shift_ttl(None, expires_at);
+                if let Some(index) = &mut self.query_index {
+                    let key = &self.nodes[idx].as_ref().expect("live slot").key;
+                    index.on_insert(key, expires_at);
+                }
                 (None, id)
             }
         };
@@ -826,6 +841,10 @@ where
                 std::mem::replace(&mut n.expires_at, new)
             };
             self.shift_ttl(old, new);
+            if let Some(index) = &mut self.query_index {
+                let key = &self.nodes[idx].as_ref().expect("live slot").key;
+                index.on_touch(key, old, new);
+            }
         }
         {
             let n = self.nodes[idx].as_mut().expect("live slot");
@@ -907,6 +926,9 @@ where
         }
         self.queue = Sieve::new();
         self.tags.clear();
+        if let Some(index) = &mut self.query_index {
+            index.clear();
+        }
         // `release()` never runs for these nodes, so reset the fast-path counter here.
         self.ttl_count = 0;
         self.stats.invalidations += dropped;
@@ -956,6 +978,9 @@ where
         let node = self.nodes[idx].take().expect("release of a free slot");
         // Single point where an entry dies: keep the fast-path counter in step.
         self.shift_ttl(node.expires_at, None);
+        if let Some(index) = &mut self.query_index {
+            index.on_remove(&node.key, node.expires_at);
+        }
         if indexed {
             self.index.remove(&node.key);
         }
@@ -1008,6 +1033,164 @@ where
     }
 }
 
+/// Opt-in query surface. Limited to string keys — the host the wasm binding uses — so the
+/// generic cache keeps its original bounds and an opted-out cache keeps its exact layout.
+impl<V> Cache<String, V> {
+    /// Builds the ordered key, expiry and tag-backed query indexes and backfills them from
+    /// any entries already present. Idempotent.
+    pub fn enable_indexes(&mut self) {
+        if self.query_index.is_some() {
+            return;
+        }
+        let mut index = StringQueryIndex::default();
+        for node in self.nodes.iter().flatten() {
+            index.on_insert(&node.key, node.expires_at);
+        }
+        self.query_index = Some(Box::new(index));
+    }
+
+    /// `true` once [`enable_indexes`](Self::enable_indexes) has been called.
+    #[must_use]
+    pub fn indexes_enabled(&self) -> bool {
+        self.query_index.is_some()
+    }
+
+    /// Number of keys registered in the ordered index, or `None` when indexes are off.
+    /// Used by invariant tests and hosts that want a cheap index size.
+    #[must_use]
+    pub fn indexed_key_count(&self) -> Option<usize> {
+        self.query_index.as_ref().map(|index| index.len())
+    }
+
+    /// All indexed keys ordered by deadline (soonest first), permanent keys last.
+    /// The TTL-range filter uses the same index through `deadline_of`; this accessor
+    /// exposes the ordering itself to Rust callers.
+    #[must_use]
+    pub fn ttl_ordered_keys(&self) -> Vec<String> {
+        self.query_index
+            .as_ref()
+            .map(|index| index.ttl_ordered_keys().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// Resolves tag names to interned ids. Unknown tags map to `u32::MAX` (never a real
+    /// id) so a host that caches ids can detect them without consulting the index again.
+    #[must_use]
+    pub fn tag_ids(&self, names: &[String]) -> Vec<u32> {
+        names
+            .iter()
+            .map(|name| self.tags.resolve(name).unwrap_or(u32::MAX))
+            .collect()
+    }
+
+    /// Runs a bounded query, returning metadata only. Callers opt in to values separately
+    /// (and cap them); this method never hands out a live value reference.
+    pub fn query_keys(&self, filter: &QueryFilter<'_>) -> Result<QueryKeysResult, QueryError> {
+        let index = self
+            .query_index
+            .as_ref()
+            .ok_or(QueryError::IndexesDisabled)?;
+        if filter.limit == 0 {
+            return Err(QueryError::InvalidLimit);
+        }
+        let allow = filter
+            .keys
+            .map(|keys| keys.iter().map(String::as_str).collect::<HashSet<&str>>());
+        let now = Instant::now();
+        let mut rows = Vec::new();
+        let mut total = 0usize;
+
+        for key in index.ordered_keys() {
+            if let Some(cursor) = filter.cursor {
+                if key <= cursor {
+                    continue;
+                }
+            }
+            if filter.prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
+                continue;
+            }
+            if allow.as_ref().is_some_and(|set| !set.contains(key)) {
+                continue;
+            }
+            // `peek` is observational: no hit/miss stats, no visited bit, no reclamation.
+            // Expired-but-unreclaimed keys are skipped here just like `keys()` skips them.
+            if self.peek(key).is_none() {
+                continue;
+            }
+            let ttl_ms = index
+                .deadline_of(key)
+                .map(|at| at.saturating_duration_since(now).as_secs_f64() * 1000.0);
+            if let Some(min) = filter.ttl_min_ms {
+                // A permanent key has an infinite remaining TTL: it satisfies every lower bound.
+                if ttl_ms.is_some_and(|remaining| remaining < min) {
+                    continue;
+                }
+            }
+            if let Some(max) = filter.ttl_max_ms {
+                // …but no upper bound, so an upper-bounded query excludes it.
+                if ttl_ms.is_none_or(|remaining| remaining > max) {
+                    continue;
+                }
+            }
+            let tags = self.tags_of(key).unwrap_or_default();
+            if !filter.tags_any.is_empty() && !filter.tags_any.iter().any(|t| tags.contains(t)) {
+                continue;
+            }
+            if !filter.tags_all.is_empty() && !filter.tags_all.iter().all(|t| tags.contains(t)) {
+                continue;
+            }
+            if !filter.tags_none.is_empty() && filter.tags_none.iter().any(|t| tags.contains(t)) {
+                continue;
+            }
+
+            if filter.with_total {
+                total += 1;
+            }
+            if rows.len() <= filter.limit {
+                rows.push(QueryRow {
+                    key: key.to_owned(),
+                    ttl_ms,
+                    tags,
+                });
+            }
+        }
+
+        let more = rows.len() > filter.limit;
+        if more {
+            rows.truncate(filter.limit);
+        }
+        let next_cursor = if more {
+            rows.last().map(|row| row.key.clone())
+        } else {
+            None
+        };
+        Ok(QueryKeysResult {
+            rows,
+            next_cursor,
+            total,
+        })
+    }
+
+    /// Number of matches, ignoring paging. A setup guard, not a hot-path API.
+    pub fn query_count(&self, filter: &QueryFilter<'_>) -> Result<usize, QueryError> {
+        let mut counted = QueryFilter {
+            with_total: true,
+            limit: usize::MAX,
+            ..QueryFilter::default()
+        };
+        counted.prefix = filter.prefix;
+        counted.tags_any = filter.tags_any;
+        counted.tags_all = filter.tags_all;
+        counted.tags_none = filter.tags_none;
+        counted.ttl_min_ms = filter.ttl_min_ms;
+        counted.ttl_max_ms = filter.ttl_max_ms;
+        counted.keys = filter.keys;
+        Ok(self.query_keys(&counted)?.total)
+    }
+}
+
+#[cfg(test)]
+mod query_tests;
 #[cfg(test)]
 mod stress;
 #[cfg(test)]

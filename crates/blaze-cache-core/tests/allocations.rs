@@ -7,7 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use blaze_cache_core::{Cache, EntryOptions};
+use blaze_cache_core::{Cache, EntryOptions, QueryFilter};
 
 thread_local! {
     static COUNT: Cell<usize> = const { Cell::new(0) };
@@ -118,6 +118,49 @@ fn by_id_lookups_do_not_allocate() {
     let (alive, allocations) = count(|| cache.get_by_id(id));
     assert!(alive);
     assert_eq!(allocations, 0, "a hot by-id hit must not allocate");
+}
+
+#[test]
+fn indexes_off_keep_the_hot_path_allocation_free() {
+    let mut cache = Cache::<String, u32>::new(8);
+    cache.insert("k".into(), 1_u32);
+    assert!(!cache.indexes_enabled());
+    let options = EntryOptions::new();
+
+    let (_, allocations) = count(|| {
+        cache.insert_borrowed("k", 2_u32, options.clone());
+        let _ = cache.get("k");
+        let _ = cache.peek("k");
+        let _ = cache.keys().count();
+    });
+    assert_eq!(
+        allocations, 0,
+        "an opted-out cache must not allocate for indexes"
+    );
+}
+
+#[test]
+fn indexes_on_backfill_and_return_only_the_requested_page() {
+    let mut cache = Cache::<String, u32>::new(8);
+    for i in 0..8_u32 {
+        cache.insert(i.to_string(), i);
+    }
+    cache.enable_indexes();
+    assert_eq!(cache.indexed_key_count(), Some(8));
+
+    let filter = QueryFilter {
+        limit: 2,
+        ..QueryFilter::default()
+    };
+    let page = cache
+        .query_keys(&filter)
+        .expect("indexed query should work");
+    assert_eq!(
+        page.rows.len(),
+        2,
+        "a page never materialises the whole keyspace"
+    );
+    assert_eq!(page.next_cursor.as_deref(), Some("1"));
 }
 
 #[test]
