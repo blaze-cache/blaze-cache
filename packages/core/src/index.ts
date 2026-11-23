@@ -52,6 +52,18 @@ export type {
 export { cacheKeyHash, safeStableStringify, stableStringify } from './utils.js';
 
 export type {
+  EntrySummary,
+  QueryKeysResult,
+  QueryOptions,
+  QueryResult,
+  QueryTagFilter,
+  QueryTtlRange,
+  QueryValueRow,
+  QueryableCache,
+} from './query.js';
+export { estimateValueBytes, hasIndexedConstraint } from './query.js';
+
+export type {
   BlazeCacheLike,
   CacheChange,
   CacheEntry,

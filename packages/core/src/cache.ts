@@ -15,6 +15,14 @@ import type {
   SetOptions,
   TouchOptions,
 } from './types.js';
+import type {
+  EntrySummary,
+  QueryKeysResult as QueryKeysPage,
+  QueryOptions,
+  QueryResult,
+  QueryValueRow,
+} from './query.js';
+import { assertQueryOptions, estimateValueBytes } from './query.js';
 import { CacheEventBus } from './events.js';
 import { MultiTabSync } from './multitab.js';
 import type { MultiTabOptions, Version } from './multitab.js';
@@ -125,6 +133,13 @@ export interface BlazeCacheOptions extends WasmLoadOptions {
    * moves from the slab to JS. Feature is off unless you ask for it.
    */
   storage?: 'wasm' | 'js';
+  /**
+   * Opt in to the ordered key/tag/expiry indexes used by {@link BlazeCache.query}.
+   * Off by default: an opted-out cache allocates no index and its write path is unchanged.
+   * Without this, `query()` throws a setup error (an explicit `fullScan` is required to
+   * read through the whole cache instead).
+   */
+  indexes?: boolean;
 }
 
 /** The options {@link createCache} takes — an alias for {@link BlazeCacheOptions}. */
@@ -310,11 +325,15 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
    * no-ops instead of forcing callers to branch on an option they may not remember.
    */
   readonly #control: PersistenceControl;
+  /** Whether the opt-in query indexes were built. Never changes during the cache's life. */
+  readonly #indexes: boolean;
 
-  private constructor(wasm: WasmCache, storage: 'wasm' | 'js' = 'wasm') {
+  private constructor(wasm: WasmCache, storage: 'wasm' | 'js' = 'wasm', indexes = false) {
     this.#wasm = wasm;
     this.#raw = keyScratch.enabled;
     this.#storage = storage;
+    this.#indexes = indexes;
+    if (indexes) this.#wasm.enableIndexes();
     // JS-authoritative mode needs the drop log permanently on: self-initiated evictions and
     // expirations are how JS learns which ids to delete from its value Map.
     if (storage === 'js') {
@@ -358,7 +377,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     if (storage !== 'wasm' && storage !== 'js') {
       throw new TypeError(`[blaze-cache] storage must be "wasm" or "js", got ${String(storage)}.`);
     }
-    const cache = new BlazeCache<V>(new WasmCache(options.capacity ?? DEFAULT_CAPACITY), storage);
+    const cache = new BlazeCache<V>(
+      new WasmCache(options.capacity ?? DEFAULT_CAPACITY),
+      storage,
+      options.indexes === true,
+    );
     await cache.#setupPersistence(options.persistence);
     cache.#setupMultiTab(options.multiTab);
     return cache;
@@ -566,6 +589,147 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     const base = this.#wasm.stats() as Omit<CacheStats, 'hitRate'>;
     const total = base.hits + base.misses;
     return { ...base, hitRate: total === 0 ? 0 : base.hits / total };
+  }
+
+  // ------------------------------------------------------------------ queries
+
+  /**
+   * Bounded, indexed query. Returns metadata only unless `includeValues` is set (which
+   * requires both caps and hands back live by-reference values).
+   *
+   * Throws a setup error without `createCache({ indexes: true })`; an explicit
+   * `fullScan: true` with no other constraints is the only O(n) path.
+   */
+  query<V2 = V>(filter: QueryOptions): QueryResult<V2> {
+    assertQueryOptions(filter);
+    if (!this.#indexes && !filter.fullScan) {
+      throw new Error(
+        '[blaze-cache] query() requires createCache({ indexes: true }) (or an explicit fullScan: true).',
+      );
+    }
+
+    let rows: EntrySummary[];
+    let nextCursor: string | null;
+    let total: number | undefined;
+    if (filter.fullScan) {
+      const limit = filter.withTotal ? Number.MAX_SAFE_INTEGER : filter.limit;
+      const scanned = this.#scanSummaries(filter, limit);
+      total = filter.withTotal ? scanned.length : undefined;
+      rows = scanned.slice(0, filter.limit);
+      nextCursor = scanned.length > filter.limit ? (rows[rows.length - 1]?.key ?? null) : null;
+    } else {
+      const page = this.#wasm.queryKeys(
+        filter.prefix ?? null,
+        [...(filter.tags?.any ?? [])],
+        [...(filter.tags?.all ?? [])],
+        [...(filter.tags?.none ?? [])],
+        filter.ttlRange?.min ?? null,
+        filter.ttlRange?.max ?? null,
+        filter.keys ? [...filter.keys] : null,
+        filter.limit,
+        filter.cursor ?? null,
+        filter.withTotal === true,
+      ) as { rows: EntrySummary[]; nextCursor: string | null; total: number };
+      // serde-wasm-bindgen maps Rust `None` to `undefined`; the public API uses `null`.
+      rows = page.rows.map((row) => ({ ...row, ttlMs: row.ttlMs ?? null }));
+      nextCursor = page.nextCursor ?? null;
+      total = filter.withTotal ? page.total : undefined;
+    }
+
+    if (!filter.includeValues) return { items: rows, nextCursor, total };
+
+    // Include live values, capped by both row count and estimated bytes. `peek` is used
+    // instead of `get` so a devtools read never moves SIEVE state or the hit rate.
+    const items: QueryValueRow<V2>[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      if (items.length >= (filter.maxEntries as number)) break;
+      const value = this.peek(row.key) as V2 | undefined;
+      if (value === undefined) continue;
+      const size = estimateValueBytes(value);
+      if (bytes + size > (filter.maxValueBytes as number)) break;
+      bytes += size;
+      items.push({ ...row, value, size });
+    }
+    if (items.length < rows.length && items.length > 0) {
+      nextCursor = items[items.length - 1]!.key;
+    }
+    return { items, nextCursor, total };
+  }
+
+  /** Key-only form of {@link BlazeCache.query}, with the same cursor semantics. */
+  queryKeys(filter: QueryOptions): QueryKeysPage {
+    assertQueryOptions({ ...filter, includeValues: false });
+    if (!this.#indexes && !filter.fullScan) {
+      throw new Error(
+        '[blaze-cache] queryKeys() requires createCache({ indexes: true }) (or an explicit fullScan: true).',
+      );
+    }
+    if (filter.fullScan) {
+      const limit = filter.withTotal ? Number.MAX_SAFE_INTEGER : filter.limit;
+      const scanned = this.#scanSummaries(filter, limit);
+      return {
+        keys: scanned.slice(0, filter.limit).map((row) => row.key),
+        nextCursor: scanned.length > filter.limit ? (scanned[filter.limit - 1]?.key ?? null) : null,
+        ...(filter.withTotal ? { total: scanned.length } : {}),
+      };
+    }
+    const page = this.#wasm.queryKeys(
+      filter.prefix ?? null,
+      [...(filter.tags?.any ?? [])],
+      [...(filter.tags?.all ?? [])],
+      [...(filter.tags?.none ?? [])],
+      filter.ttlRange?.min ?? null,
+      filter.ttlRange?.max ?? null,
+      filter.keys ? [...filter.keys] : null,
+      filter.limit,
+      filter.cursor ?? null,
+      filter.withTotal === true,
+    ) as { rows: EntrySummary[]; nextCursor: string | null; total: number };
+    return {
+      keys: page.rows.map((row) => row.key),
+      nextCursor: page.nextCursor ?? null,
+      ...(filter.withTotal ? { total: page.total } : {}),
+    };
+  }
+
+  /** Number of matching entries. Requires `indexes: true`; never an implicit full scan. */
+  count(filter: Omit<QueryOptions, 'limit' | 'cursor'> = {}): number {
+    if (filter.where) {
+      throw new TypeError('[blaze-cache] count() does not support `where`.');
+    }
+    if (!this.#indexes) {
+      throw new Error('[blaze-cache] count() requires createCache({ indexes: true }).');
+    }
+    return this.#wasm.queryCount(
+      filter.prefix ?? null,
+      [...(filter.tags?.any ?? [])],
+      [...(filter.tags?.all ?? [])],
+      [...(filter.tags?.none ?? [])],
+      filter.ttlRange?.min ?? null,
+      filter.ttlRange?.max ?? null,
+      filter.keys ? [...filter.keys] : null,
+    ) as number;
+  }
+
+  /** Full-scan building block used only when the caller opts in explicitly. */
+  #scanSummaries(filter: QueryOptions, limit: number): EntrySummary[] {
+    const keys = this.keys().slice().sort();
+    const summaries: EntrySummary[] = [];
+    for (const key of keys) {
+      const entry = this.entry(key);
+      if (!entry) continue;
+      const summary: EntrySummary = {
+        key,
+        ttlMs: entry.ttlMs,
+        tags: entry.tags,
+        size: estimateValueBytes(entry.value),
+      };
+      if (filter.where && !filter.where(summary)) continue;
+      summaries.push(summary);
+      if (summaries.length > limit) break;
+    }
+    return summaries;
   }
 
   // ----------------------------------------------------------------- writes
@@ -832,7 +996,9 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     const removed = this.#wasm.invalidateTags(tags);
     if (this.#storage === 'js') this.#forgetKeys(removed);
     if (removed.length > 0 && this.#hasChangeConsumers) {
-      this.#notify({ type: 'invalidate', keys: removed });
+      // `tags` is additive (0.5.0): listeners see the original names even though the
+      // entries — and therefore `tagsOf(key)` — are already gone.
+      this.#notify({ type: 'invalidate', keys: removed, tags });
       this.#multiTab?.publishInvalidateTags(tags);
       this.#multiTab?.markEpoch();
     }
@@ -1207,7 +1373,7 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
           const removed = self.#wasm.invalidateTags(tags);
           self.#forgetKeys(removed);
           if (removed.length > 0 && self.#hasChangeConsumers) {
-            self.#notify({ type: 'invalidate', keys: removed }, false);
+            self.#notify({ type: 'invalidate', keys: removed, tags }, false);
           }
         },
         applyRotate(generation) {
@@ -1906,9 +2072,11 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
           this.#versions.clear();
           break;
         case 'invalidate':
+          // The change now carries `tags` too, but `invalidateTags()` already published the
+          // original list; publishing again would send a duplicate message to other tabs.
+          break;
         case 'prune':
-          // Invalidation publishes the original tag list from `invalidateTags()` itself (the
-          // change only carries keys). `prune` is a local reclamation — no peer needs it.
+          // A local reclamation — no peer needs it.
           break;
       }
     }
