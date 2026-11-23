@@ -37,6 +37,10 @@
       "types": "./dist/wasm.d.ts",
       "import": "./dist/wasm.js"
     },
+    "./shared": {
+      "types": "./dist/shared.d.ts",
+      "import": "./dist/shared.js"
+    },
     "./pkg/*": "./pkg/*"
   },
   "files": [
