@@ -2,15 +2,25 @@
 import { TAB_ID } from './protocol.js';
 import type { DevtoolsEvent } from './types.js';
 
+/** A UI feed never needs more than this many events, however large `maxEvents` is. */
+const MAX_CAPACITY = 100_000;
+
 export class EventFeed {
   readonly #capacity: number;
   readonly #clientId: string;
-  readonly #events: DevtoolsEvent[] = [];
+  /** Fixed ring: `head` is the oldest slot, `size` is the live count. */
+  readonly #buffer: Array<DevtoolsEvent | undefined>;
+  #head = 0;
+  #size = 0;
   readonly #listeners = new Set<(event: DevtoolsEvent) => void>();
 
   constructor(clientId: string, capacity = 500) {
     this.#clientId = clientId;
-    this.#capacity = Math.max(1, Math.floor(capacity));
+    // A fixed allocation replaces `Array.shift()`: appending to a saturated feed is O(1)
+    // instead of moving every stored event down by one slot. Hostile sizes cannot throw.
+    const requested = Number.isFinite(capacity) ? Math.floor(capacity) : 500;
+    this.#capacity = Math.max(1, Math.min(requested, MAX_CAPACITY));
+    this.#buffer = new Array<DevtoolsEvent | undefined>(this.#capacity);
   }
 
   /** Appends one event, evicting the oldest when full. Never stores a live value. */
@@ -22,8 +32,9 @@ export class EventFeed {
       tabId: TAB_ID,
       clientId: this.#clientId,
     };
-    this.#events.push(event);
-    if (this.#events.length > this.#capacity) this.#events.shift();
+    this.#buffer[(this.#head + this.#size) % this.#capacity] = event;
+    if (this.#size === this.#capacity) this.#head = (this.#head + 1) % this.#capacity;
+    else this.#size += 1;
     for (const listener of [...this.#listeners]) {
       if (!this.#listeners.has(listener)) continue;
       try {
@@ -37,7 +48,11 @@ export class EventFeed {
 
   /** Oldest-first copy. */
   events(): readonly DevtoolsEvent[] {
-    return [...this.#events];
+    const out: DevtoolsEvent[] = new Array<DevtoolsEvent>(this.#size);
+    for (let i = 0; i < this.#size; i += 1) {
+      out[i] = this.#buffer[(this.#head + i) % this.#capacity]!;
+    }
+    return out;
   }
 
   onEvent(listener: (event: DevtoolsEvent) => void): () => void {
@@ -48,11 +63,16 @@ export class EventFeed {
   }
 
   get size(): number {
-    return this.#events.length;
+    return this.#size;
   }
 
   clear(): void {
-    this.#events.length = 0;
+    // Drop the event references too: a detached handle must not pin old payloads.
+    for (let i = 0; i < this.#size; i += 1) {
+      this.#buffer[(this.#head + i) % this.#capacity] = undefined;
+    }
+    this.#head = 0;
+    this.#size = 0;
   }
 
   /** Drops all UI subscriptions. Called by `handle.detach()`. */
