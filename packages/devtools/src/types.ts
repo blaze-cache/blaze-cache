@@ -20,6 +20,13 @@ export type DevtoolsValueMode = 'summary' | 'none' | 'full';
  */
 export interface DevtoolsCacheLike {
   on(listener: (event: CacheEvent) => void): () => void;
+  /**
+   * Optional: unsubscribe one listener by identity. Preferred at detach time — the
+   * unsubscribed function `on()` returns closes over the cache's event bus, and the bus
+   * closes over the cache, so holding that closure would pin the cache for as long as the
+   * registry lives. Caches without `off()` fall back to the `on()` unsub (its only handle).
+   */
+  off?(listener: (event: CacheEvent) => void): void;
   stats(): CacheStats;
   size(): number;
   capacity(): number;
