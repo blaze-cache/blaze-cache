@@ -111,7 +111,7 @@ export function buildSnapshot(
       } catch {
         raw = undefined;
       }
-      value = summarize(raw, { valueMode: mode });
+      value = summarize(raw, { valueMode: mode, redactKeys: context.redactKeys });
     }
     const cost = summaryBytes(value);
     if (bytes + cost > maxValueBytes) {
@@ -132,6 +132,23 @@ export function buildSnapshot(
     persistence = cache.persistence?.stats() ?? null;
   } catch {
     // A broken adapter must not take the snapshot down with it.
+  }
+  if (persistence) {
+    // A snapshot exists to be exported, so two fields never leave here as-is: the
+    // generation is a session/account token, and `lastError` can carry request URLs or
+    // driver messages. Redact only what is actually present (a stats double without the
+    // fields keeps them absent). Spread rather than mutate — `stats()` is live state.
+    persistence = {
+      ...persistence,
+      generation:
+        typeof persistence.generation === 'string' && persistence.generation !== ''
+          ? '[redacted]'
+          : persistence.generation,
+      lastError:
+        persistence.lastError === null || persistence.lastError === undefined
+          ? persistence.lastError
+          : '[redacted]',
+    };
   }
 
   return createEnvelope(
