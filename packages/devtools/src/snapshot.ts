@@ -62,7 +62,11 @@ function readRows(
 
   if (typeof cache.query !== 'function') return fromEntries();
   try {
-    return fromPage(cache.query({ limit: maxEntries, withTotal: true }));
+    // `withTotal` would make the indexed query walk *every* match just to build a count
+    // the snapshot cannot use: an unfiltered page has exactly `size()` rows in total.
+    // A cache-like that reports its own total without being asked is still believed.
+    const page = cache.query({ limit: maxEntries });
+    return { ...fromPage(page), totalEntries: page.total ?? cache.size() };
   } catch {
     // `query()` is always defined; the setup error means indexes are off.
   }
