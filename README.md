@@ -516,8 +516,9 @@ TTL (not the write stamp); `keys: [...]` is an allow-list; `queryKeys()` returns
 and `count()` counts matches. `limit` is required. Cursors are opaque last-key anchors in
 ascending key order: they survive deletion of the anchor key, and dropping the cursor
 restarts at page one. Without `indexes: true`, `query()` throws a setup error — an explicit
-`fullScan: true` with no other constraints (and, optionally, a `where` post-filter) is the
-only O(n) path.
+`fullScan: true` is the only O(n) path. It accepts `cursor` (one O(n) pass per page) and an
+optional `where` post-filter, but rejects `prefix`/`tags`/`ttlRange`/`keys`: a full scan
+would silently ignore them.
 
 `includeValues: true` returns the cache's **live by-reference values** and is legal only
 with both `maxEntries` and `maxValueBytes` caps. It is meant for code that needs the actual

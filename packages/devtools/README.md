@@ -40,21 +40,27 @@ handle.detach(); // restores the core's drop-log state exactly
   value is summarized through a bounded, cycle-safe summarizer. `blaze-record` envelopes
   are shown as `kind`/`v`, never expanded.
 - **Redaction by default:** keys matching the frozen patterns from
-  `@blaze-cache/core/shared` (`authorization`, `token`, `cookie`, …) render as `[redacted]`.
-  `valueMode: 'full'` is an explicit opt-in and still returns a clone, not the live object.
+  `@blaze-cache/core/shared` (`authorization`, `token`, `cookie`, …) render as `[redacted]`
+  at every level — top-level entries, nested object properties and Map keys — and the
+  persistence `generation` and `lastError` are redacted in exported snapshots. A broken
+  pattern fails closed (it never disables redaction or throws). `valueMode: 'full'` is an
+  explicit opt-in and still returns a clone, not the live object.
 - **Bounded reads:** snapshots use the indexed `query()` API with `maxEntries`/
   `maxValueBytes` caps and explicit truncation markers, falling back to a bounded full
   scan on caches created without `indexes: true`.
+- **Honest re-attaches:** `attach(cache)` is idempotent only while the options agree;
+  re-attaching a live handle with different options throws instead of silently dropping
+  them. Call `detach()` first to change them.
 
 ## API
 
-| Export                                                          | Purpose                                                       |
-| --------------------------------------------------------------- | ------------------------------------------------------------- |
-| `attach(cache, { label? })`                                     | Registers one handle; returns a `DevtoolsHandle`.             |
-| `detach(handle \| cache)`                                       | Removes handle(s) and their listeners.                        |
-| `list()` / `dispose()`                                          | Inspect live attachments / tear them all down.                |
-| `handle.snapshot(options?)`                                     | Builds a versioned `snapshot` envelope on demand.             |
-| `handle.events()` / `onEvent(listener)`                         | Ring buffer (default 500) and subscriptions.                  |
-| `summarize(value, options?)`                                    | Clone-or-describe any value; never throws.                    |
-| `createEnvelope` / `isDevtoolsEnvelope` / `isSupportedEnvelope` | Versioned protocol (`protocol: 1`).                           |
-| `isBlazeRecord`, `REDACT_KEY_PATTERNS`, …                       | Re-exports of the frozen `@blaze-cache/core/shared` contract. |
+| Export                                                          | Purpose                                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `attach(cache, { label? })`                                     | Registers one handle; returns a `DevtoolsHandle`.                                         |
+| `detach(handle \| cache)`                                       | Removes handle(s) and their listeners.                                                    |
+| `list()` / `dispose()`                                          | Inspect live attachments / tear them all down.                                            |
+| `handle.snapshot(options?)`                                     | Builds a versioned `snapshot` envelope on demand.                                         |
+| `handle.events()` / `onEvent(listener)`                         | Ring buffer (default 500) and subscriptions.                                              |
+| `summarize(value, options?)`                                    | Bounded, cycle-safe summary of any value; hostile values degrade to markers, never throw. |
+| `createEnvelope` / `isDevtoolsEnvelope` / `isSupportedEnvelope` | Versioned protocol (`protocol: 1`).                                                       |
+| `isBlazeRecord`, `REDACT_KEY_PATTERNS`, …                       | Re-exports of the frozen `@blaze-cache/core/shared` contract.                             |
