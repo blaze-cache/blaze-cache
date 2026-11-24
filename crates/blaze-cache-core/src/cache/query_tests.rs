@@ -202,3 +202,103 @@ fn count_reports_all_matches_without_paging() {
     assert_eq!(page.next_cursor.as_deref(), Some("a"));
     assert_eq!(page.total, 0, "total is opt-in to keep queries bounded");
 }
+
+#[test]
+fn a_page_stops_at_the_first_extra_match_and_a_total_walks_all_matches() {
+    let mut cache: Cache<String, u32> = Cache::new(64);
+    for i in 0..16 {
+        cache.insert(format!("k{i:02}"), i);
+    }
+    cache.enable_indexes();
+
+    let page = cache.query_keys(&filter(3)).unwrap();
+    assert_eq!(
+        page.rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
+        vec!["k00", "k01", "k02"]
+    );
+    assert_eq!(page.next_cursor.as_deref(), Some("k02"));
+    assert_eq!(page.total, 0);
+
+    let mut counted = filter(3);
+    counted.with_total = true;
+    let all = cache.query_keys(&counted).unwrap();
+    assert_eq!(all.rows.len(), 3, "a total never widens the returned page");
+    assert_eq!(all.total, 16);
+    assert_eq!(
+        all.next_cursor.as_deref(),
+        Some("k02"),
+        "a total does not hide the fact that a next page exists"
+    );
+}
+
+#[test]
+fn a_small_allow_list_is_sorted_and_the_cursor_seeks_it() {
+    let mut cache: Cache<String, u32> = Cache::new(64);
+    for i in 0..16 {
+        cache.insert(format!("k{i:02}"), i);
+    }
+    cache.enable_indexes();
+
+    let allowed = ["k10".to_owned(), "k03".to_owned(), "k07".to_owned()];
+    let mut f = filter(10);
+    f.keys = Some(&allowed);
+    let keys = |f: &QueryFilter<'_>| -> Vec<String> {
+        cache
+            .query_keys(f)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.key.clone())
+            .collect()
+    };
+    assert_eq!(
+        keys(&f),
+        vec!["k03", "k07", "k10"],
+        "allow-list order is key order"
+    );
+
+    let cursor = "k05".to_owned();
+    f.cursor = Some(&cursor);
+    assert_eq!(keys(&f), vec!["k07", "k10"]);
+    assert_eq!(
+        cache.query_count(&f).unwrap(),
+        3,
+        "a cursor must not narrow a count"
+    );
+}
+
+#[test]
+fn a_prefix_cursor_seeks_the_contiguous_prefix_region() {
+    let mut cache: Cache<String, u32> = Cache::new(64);
+    for i in 0..16 {
+        cache.insert(format!("k{i:02}"), i);
+    }
+    cache.enable_indexes();
+
+    let mut f = filter(10);
+    f.prefix = Some("k0");
+    let keys = |f: &QueryFilter<'_>| -> Vec<String> {
+        cache
+            .query_keys(f)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.key.clone())
+            .collect()
+    };
+    assert_eq!(
+        keys(&f),
+        vec![
+            "k00", "k01", "k02", "k03", "k04", "k05", "k06", "k07", "k08", "k09"
+        ]
+    );
+
+    // A cursor before the prefix region adds nothing the prefix bound does not already
+    // give; one inside it must seek. Both stop at the end of the region ("k10" excluded).
+    let before = "j".to_owned();
+    f.cursor = Some(&before);
+    assert_eq!(keys(&f).len(), 10);
+    let inside = "k04".to_owned();
+    f.cursor = Some(&inside);
+    assert_eq!(keys(&f), vec!["k05", "k06", "k07", "k08", "k09"]);
+}
