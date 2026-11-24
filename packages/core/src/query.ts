@@ -74,6 +74,13 @@ export interface QueryResult<V = unknown> {
   nextCursor: string | null;
   /** Present only when `withTotal` was requested. */
   total?: number;
+  /**
+   * `true` when `maxEntries`/`maxValueBytes` cut this page short — matches exist beyond
+   * `items` that these caps prevented from being returned. Absent when the page is whole.
+   * A consumer that needs every row must raise the caps; it can never be inferred from
+   * `nextCursor` alone (a page can be both cap-truncated and last).
+   */
+  truncated?: boolean;
 }
 
 /** The key-only counterpart of {@link QueryResult}. */
@@ -95,6 +102,20 @@ export function assertQueryOptions(filter: QueryOptions): void {
   if (!Number.isInteger(filter.limit) || filter.limit < 1) {
     throw new RangeError('[blaze-cache] query() requires a positive integer `limit`.');
   }
+  if (
+    filter.maxEntries !== undefined &&
+    (!Number.isInteger(filter.maxEntries) || filter.maxEntries < 1)
+  ) {
+    throw new RangeError(
+      '[blaze-cache] `maxEntries` must be a positive integer when supplied (it bounds a page, so 0 would never make progress).',
+    );
+  }
+  if (
+    filter.maxValueBytes !== undefined &&
+    (!Number.isFinite(filter.maxValueBytes) || filter.maxValueBytes < 0)
+  ) {
+    throw new RangeError('[blaze-cache] `maxValueBytes` must be a finite, non-negative number.');
+  }
   if (filter.includeValues) {
     if (
       !Number.isFinite(filter.maxEntries) ||
@@ -112,9 +133,12 @@ export function assertQueryOptions(filter: QueryOptions): void {
       '[blaze-cache] `where` requires `fullScan: true` with no indexed constraint.',
     );
   }
-  if (filter.fullScan && hasIndexedConstraint(filter)) {
+  // `cursor` is deliberately absent: a full scan *can* resume from an anchor (it just
+  // costs O(n) per page, which `fullScan: true` already declared). The constraints below
+  // are the ones a full scan would silently *ignore* — those are what makes it a guard.
+  if (filter.fullScan && hasIndexedConstraint({ ...filter, cursor: undefined })) {
     throw new TypeError(
-      '[blaze-cache] `fullScan: true` cannot be combined with prefix/tags/ttlRange/keys/cursor.',
+      '[blaze-cache] `fullScan: true` cannot be combined with prefix/tags/ttlRange/keys.',
     );
   }
 }
@@ -132,10 +156,14 @@ export function hasIndexedConstraint(filter: QueryOptions): boolean {
   );
 }
 
+/** Walk ceiling for an object/array estimate — the value is a cheap hint, not an audit. */
+const HARD_BYTE_CAP = 64 * 1024;
+
 /**
  * Cheap, best-effort byte estimate used only for the `maxValueBytes` cap. JS object sizes
  * are not observable; opaque externrefs report `0` here (tiered mode will require an
- * explicit `sizeHint` for them). Never guesses at a cloned representation.
+ * explicit `sizeHint` for them). Never guesses at a cloned representation, and never
+ * throws: every object walk is fenced so a hostile stored value cannot break `query()`.
  */
 export function estimateValueBytes(value: unknown, depth = 0): number {
   if (depth > 4) return 0;
@@ -145,24 +173,43 @@ export function estimateValueBytes(value: unknown, depth = 0): number {
   if (typeof value === 'bigint') return 8;
   if (value === null || value === undefined) return 0;
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-    return value instanceof ArrayBuffer ? value.byteLength : value.byteLength;
+    return value.byteLength;
   }
+  // Every object walk below is fenced: a stored Proxy with a throwing `ownKeys`/`get`
+  // trap must not be able to throw out of `query()`. The estimate is best-effort by
+  // contract, so an unmeasurable value simply counts as 0.
   if (Array.isArray(value)) {
     let bytes = 0;
-    for (let i = 0; i < value.length && bytes < 64 * 1024; i += 1) {
-      bytes += estimateValueBytes(value[i], depth + 1);
+    for (let i = 0; i < value.length && bytes < HARD_BYTE_CAP; i += 1) {
+      let item: unknown;
+      try {
+        item = value[i];
+      } catch {
+        continue;
+      }
+      bytes += estimateValueBytes(item, depth + 1);
     }
     return bytes;
   }
   if (typeof value === 'object') {
-    const keys = Object.keys(value as object);
-    return keys.reduce(
-      (bytes, key) =>
-        bytes +
-        key.length * 2 +
-        estimateValueBytes((value as Record<string, unknown>)[key], depth + 1),
-      0,
-    );
+    let keys: string[];
+    try {
+      keys = Object.keys(value as object);
+    } catch {
+      return 0;
+    }
+    let bytes = 0;
+    for (const key of keys) {
+      if (bytes > HARD_BYTE_CAP) break;
+      let property: unknown;
+      try {
+        property = (value as Record<string, unknown>)[key];
+      } catch {
+        continue;
+      }
+      bytes += key.length * 2 + estimateValueBytes(property, depth + 1);
+    }
+    return bytes;
   }
   return 0;
 }

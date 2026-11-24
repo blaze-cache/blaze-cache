@@ -636,25 +636,45 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
       total = filter.withTotal ? page.total : undefined;
     }
 
-    if (!filter.includeValues) return { items: rows, nextCursor, total };
+    // `maxEntries` bounds both shapes, so one place reports the cut and re-anchors the
+    // cursor. It never truncates to an empty page (`assertQueryOptions` requires >= 1), so
+    // the new anchor always exists and a `loadMore` loop can always make progress.
+    let truncated = false;
+    if (filter.maxEntries !== undefined && filter.maxEntries < rows.length) {
+      rows = rows.slice(0, filter.maxEntries);
+      truncated = true;
+      nextCursor = rows[rows.length - 1]!.key;
+    }
 
-    // Include live values, capped by both row count and estimated bytes. `peek` is used
-    // instead of `get` so a devtools read never moves SIEVE state or the hit rate.
+    if (!filter.includeValues) {
+      return { items: rows, nextCursor, total, ...(truncated ? { truncated: true } : {}) };
+    }
+
+    // Include live values, capped by both row count and estimated bytes. `entry()` is used
+    // instead of `peek()` so a stored `undefined` stays a real row — `peek` cannot tell it
+    // from a key that vanished — and `get()` is avoided so a devtools read never moves
+    // SIEVE state or the hit rate.
     const items: QueryValueRow<V2>[] = [];
     let bytes = 0;
+    let capped = false;
     for (const row of rows) {
-      if (items.length >= (filter.maxEntries as number)) break;
-      const value = this.peek(row.key) as V2 | undefined;
-      if (value === undefined) continue;
-      const size = estimateValueBytes(value);
-      if (bytes + size > (filter.maxValueBytes as number)) break;
+      const live = this.entry(row.key);
+      if (live === undefined) continue; // expired or deleted since the page was read
+      const value = live.value as unknown as V2;
+      const size = row.size ?? estimateValueBytes(value);
+      if (bytes + size > (filter.maxValueBytes as number)) {
+        capped = true;
+        break;
+      }
       bytes += size;
       items.push({ ...row, value, size });
     }
-    if (items.length < rows.length && items.length > 0) {
-      nextCursor = items[items.length - 1]!.key;
+    if (capped) {
+      truncated = true;
+      // Only a cap can leave rows unseen; a key that vanished needs no re-anchor.
+      if (items.length > 0) nextCursor = items[items.length - 1]!.key;
     }
-    return { items, nextCursor, total };
+    return { items, nextCursor, total, ...(truncated ? { truncated: true } : {}) };
   }
 
   /** Key-only form of {@link BlazeCache.query}, with the same cursor semantics. */
@@ -712,11 +732,19 @@ export class BlazeCache<V = any> implements BlazeCacheLike<V> {
     ) as number;
   }
 
-  /** Full-scan building block used only when the caller opts in explicitly. */
+  /**
+   * Full-scan building block used only when the caller opts in explicitly.
+   *
+   * Applies the same anchor rule as the indexed path (`cursor` is a last-key position in
+   * ascending order), so a full scan paginates exactly like an indexed one. `keys()` hands
+   * back a fresh array, so the sort needs no defensive copy.
+   */
   #scanSummaries(filter: QueryOptions, limit: number): EntrySummary[] {
-    const keys = this.keys().slice().sort();
+    const keys = this.keys().sort();
+    const cursor = filter.cursor;
     const summaries: EntrySummary[] = [];
     for (const key of keys) {
+      if (cursor !== undefined && key <= cursor) continue;
       const entry = this.entry(key);
       if (!entry) continue;
       const summary: EntrySummary = {
