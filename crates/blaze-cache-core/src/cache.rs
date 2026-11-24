@@ -3,6 +3,7 @@
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
+use std::ops::Bound;
 use std::time::Duration;
 
 use web_time::Instant;
@@ -1085,80 +1086,47 @@ impl<V> Cache<String, V> {
 
     /// Runs a bounded query, returning metadata only. Callers opt in to values separately
     /// (and cap them); this method never hands out a live value reference.
+    ///
+    /// Stops at the first match past the page unless `with_total` was requested — a
+    /// paged query must not pay for matches it will never return.
     pub fn query_keys(&self, filter: &QueryFilter<'_>) -> Result<QueryKeysResult, QueryError> {
         let index = self
             .query_index
-            .as_ref()
+            .as_deref()
             .ok_or(QueryError::IndexesDisabled)?;
         if filter.limit == 0 {
             return Err(QueryError::InvalidLimit);
         }
-        let allow = filter
-            .keys
-            .map(|keys| keys.iter().map(String::as_str).collect::<HashSet<&str>>());
         let now = Instant::now();
         let mut rows = Vec::new();
         let mut total = 0usize;
+        let mut more = false;
 
-        for key in index.ordered_keys() {
-            if let Some(cursor) = filter.cursor {
-                if key <= cursor {
-                    continue;
-                }
-            }
-            if filter.prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
+        for key in Self::query_candidates(index, filter) {
+            // Beyond the page a match only has to be *counted* (when asked), never built.
+            let want_row = rows.len() < filter.limit;
+            let Some((ttl_ms, tags)) = self.query_match(index, key, now, filter, want_row) else {
                 continue;
-            }
-            if allow.as_ref().is_some_and(|set| !set.contains(key)) {
-                continue;
-            }
-            // `peek` is observational: no hit/miss stats, no visited bit, no reclamation.
-            // Expired-but-unreclaimed keys are skipped here just like `keys()` skips them.
-            if self.peek(key).is_none() {
-                continue;
-            }
-            let ttl_ms = index
-                .deadline_of(key)
-                .map(|at| at.saturating_duration_since(now).as_secs_f64() * 1000.0);
-            if let Some(min) = filter.ttl_min_ms {
-                // A permanent key has an infinite remaining TTL: it satisfies every lower bound.
-                if ttl_ms.is_some_and(|remaining| remaining < min) {
-                    continue;
-                }
-            }
-            if let Some(max) = filter.ttl_max_ms {
-                // …but no upper bound, so an upper-bounded query excludes it.
-                if ttl_ms.is_none_or(|remaining| remaining > max) {
-                    continue;
-                }
-            }
-            let tags = self.tags_of(key).unwrap_or_default();
-            if !filter.tags_any.is_empty() && !filter.tags_any.iter().any(|t| tags.contains(t)) {
-                continue;
-            }
-            if !filter.tags_all.is_empty() && !filter.tags_all.iter().all(|t| tags.contains(t)) {
-                continue;
-            }
-            if !filter.tags_none.is_empty() && filter.tags_none.iter().any(|t| tags.contains(t)) {
-                continue;
-            }
-
+            };
             if filter.with_total {
                 total += 1;
             }
-            if rows.len() <= filter.limit {
+            if want_row {
                 rows.push(QueryRow {
                     key: key.to_owned(),
                     ttl_ms,
                     tags,
                 });
+            } else {
+                // The page is full: one more match proves a next page exists. Only a
+                // caller that asked for the total keeps scanning past this point.
+                more = true;
+                if !filter.with_total {
+                    break;
+                }
             }
         }
 
-        let more = rows.len() > filter.limit;
-        if more {
-            rows.truncate(filter.limit);
-        }
         let next_cursor = if more {
             rows.last().map(|row| row.key.clone())
         } else {
@@ -1171,21 +1139,139 @@ impl<V> Cache<String, V> {
         })
     }
 
-    /// Number of matches, ignoring paging. A setup guard, not a hot-path API.
+    /// Number of matches, ignoring paging. A setup guard, not a hot-path API: it walks
+    /// candidates without materialising a single row — no key clones, and no tag vectors
+    /// unless a tag constraint actually needs them.
     pub fn query_count(&self, filter: &QueryFilter<'_>) -> Result<usize, QueryError> {
-        let mut counted = QueryFilter {
-            with_total: true,
-            limit: usize::MAX,
-            ..QueryFilter::default()
+        let index = self
+            .query_index
+            .as_deref()
+            .ok_or(QueryError::IndexesDisabled)?;
+        // Paging never narrows a count: drop the anchor exactly as the previous
+        // row-materialising implementation did.
+        let flat = QueryFilter {
+            cursor: None,
+            ..*filter
         };
-        counted.prefix = filter.prefix;
-        counted.tags_any = filter.tags_any;
-        counted.tags_all = filter.tags_all;
-        counted.tags_none = filter.tags_none;
-        counted.ttl_min_ms = filter.ttl_min_ms;
-        counted.ttl_max_ms = filter.ttl_max_ms;
-        counted.keys = filter.keys;
-        Ok(self.query_keys(&counted)?.total)
+        let now = Instant::now();
+        let mut total = 0usize;
+        for key in Self::query_candidates(index, &flat) {
+            if self.query_match(index, key, now, &flat, false).is_some() {
+                total += 1;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Candidate keys for `filter` in ascending order, via the cheapest strategy that
+    /// still yields exactly the indexed set.
+    ///
+    /// A small allow-list is sorted and walked directly (O(m log m)) instead of probing
+    /// every indexed key against it (O(n)); a list that is not clearly smaller than the
+    /// index — or any query carrying a prefix, which already bounds the index path to
+    /// one contiguous region — keeps the indexed path. That path seeks with
+    /// [`Bound::Excluded`] for a cursor / [`Bound::Included`] for a prefix and stops at
+    /// the end of the prefix region rather than scanning to the end of the index.
+    fn query_candidates<'a>(
+        index: &'a dyn QueryIndex<String>,
+        filter: &'a QueryFilter<'a>,
+    ) -> Box<dyn Iterator<Item = &'a str> + 'a> {
+        let start = match (filter.cursor, filter.prefix) {
+            // A cursor before the prefix region adds nothing the prefix bound misses.
+            (Some(cursor), Some(prefix)) if prefix > cursor => Bound::Included(prefix),
+            (Some(cursor), _) => Bound::Excluded(cursor),
+            (None, Some(prefix)) => Bound::Included(prefix),
+            (None, None) => Bound::Unbounded,
+        };
+        let prefix = filter.prefix;
+
+        if let Some(keys) = filter.keys {
+            if keys.is_empty() {
+                return Box::new(std::iter::empty());
+            }
+            if prefix.is_none() && keys.len().saturating_mul(6) <= index.len() {
+                let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+                sorted.sort_unstable();
+                sorted.dedup();
+                let from = match filter.cursor {
+                    Some(cursor) => sorted.partition_point(|key| *key <= cursor),
+                    None => 0,
+                };
+                return Box::new(sorted.into_iter().skip(from));
+            }
+            let allow: HashSet<&str> = keys.iter().map(String::as_str).collect();
+            let iter = index
+                .ordered_range(start)
+                .filter(move |key| allow.contains(key));
+            return match prefix {
+                Some(prefix) => Box::new(iter.take_while(move |key| key.starts_with(prefix))),
+                None => Box::new(iter),
+            };
+        }
+
+        let iter = index.ordered_range(start);
+        match prefix {
+            Some(prefix) => Box::new(iter.take_while(move |key| key.starts_with(prefix))),
+            None => Box::new(iter),
+        }
+    }
+
+    /// Liveness, TTL bounds and tag constraints for one candidate key; the row payload
+    /// (`ttl_ms`, `tags`) when it matches, `None` otherwise.
+    ///
+    /// `need_row` separates a paging query — which always materialises both fields —
+    /// from a count, which skips the `tags_of` allocation unless a tag constraint needs
+    /// it. `peek` is observational: no hit/miss stats, no visited bit, no reclamation.
+    /// Expired-but-unreclaimed keys are skipped here just like `keys()` skips them.
+    fn query_match(
+        &self,
+        index: &dyn QueryIndex<String>,
+        key: &str,
+        now: Instant,
+        filter: &QueryFilter<'_>,
+        need_row: bool,
+    ) -> Option<(Option<f64>, Vec<String>)> {
+        // `peek` is observational: no hit/miss stats, no visited bit, no reclamation.
+        // Expired-but-unreclaimed keys are skipped here just like `keys()` skips them.
+        self.peek(key)?;
+        let ttl_constrained = filter.ttl_min_ms.is_some() || filter.ttl_max_ms.is_some();
+        let ttl_ms = if need_row || ttl_constrained {
+            index
+                .deadline_of(key)
+                .map(|at| at.saturating_duration_since(now).as_secs_f64() * 1000.0)
+        } else {
+            None
+        };
+        if let Some(min) = filter.ttl_min_ms {
+            // A permanent key has an infinite remaining TTL: it satisfies every lower bound.
+            if ttl_ms.is_some_and(|remaining| remaining < min) {
+                return None;
+            }
+        }
+        if let Some(max) = filter.ttl_max_ms {
+            // …but no upper bound, so an upper-bounded query excludes it.
+            if ttl_ms.is_none_or(|remaining| remaining > max) {
+                return None;
+            }
+        }
+        let tag_constrained = !filter.tags_any.is_empty()
+            || !filter.tags_all.is_empty()
+            || !filter.tags_none.is_empty();
+        let tags = if need_row || tag_constrained {
+            self.tags_of(key).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if !filter.tags_any.is_empty() && !filter.tags_any.iter().any(|t| tags.contains(t)) {
+            return None;
+        }
+        if !filter.tags_all.is_empty() && !filter.tags_all.iter().all(|t| tags.contains(t)) {
+            return None;
+        }
+        if !filter.tags_none.is_empty() && filter.tags_none.iter().any(|t| tags.contains(t)) {
+            return None;
+        }
+        Some((ttl_ms, tags))
     }
 }
 
