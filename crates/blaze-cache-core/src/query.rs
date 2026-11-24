@@ -10,12 +10,16 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
+use std::ops::Bound;
 
 use web_time::Instant;
 
 /// A bounded query over the opt-in indexes. All constraints are ANDed together;
 /// `tags.any` / `tags.all` / `tags.none` map to the three tag sets below.
-#[derive(Debug, Default)]
+///
+/// `Copy` so a caller can derive a paging-free variant (`count` drops the anchor)
+/// without rebuilding every field by hand.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct QueryFilter<'a> {
     /// Only keys starting with this prefix.
     pub prefix: Option<&'a str>,
@@ -83,8 +87,11 @@ pub(crate) trait QueryIndex<K>: Debug {
     /// Drops every registered key (`Cache::clear`).
     fn clear(&mut self);
 
-    /// Keys in ascending order, including expired-but-unreclaimed ones (callers filter).
-    fn ordered_keys(&self) -> Box<dyn Iterator<Item = &str> + '_>;
+    /// Keys in ascending order from `start` onward, including expired-but-unreclaimed
+    /// ones (callers filter). An exclusive cursor seeks with [`Bound::Excluded`], a
+    /// prefix with [`Bound::Included`]: ordering makes the prefix region contiguous,
+    /// so callers stop at the first key that leaves it instead of scanning to the end.
+    fn ordered_range(&self, start: Bound<&str>) -> Box<dyn Iterator<Item = &str> + '_>;
     /// Deadline order (soonest first), with permanent keys last. Used by TTL-range queries.
     fn ttl_ordered_keys(&self) -> Box<dyn Iterator<Item = &str> + '_>;
     /// Deadline for `key`, or `None` for a permanent (or unknown) key.
@@ -129,8 +136,14 @@ impl QueryIndex<String> for StringQueryIndex {
         self.permanent.clear();
     }
 
-    fn ordered_keys(&self) -> Box<dyn Iterator<Item = &str> + '_> {
-        Box::new(self.keys.iter().map(String::as_str))
+    fn ordered_range(&self, start: Bound<&str>) -> Box<dyn Iterator<Item = &str> + '_> {
+        // `(Bound<&str>, Bound<&str>): RangeBounds<str>` through `String: Borrow<str>`,
+        // so the seek costs O(log n) and never allocates a probe key.
+        Box::new(
+            self.keys
+                .range::<str, _>((start, Bound::Unbounded))
+                .map(String::as_str),
+        )
     }
 
     fn ttl_ordered_keys(&self) -> Box<dyn Iterator<Item = &str> + '_> {
