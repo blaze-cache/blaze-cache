@@ -6,7 +6,12 @@
  * not read by the traversal; when cloning fails — functions, proxies, externrefs, cyclic
  * non-cloneables — the original is described defensively instead.
  */
-import { bindingFromKind, isBlazeRecord } from '@blaze-cache/core/shared';
+import {
+  REDACT_KEY_PATTERNS,
+  bindingFromKind,
+  isBlazeRecord,
+  isRedactedKey,
+} from '@blaze-cache/core/shared';
 
 import type { DevtoolsValueMode } from './types.js';
 
@@ -66,6 +71,11 @@ export interface SummarizeOptions {
   maxBytes?: number;
   /** Preview bytes for typed arrays. Default `0` (no preview). */
   previewBytes?: number;
+  /**
+   * Key patterns that mark a nested property or Map entry as sensitive — the same policy
+   * the snapshot applies to top-level entry keys. Defaults to `REDACT_KEY_PATTERNS`.
+   */
+  redactKeys?: readonly RegExp[];
 }
 
 interface Budget {
@@ -204,6 +214,13 @@ function describe(
     try {
       for (const [key, entryValue] of object) {
         if (index >= visible) break;
+        if (typeof key === 'string' && isRedactedKey(key, options.redactKeys)) {
+          // Same policy as a redacted object property: neither the key nor the value is
+          // read further — a Map keyed by credential names must not leak them.
+          entries.push([{ kind: 'redacted' }, { kind: 'redacted' }]);
+          index += 1;
+          continue;
+        }
         entries.push([
           describe(key, depth + 1, seen, budget, options),
           describe(entryValue, depth + 1, seen, budget, options),
@@ -254,6 +271,13 @@ function describe(
   const visible = Math.min(keys.length, options.maxEntries);
   for (let i = 0; i < visible; i += 1) {
     const key = keys[i]!;
+    if (isRedactedKey(key, options.redactKeys)) {
+      // The name itself is the signal, exactly like a redacted top-level entry key: the
+      // property is never *read* (a hostile getter on a credential must not run) and the
+      // value never reaches the summary.
+      entries.push(['[redacted]', { kind: 'redacted' }]);
+      continue;
+    }
     let property: unknown;
     try {
       property = (object as Record<string, unknown>)[key];
@@ -293,12 +317,21 @@ export function summarize(value: unknown, options: SummarizeOptions = {}): Value
   if (mode === 'full') {
     const cloned = cloneOrOriginal(value);
     if (cloned !== value) return { kind: 'full', value: cloned };
-    // A non-cloneable value cannot be shown in full without risking the live reference.
-    return describe(value, 0, new Map(), makeBudget(options), normalized(options));
+    // A non-cloneable value cannot be shown in full without risking the live reference —
+    // describe it defensively instead. `describe` guards every property read, but a Proxy
+    // trap (or a `Symbol.hasInstance`) can still throw, so the whole fallback is fenced:
+    // this function must never throw into the host app, in any mode.
+    try {
+      return describe(value, 0, new Map(), makeBudget(options), normalized(options));
+    } catch {
+      return { kind: 'unsupported' };
+    }
   }
-  const prepared = cloneOrOriginal(value);
+  // Summary mode describes the live value directly: `structuredClone` would copy the whole
+  // graph *before* the byte budget applies (unbounded work for a large value), and it
+  // invokes getters exactly like `describe` does, so the clone bought no safety here.
   try {
-    return describe(prepared, 0, new Map(), makeBudget(options), normalized(options));
+    return describe(value, 0, new Map(), makeBudget(options), normalized(options));
   } catch {
     return { kind: 'unsupported' };
   }
@@ -315,5 +348,6 @@ function normalized(options: SummarizeOptions): Required<Omit<SummarizeOptions, 
     maxStringLength: options.maxStringLength ?? 200,
     maxBytes: options.maxBytes ?? 16_384,
     previewBytes: options.previewBytes ?? 0,
+    redactKeys: options.redactKeys ?? REDACT_KEY_PATTERNS,
   };
 }
