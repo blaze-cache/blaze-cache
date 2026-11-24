@@ -174,8 +174,9 @@ cache.count({ prefix: 'user:' }); // number of matches
 
 `ttlRange: { min?, max? }` filters remaining TTL; `keys: [...]` is an allow-list; `limit` is
 required and cursors are last-key anchors in ascending key order that survive deletion of
-the anchor key. `query()` throws without `indexes: true` — an explicit `fullScan: true` with
-no other constraint (and optionally a `where` post-filter) is the only O(n) path.
+the anchor key. `query()` throws without `indexes: true` — an explicit `fullScan: true` is
+the only O(n) path. It permits `cursor` and an optional `where` post-filter, but rejects
+`prefix`/`tags`/`ttlRange`/`keys` (a scan would silently ignore those constraints).
 `includeValues: true` returns live by-reference values and requires both `maxEntries` and
 `maxValueBytes` caps. Indexes are off by default and add nothing to the hot path.
 
