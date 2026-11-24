@@ -153,6 +153,108 @@ describe('summarizer', () => {
     assert.equal(wide.items.length, 3);
     assert.equal(wide.truncated, 'entries');
   });
+
+  it('redacts nested credential keys in objects and Maps', () => {
+    const nested = summarize({
+      user: 'ada',
+      password: 'hunter2',
+      config: { api_key: 'sk-live-123', endpoint: 'https://example.test' },
+    });
+    const json = JSON.stringify(nested);
+    assert.ok(!json.includes('hunter2'), 'a nested secret value must not appear');
+    assert.ok(!json.includes('sk-live-123'), 'a nested api key must not appear');
+    assert.equal(nested.entries.find(([key]) => key === 'user')[1].kind, 'string');
+    const redacted = nested.entries.filter(([key]) => key === '[redacted]');
+    assert.equal(redacted.length, 1, 'the credential property itself is hidden');
+    assert.equal(redacted[0][1].kind, 'redacted');
+    assert.equal(
+      nested.entries
+        .find(([key]) => key === 'config')[1]
+        .entries.find(([key]) => key === '[redacted]')[1].kind,
+      'redacted',
+      'redaction applies at every depth',
+    );
+
+    const map = summarize(
+      new Map([
+        ['password', 'hunter2'],
+        ['theme', 'dark'],
+      ]),
+    );
+    assert.ok(!JSON.stringify(map).includes('hunter2'), 'a Map keyed by a secret leaks nothing');
+    assert.equal(map.entries[0][0].kind, 'redacted');
+    assert.equal(map.entries[0][1].kind, 'redacted');
+    assert.equal(map.entries[1][1].kind, 'string', 'innocent entries stay visible');
+  });
+
+  it('never throws on Proxy traps, getters or hostile redaction patterns', () => {
+    const hostile = [
+      new Proxy(
+        {},
+        {
+          get() {
+            throw new Error('get-bomb');
+          },
+        },
+      ),
+      new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error('keys-bomb');
+          },
+        },
+      ),
+      new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error('proto-bomb');
+          },
+        },
+      ),
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error('desc-bomb');
+          },
+        },
+      ),
+      new Proxy(
+        {},
+        {
+          get(target, key) {
+            if (key === 'bomb') throw new Error('getter-bomb');
+            return 1;
+          },
+        },
+      ),
+      Object.create(null, {
+        constructor: {
+          get() {
+            throw new Error('ctor-bomb');
+          },
+        },
+      }),
+    ];
+    for (const value of hostile) {
+      for (const valueMode of ['summary', 'full', 'none']) {
+        const summary = summarize(value, { valueMode });
+        assert.ok(summary && typeof summary.kind === 'string');
+        assert.ok(!JSON.stringify(summary).includes('bomb'), `${valueMode} mode trapped a value`);
+      }
+    }
+
+    // A hostile pattern list must degrade to an opaque summary, not a thrown TypeError.
+    const patterns = new Proxy([], {
+      get() {
+        throw new Error('patterns-bomb');
+      },
+    });
+    const summary = summarize({ plain: 1 }, { redactKeys: patterns });
+    assert.equal(summary.kind, 'unsupported');
+  });
 });
 
 describe('event feed', () => {
@@ -232,6 +334,28 @@ describe('registry and zero-cost lifecycle', () => {
     assert.equal(cache.onCalls(), 0);
     assert.equal(cache.listenerCount(), 0);
   });
+
+  it('rejects conflicting options on a live re-attach', () => {
+    dispose();
+    const cache = fakeCache();
+    const handle = attach(cache, { label: 'one' });
+    assert.equal(attach(cache, { label: 'one' }), handle, 'identical options stay idempotent');
+    assert.equal(attach(cache), handle, 'an empty re-attach keeps the live options');
+    assert.equal(
+      attach(cache, { maxEvents: 500 }),
+      handle,
+      'restating a default is not a conflict',
+    );
+    assert.throws(() => attach(cache, { label: 'two' }), /detach\(\) first/);
+    assert.throws(() => attach(cache, { valueMode: 'full' }), /detach\(\) first/);
+    assert.throws(() => attach(cache, { redactKeys: [] }), /detach\(\) first/);
+    assert.equal(cache.onCalls(), 1, 'a rejected re-attach registers no listener');
+
+    handle.detach();
+    const fresh = attach(cache, { label: 'two' });
+    assert.equal(fresh.label, 'two', 'options apply again after detach');
+    fresh.detach();
+  });
 });
 
 describe('snapshot builder', () => {
@@ -260,6 +384,31 @@ describe('snapshot builder', () => {
     assert.equal(tiny.payload.entries.length, 0);
     assert.equal(tiny.payload.truncated.bytes, true);
     handle.detach();
+  });
+
+  it('redacts the persistence generation and last error', () => {
+    dispose();
+    const cache = fakeCache({
+      extra: {
+        persistence: {
+          stats: () => ({
+            enabled: true,
+            namespace: 'app',
+            generation: 'user-42',
+            pending: 1,
+            errors: 2,
+            lastError: new Error('flush failed: /db?token=abc'),
+          }),
+        },
+      },
+    });
+    const snapshot = buildSnapshot(cache, { cacheId: 'c', clientId: 'cl' });
+    assert.equal(snapshot.payload.persistence.generation, '[redacted]');
+    assert.equal(snapshot.payload.persistence.lastError, '[redacted]');
+    assert.equal(snapshot.payload.persistence.pending, 1, 'the rest of the stats survive');
+    const json = JSON.stringify(snapshot);
+    assert.ok(!json.includes('user-42'), 'the session generation must not be exported');
+    assert.ok(!json.includes('token=abc'), 'the error text must not be exported');
   });
 
   it('uses the indexed query API when the cache provides it', () => {

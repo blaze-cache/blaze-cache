@@ -24,4 +24,32 @@ describe('@blaze-cache/core/shared', () => {
     assert.equal(bindingFromKind('next:route'), 'next');
     assert.equal(featureFromKind('next:route'), 'route');
   });
+
+  it('never throws on frozen, stateful or hostile patterns — and fails closed', () => {
+    // A frozen non-stateful pattern must keep working: only `lastIndex` is unwritable and
+    // a non-global `test` never reads it.
+    const frozen = Object.freeze(/password/i);
+    assert.equal(isRedactedKey('user-password', [frozen]), true);
+    assert.equal(isRedactedKey('user:42', [frozen]), false);
+
+    // A frozen *global* pattern cannot even run (`test` rewrites the frozen `lastIndex`):
+    // deny by default instead of throwing or silently skipping redaction.
+    assert.equal(isRedactedKey('user:42', [Object.freeze(/token/g)]), true);
+
+    // Junk entries and hostile `test` implementations take the same never-throw path.
+    assert.equal(isRedactedKey('user:42', [null]), true);
+    const hostile = {
+      lastIndex: 0,
+      test() {
+        throw new Error('boom');
+      },
+    };
+    assert.equal(isRedactedKey('user:42', [hostile]), true);
+
+    // A stateful (global) pattern is reset between calls, so it cannot alternate between
+    // matching and not matching the same key.
+    const global = /token/g;
+    assert.equal(isRedactedKey('my-token', [global]), true);
+    assert.equal(isRedactedKey('my-token', [global]), true);
+  });
 });

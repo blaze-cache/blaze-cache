@@ -151,3 +151,123 @@ describe('indexed queries', () => {
     await cache.dispose();
   });
 });
+
+describe('query regressions and stress (0.5.0-beta.1)', () => {
+  it('paginates a full scan with a cursor — with and without a where post-filter', async () => {
+    const cache = await makeCache();
+    for (let i = 0; i < 12; i += 1) cache.set(`k${String(i).padStart(2, '0')}`, i);
+
+    let cursor;
+    const plain = [];
+    do {
+      const page = cache.query({ limit: 5, fullScan: true, cursor });
+      plain.push(...page.items.map((row) => row.key));
+      cursor = page.nextCursor;
+    } while (cursor);
+    assert.equal(
+      plain.join(','),
+      Array.from({ length: 12 }, (_, i) => `k${String(i).padStart(2, '0')}`).join(','),
+      'every key appears exactly once across the pages',
+    );
+
+    cursor = undefined;
+    const filtered = [];
+    let pages = 0;
+    do {
+      const page = cache.query({
+        limit: 3,
+        fullScan: true,
+        cursor,
+        where: (row) => Number(row.key.slice(1)) % 2 === 0,
+      });
+      filtered.push(...page.items.map((row) => row.key));
+      cursor = page.nextCursor;
+      pages += 1;
+      assert.ok(pages < 10, 'cursor pagination always terminates');
+    } while (cursor);
+    assert.deepEqual(filtered, ['k00', 'k02', 'k04', 'k06', 'k08', 'k10']);
+    await cache.dispose();
+  });
+
+  it('reports truncation when a cap cuts rows or bytes', async () => {
+    const cache = await makeCache({ indexes: true });
+    for (let i = 0; i < 5; i += 1) cache.set(`k${i}`, { payload: 'x'.repeat(100) });
+
+    const byRows = cache.query({
+      limit: 10,
+      includeValues: true,
+      maxEntries: 2,
+      maxValueBytes: 10_000,
+    });
+    assert.equal(byRows.items.length, 2);
+    assert.equal(byRows.truncated, true, 'a cap that leaves rows unseen must be reported');
+    assert.equal(byRows.nextCursor, 'k1', 'the cursor re-anchors to the last row returned');
+
+    const byBytes = cache.query({
+      limit: 10,
+      includeValues: true,
+      maxEntries: 10,
+      maxValueBytes: 1,
+    });
+    assert.equal(byBytes.items.length, 0, 'the byte cap is a hard cap');
+    assert.equal(byBytes.truncated, true);
+
+    const whole = cache.query({
+      limit: 10,
+      includeValues: true,
+      maxEntries: 10,
+      maxValueBytes: 10_000,
+    });
+    assert.equal(whole.items.length, 5);
+    assert.equal(whole.truncated, undefined, 'an uncapped page carries no truncation flag');
+    await cache.dispose();
+  });
+
+  it('keeps a stored undefined as a real row', async () => {
+    const cache = await makeCache({ indexes: true });
+    cache.set('blank', undefined);
+    cache.set('present', 1);
+    assert.equal(cache.peek('blank'), undefined, 'peek cannot distinguish stored undefined');
+    assert.deepEqual(
+      cache.query({ limit: 10 }).items.map((row) => row.key),
+      ['blank', 'present'],
+    );
+    const withValues = cache.query({
+      limit: 10,
+      includeValues: true,
+      maxEntries: 10,
+      maxValueBytes: 10_000,
+    });
+    assert.deepEqual(
+      withValues.items.map((row) => row.key),
+      ['blank', 'present'],
+      'includeValues must use entry(), not a liveness peek, to keep the row',
+    );
+    assert.equal(Object.hasOwn(withValues.items[0], 'value'), true);
+    await cache.dispose();
+  });
+
+  it('stays bounded on 100k indexed keys with a cursor and an allow-list', async () => {
+    const n = 100_000;
+    const cache = await makeCache({ indexes: true, capacity: n + 10 });
+    for (let i = 0; i < n; i += 1) cache.set(`key:${String(i).padStart(7, '0')}`, i);
+
+    const t0 = performance.now();
+    const page = cache.query({ prefix: 'key:', limit: 10 });
+    const pageMs = performance.now() - t0;
+    assert.equal(page.items.length, 10);
+    assert.equal(page.items[0].key, 'key:0000000');
+    const next = cache.query({ prefix: 'key:', limit: 10, cursor: page.nextCursor });
+    assert.equal(next.items[0].key, 'key:0000010', 'a cursor seeks instead of rescanning');
+
+    const allow = Array.from({ length: 20 }, (_, i) => `key:${String(i * 5_000).padStart(7, '0')}`);
+    const t1 = performance.now();
+    assert.equal(cache.count({ keys: allow }), 20, 'a small allow-list is walked directly');
+    const allowMs = performance.now() - t1;
+
+    // Generous ceilings: these catch a catastrophic O(n) regression (not machine noise).
+    assert.ok(pageMs < 5_000, `a 10-row page took ${pageMs.toFixed(1)}ms`);
+    assert.ok(allowMs < 5_000, `a 20-key allow-list took ${allowMs.toFixed(1)}ms`);
+    await cache.dispose();
+  });
+});
