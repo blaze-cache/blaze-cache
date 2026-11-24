@@ -1,4 +1,7 @@
 /** Registry and lifecycle for devtools attachments. */
+import type { CacheEvent } from '@blaze-cache/core';
+import { REDACT_KEY_PATTERNS } from '@blaze-cache/core/shared';
+
 import { EventFeed } from './feed.js';
 import { makeId } from './protocol.js';
 import { buildSnapshot } from './snapshot.js';
@@ -14,6 +17,29 @@ import type {
 const registry = new Map<string, Handle>();
 const cacheIds = new WeakMap<object, string>();
 const globalListeners = new Set<(event: DevtoolsEvent) => void>();
+
+/** The default ring-buffer size — the same one `EventFeed` gets when `maxEvents` is omitted. */
+const DEFAULT_MAX_EVENTS = 500;
+/** The default value rendering — the same one `buildSnapshot` falls back to. */
+const DEFAULT_VALUE_MODE = 'summary';
+
+/**
+ * Structural equality for pattern lists: two lists match when they describe the same
+ * patterns, whatever `RegExp` objects carry them — `attach()` is called with freshly
+ * written literals far more often than with one shared array.
+ */
+function samePatterns(a: readonly RegExp[], b: readonly RegExp[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (left === right) continue;
+    if (left === undefined || right === undefined) return false;
+    if (left.source !== right.source || left.flags !== right.flags) return false;
+  }
+  return true;
+}
 
 function isCache(value: unknown): value is DevtoolsCacheLike {
   return (
@@ -31,7 +57,9 @@ class Handle implements DevtoolsHandle {
   readonly #ref: WeakRef<DevtoolsCacheLike>;
   readonly #feed: EventFeed;
   readonly #options: AttachOptions;
-  #off: (() => void) | null;
+  readonly #listener: (event: CacheEvent) => void;
+  /** The bus-provided unsub — held only when the cache exposes no `off()`. */
+  #unsub: (() => void) | null;
   #active = true;
 
   constructor(cache: DevtoolsCacheLike, cacheId: string, options: AttachOptions) {
@@ -40,17 +68,51 @@ class Handle implements DevtoolsHandle {
     this.label = options.label;
     this.#options = options;
     this.#ref = new WeakRef(cache);
-    this.#feed = new EventFeed(this.clientId, options.maxEvents ?? 500);
+    this.#feed = new EventFeed(this.clientId, options.maxEvents ?? DEFAULT_MAX_EVENTS);
     // The only listener devtools ever registers. Its closure captures *this handle*, not
-    // the cache, so the WeakRef remains weak. The unsubscribe function is the exact one the
-    // event bus handed back, so detaching restores the prior drop-log state precisely.
-    this.#off = cache.on((event) =>
-      this.#deliver(event.type, 'key' in event ? event.key : undefined),
-    );
+    // the cache, so the WeakRef remains weak.
+    this.#listener = (event) => this.#deliver(event.type, 'key' in event ? event.key : undefined);
+    // Detaching prefers `cache.off(listener)`. The unsub `on()` hands back closes over the
+    // event bus, and the bus's onChange callback closes over the cache — storing that
+    // closure here would make the registry pin a cache it has no business retaining (the
+    // exact leak this replaced). Only a cache with no `off()` of its own (a structural
+    // double) keeps the unsub, since it is that cache's only unsubscribe handle.
+    const unsub = cache.on(this.#listener);
+    this.#unsub = typeof cache.off === 'function' ? null : unsub;
   }
 
   get active(): boolean {
     return this.#active;
+  }
+
+  /**
+   * `true` when `next` would change how this live handle behaves. Omitted fields mean
+   * "keep whatever the handle has" (an empty re-attach stays idempotent), so only an
+   * explicitly provided field that resolves differently than the live one counts —
+   * defaults are resolved first so re-stating them is not a conflict.
+   */
+  conflictsWith(next: AttachOptions): boolean {
+    const current = this.#options;
+    if (next.label !== undefined && next.label !== current.label) return true;
+    if (
+      next.valueMode !== undefined &&
+      next.valueMode !== (current.valueMode ?? DEFAULT_VALUE_MODE)
+    ) {
+      return true;
+    }
+    if (
+      next.maxEvents !== undefined &&
+      next.maxEvents !== (current.maxEvents ?? DEFAULT_MAX_EVENTS)
+    ) {
+      return true;
+    }
+    if (
+      next.redactKeys !== undefined &&
+      !samePatterns(next.redactKeys, current.redactKeys ?? REDACT_KEY_PATTERNS)
+    ) {
+      return true;
+    }
+    return false;
   }
 
   #deliver(type: string, key?: string): void {
@@ -96,9 +158,16 @@ class Handle implements DevtoolsHandle {
     if (!this.#active) return;
     this.#active = false;
     try {
-      this.#off?.();
+      if (this.#unsub !== null) {
+        this.#unsub();
+      } else {
+        // Identity-based removal: exactly this listener, wildcard set only. The cache may
+        // already have been collected — then its bus died with it and there is nothing
+        // left to unsubscribe from.
+        this.#ref.deref()?.off?.(this.#listener);
+      }
     } finally {
-      this.#off = null;
+      this.#unsub = null;
       this.#feed.close();
       if (registry.get(this.cacheId) === this) registry.delete(this.cacheId);
     }
@@ -113,7 +182,16 @@ export function attach(cache: DevtoolsCacheLike, options: AttachOptions = {}): D
   let cacheId = cacheIds.get(cache);
   if (cacheId !== undefined) {
     const existing = registry.get(cacheId);
-    if (existing?.deref() === cache && existing.active) return existing;
+    if (existing?.deref() === cache && existing.active) {
+      // Silent option-dropping on a live re-attach is a footgun: the second call's
+      // label/modes would never take effect. Refuse loudly instead — detach first.
+      if (existing.conflictsWith(options)) {
+        throw new Error(
+          '[blaze-cache/devtools] attach() called again with different options for a live handle — detach() first to change them.',
+        );
+      }
+      return existing;
+    }
   }
   cacheId = cacheId ?? makeId('cache');
   cacheIds.set(cache, cacheId);
