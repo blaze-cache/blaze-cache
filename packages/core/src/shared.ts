@@ -36,11 +36,24 @@ export function isRedactedKey(
   patterns: readonly RegExp[] = REDACT_KEY_PATTERNS,
 ): boolean {
   for (let i = 0; i < patterns.length; i += 1) {
-    // A pattern with the global/sticky flag is stateful; reset before testing so a
-    // caller-supplied pattern cannot make redaction alternate between calls.
     const pattern = patterns[i]!;
-    pattern.lastIndex = 0;
-    if (pattern.test(key)) return true;
+    try {
+      // A pattern with the global/sticky flag is stateful; reset before testing so a
+      // caller-supplied pattern cannot make redaction alternate between calls. A frozen
+      // pattern rejects the write — harmless for a non-stateful one, whose `test` never
+      // reads `lastIndex`, so it must keep working rather than over-redact everything.
+      try {
+        pattern.lastIndex = 0;
+      } catch {
+        // Frozen: fall through and let `test` decide.
+      }
+      if (pattern.test(key)) return true;
+    } catch {
+      // Deny by default: a pattern that cannot be evaluated — a frozen *global* one (its
+      // `test` rewrites the frozen `lastIndex`), a hostile `test`, a non-regexp entry —
+      // must neither throw into the host nor silently disable redaction.
+      return true;
+    }
   }
   return false;
 }
