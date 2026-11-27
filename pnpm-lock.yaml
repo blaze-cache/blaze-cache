@@ -76,8 +76,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       '@tanstack/query-core':
-        specifier: ^5.107.1
-        version: 5.107.1
+        specifier: ^5.108.0
+        version: 5.108.0
       swr:
         specifier: ^2.5.1
         version: 2.5.1(react@19.3.1)
@@ -860,6 +860,9 @@ packages:
 
   '@tanstack/query-core@5.107.1':
     resolution: {integrity: sha512-PSyAik11oQBEVOiVy5hjZWHmoUqOXqK1WYy4v55mcxozEfKaQgpUMsgnXhWjuESzSht8JfzqMS1m6M/9CpNgvg==}
+
+  '@tanstack/query-core@5.108.0':
+    resolution: {integrity: sha512-X9zJUtEV/0D2q9pmGS/Bza8S4bNovSBhZOtdhtu0fzsHwizC6C+Eh/q5CX3MQBchsRMrirWVQmv7Fp4OStzV9g==}
 
   '@tanstack/react-query@5.107.1':
     resolution: {integrity: sha512-udCOOLp3ZAheUrIHLCe+ZZge6nr2ZUrGMSWcCuXsjY1Bf2JeeE09oxst97PILiCY6N8xo/7bIo3Hvz13zh06FA==}
@@ -2303,6 +2306,8 @@ snapshots:
   '@simple-libs/stream-utils@1.2.0': {}
 
   '@tanstack/query-core@5.107.1': {}
+
+  '@tanstack/query-core@5.108.0': {}
 
   '@tanstack/react-query@5.107.1(@types/react@19.3.0)(react@19.3.1)':
     dependencies:
