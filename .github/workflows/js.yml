@@ -154,12 +154,23 @@ jobs:
             exit 0
           fi
           # Always restore the PR tree, even if the base build or benchmark fails.
-          trap 'git checkout HEAD -- .' EXIT
+          PR_SHA="$(git rev-parse HEAD)"
+          trap 'git checkout --force --detach "$PR_SHA"' EXIT
           # Check out the WHOLE base tree, not just the engine sources. The PR may add a new
           # adapter or opt-in mode; if the harness/scenarios come from the PR but the wasm comes
           # from the base, that adapter measures the base implementation under a PR label and
           # shows up as a 600% "regression". The compare script ignores rows with no baseline.
-          git checkout "$BASE_SHA" -- .
+          #
+          # A tree SWITCH, not `git checkout "$BASE_SHA" -- .`: the pathspec form only overwrites
+          # paths present in the base and leaves everything else behind. A PR that adds a workspace
+          # package (e.g. packages/devtools) therefore keeps its package.json while pnpm-lock.yaml
+          # is reverted to the base's, and `pnpm install --frozen-lockfile` fails with
+          # ERR_PNPM_OUTDATED_LOCKFILE. The mirror image bites too: files the PR deletes would be
+          # resurrected and then survive the restore, since `git checkout HEAD -- .` is equally
+          # one-directional. Detaching swaps the entire tree both ways, and the trap set above
+          # puts the PR SHA back. Ignored bench outputs (current/base.node.json) are untouched
+          # by it.
+          git checkout --force --detach "$BASE_SHA"
           pnpm install --frozen-lockfile
           pnpm build:wasm
           pnpm --filter @blaze-cache/core build
